@@ -5,6 +5,7 @@ import { SessionProvider, useSession, WorkspaceProvider, useWorkspace } from "./
 import { Login } from "./components/login"
 import { Sidebar } from "./components/sidebar"
 import { ChannelView } from "./components/channel-view"
+import { ThreadDrawer } from "./components/thread-drawer"
 
 export function App() {
   return (
@@ -36,7 +37,7 @@ function Shell() {
     return s ? ws.state.usersById[s.userId] : undefined
   }
   return (
-    <div class="shell">
+    <div classList={{ shell: true, "shell-with-thread": !!ws.state.selectedThread }}>
       <header class="topbar">
         <span class="team">{ws.state.team?.name ?? "minislack"}</span>
         <span class="who">{currentUser()?.real_name || currentUser()?.name || ""}</span>
@@ -44,6 +45,9 @@ function Shell() {
       </header>
       <Sidebar />
       <ChannelView />
+      <Show when={ws.state.selectedThread}>
+        <ThreadDrawer />
+      </Show>
     </div>
   )
 }

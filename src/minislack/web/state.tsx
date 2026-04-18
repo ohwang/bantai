@@ -94,15 +94,21 @@ export interface WorkspaceState {
   channels: Channel[]
   channelsById: Record<string, Channel>
   messagesByChannel: Record<string, Message[]>
+  /** Key: `${channelId}:${parentTs}`. Holds the parent at index 0 + replies. */
+  repliesByThread: Record<string, Message[]>
   selectedChannel: string | null
+  selectedThread: { channelId: string; parentTs: string } | null
   error: string | null
 }
 
 interface WorkspaceValue {
   state: WorkspaceState
   selectChannel(channelId: string): void
+  openThread(channelId: string, parentTs: string): void
+  closeThread(): void
   refresh(): Promise<void>
   mergeMessages(channelId: string, messages: Message[]): void
+  mergeReplies(channelId: string, parentTs: string, messages: Message[]): void
 }
 
 const WorkspaceContext = createContext<WorkspaceValue>()
@@ -116,7 +122,9 @@ export const WorkspaceProvider: ParentComponent = (props) => {
     channels: [],
     channelsById: {},
     messagesByChannel: {},
+    repliesByThread: {},
     selectedChannel: null,
+    selectedThread: null,
     error: null,
   })
 
@@ -150,7 +158,17 @@ export const WorkspaceProvider: ParentComponent = (props) => {
 
   const value: WorkspaceValue = {
     state,
-    selectChannel(channelId) { setState("selectedChannel", channelId) },
+    selectChannel(channelId) {
+      setState(produce((s) => {
+        s.selectedChannel = channelId
+        // Close any open thread when switching channels — avoids stale drawer.
+        s.selectedThread = null
+      }))
+    },
+    openThread(channelId, parentTs) {
+      setState("selectedThread", { channelId, parentTs })
+    },
+    closeThread() { setState("selectedThread", null) },
     refresh,
     mergeMessages(channelId, messages) {
       setState(
@@ -160,6 +178,20 @@ export const WorkspaceProvider: ParentComponent = (props) => {
           for (const m of existing) byTs.set(m.ts, m)
           for (const m of messages) byTs.set(m.ts, m)
           s.messagesByChannel[channelId] = Array.from(byTs.values()).sort((a, b) =>
+            a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0,
+          )
+        }),
+      )
+    },
+    mergeReplies(channelId, parentTs, messages) {
+      const key = threadKey(channelId, parentTs)
+      setState(
+        produce((s) => {
+          const existing = s.repliesByThread[key] ?? []
+          const byTs = new Map<string, Message>()
+          for (const m of existing) byTs.set(m.ts, m)
+          for (const m of messages) byTs.set(m.ts, m)
+          s.repliesByThread[key] = Array.from(byTs.values()).sort((a, b) =>
             a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0,
           )
         }),
@@ -185,10 +217,48 @@ export function useWorkspace(): WorkspaceValue {
 function applyEvent(setState: SetStoreFunction<WorkspaceState>, evt: SlackEvent): void {
   switch (evt.type) {
     case "message": {
-      if (evt.subtype === "message_changed" || evt.subtype === "message_deleted") return
+      if (evt.subtype === "message_deleted") return
+      // message_changed on a parent carries updated reply_count etc. — mirror
+      // it onto the cached parent so the "N replies" indicator stays live.
+      if (evt.subtype === "message_changed") {
+        const outer = evt as unknown as {
+          channel: string
+          message: Message & {
+            reply_count?: number
+            reply_users?: string[]
+            reply_users_count?: number
+            latest_reply?: string
+          }
+        }
+        const inner = outer.message
+        if (!inner) return
+        setState(
+          produce((s) => {
+            const list = s.messagesByChannel[outer.channel] ?? []
+            const idx = list.findIndex((m) => m.ts === inner.ts)
+            if (idx >= 0) {
+              list[idx] = { ...list[idx]!, ...inner } as Message
+              s.messagesByChannel[outer.channel] = list
+            }
+          }),
+        )
+        return
+      }
       const msg = messageFromEvent(evt as MessageEvent)
+      const isReply = !!msg.thread_ts && msg.thread_ts !== msg.ts
       setState(
         produce((s) => {
+          if (isReply) {
+            // Replies go into the thread bucket, NOT the main channel feed.
+            const key = threadKey(evt.channel, msg.thread_ts!)
+            const rlist = s.repliesByThread[key] ?? []
+            const ridx = rlist.findIndex((m) => m.ts === msg.ts)
+            if (ridx >= 0) rlist[ridx] = msg
+            else rlist.push(msg)
+            rlist.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
+            s.repliesByThread[key] = rlist
+            return
+          }
           const list = s.messagesByChannel[evt.channel] ?? []
           const idx = list.findIndex((m) => m.ts === msg.ts)
           if (idx >= 0) list[idx] = msg
@@ -222,6 +292,14 @@ function applyEvent(setState: SetStoreFunction<WorkspaceState>, evt: SlackEvent)
       // Phase 4+ will flesh these out. v0 UI ignores safely.
       return
   }
+}
+
+function threadKey(channelId: string, parentTs: string): string {
+  return `${channelId}:${parentTs}`
+}
+
+export function useThreadKey(channelId: string, parentTs: string): string {
+  return threadKey(channelId, parentTs)
 }
 
 function messageFromEvent(evt: MessageEvent): Message {

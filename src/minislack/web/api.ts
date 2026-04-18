@@ -68,6 +68,12 @@ export function conversationsHistory(token: string, channel: string, limit = 200
   return callSlack<HistoryResp>("/api/conversations.history", token, { channel, limit })
 }
 
+export interface RepliesResp { ok: true; messages: Message[]; has_more: boolean }
+
+export function conversationsReplies(token: string, channel: string, ts: string, limit = 500) {
+  return callSlack<RepliesResp>("/api/conversations.replies", token, { channel, ts, limit })
+}
+
 export async function openConversation(
   token: string,
   opts: { users?: string; channel?: string },

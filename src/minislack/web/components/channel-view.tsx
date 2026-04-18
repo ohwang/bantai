@@ -45,7 +45,11 @@ export function ChannelView() {
   }
   const messages = () => {
     const id = ws.state.selectedChannel
-    return id ? ws.state.messagesByChannel[id] ?? [] : []
+    if (!id) return []
+    const all = ws.state.messagesByChannel[id] ?? []
+    // Thread replies live in the drawer, not the channel feed. A reply has
+    // thread_ts set to something other than its own ts.
+    return all.filter((m) => !m.thread_ts || m.thread_ts === m.ts)
   }
 
   async function onSubmit(text: string) {
@@ -138,6 +142,10 @@ function MessageRow(props: { msg: Message }) {
   }
   const isBot = () => !!author()?.is_bot || !!props.msg.bot_id
   const files = () => props.msg.files ?? []
+  const replyCount = () => props.msg.reply_count ?? 0
+  function openThread() {
+    ws.openThread(props.msg.channel, props.msg.ts)
+  }
   return (
     <div class="msg">
       <div classList={{ avatar: true, bot: isBot() }}>
@@ -157,7 +165,24 @@ function MessageRow(props: { msg: Message }) {
             <For each={files()}>{(f) => <FileView file={f} />}</For>
           </div>
         </Show>
+        <Show when={replyCount() > 0}>
+          <button class="msg-thread-link" type="button" onClick={openThread}>
+            {replyCount()} {replyCount() === 1 ? "reply" : "replies"}
+            <Show when={props.msg.latest_reply}>
+              {" "}· view thread
+            </Show>
+          </button>
+        </Show>
       </div>
+      <button
+        class="msg-actions-reply"
+        type="button"
+        onClick={openThread}
+        title="Reply in thread"
+        aria-label="Reply in thread"
+      >
+        ↩
+      </button>
     </div>
   )
 }

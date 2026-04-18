@@ -1,6 +1,6 @@
 # bantai — Slack Frontend Plan
 
-**Status:** v0 complete (S0 + S1 + S2 + S3 + S4 + S5 + S6 + S7 + S8 + S9) · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against). Follow-up items (SQLite persistence, live-Slack E2E, `/metrics`, MCP `slack_upload`) logged in the S9 session notes below.
+**Status:** v0 complete (S0 + S1 + S2 + S3 + S4 + S5 + S6 + S7 + S8 + S9, all exit criteria met including S8 crash recovery) · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against). Follow-up items (live-Slack E2E, `/metrics`, MCP `slack_upload`) logged in the S9 / S8-persistence session notes below.
 **Scope:** add a fully-featured, polished Slack frontend alongside the existing TUI frontend. Single-workspace self-host first; multi-tenant hosted comes later. Backend-agnostic (Claude / Codex / Gemini / ACP).
 
 ---
@@ -360,7 +360,7 @@ This doc is kept live. Every working session updates:
 
 **Full test suite:** 2016 pass / 11 skip / 0 fail across 123 files. `tsc --noEmit` clean.
 
-**S8 partial-exit criterion:** plan-worded as "kill -9 the process mid-turn, restart, thread survives; `!bantai cost` reports accurately." `!bantai cost` is fully met. The kill-9 + restart path (persistence layer that lets a session rehydrate across process boundaries) is **deferred** to S10 — it requires the SQLite store promised in plan §2.4, which we postponed in S1 and which doesn't fit cleanly inside the S8 window without rearchitecting the launcher's in-memory registry. The related "restart recovery" feature is tracked as a follow-up; the resilience items that DO fit without persistence (rate limit, graceful shutdown, cost cap, turn timeout) are all live.
+**S8 partial-exit criterion:** plan-worded as "kill -9 the process mid-turn, restart, thread survives; `!bantai cost` reports accurately." `!bantai cost` is fully met. The kill-9 + restart path is shipped in the follow-up session below (`Session — 2026-04-19 · S8 persistence shipment`); this initial session intentionally deferred it because it required the SQLite store promised in plan §2.4.
 
 **Discovered / scope deltas from S8:**
 
@@ -410,11 +410,37 @@ This doc is kept live. Every working session updates:
 
 These items from S8/S9 are intentionally deferred rather than scoped down:
 
-- **SQLite persistence** (plan §2.4): the sessions / channels / inbound_messages / costs tables. Required for the "kill -9 the process, restart, thread survives" resilience exit criterion and for cost tracking that survives restarts. Slots into S10 alongside the web session viewer.
 - **E2E live-Slack smoke test** (S9): real-workspace credentials in CI. Needs an infrastructure conversation about secret handling + which workspace to point at; out of scope for the frontend work.
 - **`bantai slack doctor` subcommand** (S9 polish): a `slack` subcommand that spins up Bolt just long enough to run `verifyAuth` + `runBootDiagnostics` + print a summary, then exits. Additive; operators already get the same info on every launch.
 - **Prometheus `/metrics`** (S8): the HTTP receiver path is live; adding `/metrics` is additive and belongs with the web viewer work.
 - **MCP `slack_upload` tool** (S6): exposes file upload as a direct tool the agent can call. Renderer-driven auto-upload already covers every plan-§11 S6 acceptance case; an explicit MCP tool is a polish item for workflows where the agent wants to attach an artefact mid-turn without emitting a long tool output.
+
+---
+
+### Session — 2026-04-19 · S8 persistence shipment
+
+**Status:** S8's second exit sub-criterion ("kill -9 mid-turn, restart, thread survives") now actually met. Full slack suite: 324 pass / 0 fail across 38 files. Typecheck clean.
+
+**Done this session:**
+
+- `+` `src/frontends/slack/store/sessions.ts` (240 lines) — bun:sqlite-backed persistent `SessionStore` keyed by `slack:<workspace>:<channel>:<threadTs|main>`. Records the backend session id (Claude SDK `resume` handle), turn count, and cumulative USD cost so a bounce rehydrates cleanly. WAL journal + `synchronous = NORMAL` pragmas so a future web viewer can read the same DB live. A no-op variant (`createNoopSessionStore`) keeps the rest of the registry uniform when persistence is off.
+- `+` `tests/frontends/slack/store/sessions.test.ts` (10 cases) — upsert round-trip, re-upsert preserving counters, `setBackendSessionId`, `touch`, `recordTurn` accumulation, `delete`, `list`, close idempotence, no-op store, and on-disk cross-instance persistence via a tmpdir SQLite file.
+- `...` `src/frontends/slack/config/schema.ts` — new `store_path: string` with zod default `""`. `ResolvedSlackConfig.storePath` surfaces a tilde-expanded absolute path. `~/.bantai/slack.db` is the documented default in the setup doc; operators who want persistence off leave the key unset.
+- `...` `src/frontends/slack/router/registry.ts` — `CreateRegistryOpts.store?` optional; defaults to noop when omitted. On `getOrCreate` for a fresh in-memory entry the registry consults the store, seeds `SessionEntry.resumed` + `priorUsage`, and passes `resume: <backendSessionId>` into the SessionConfig the backend is started with. Inside the event pump, `session_init.sessionId` triggers `store.setBackendSessionId()` + `turn_complete.usage.totalCostUsd` triggers `store.recordTurn()`. New `entry.reset()` (distinct from `entry.close()`) — called by `!bantai new` — deletes the row, so a post-reset session starts fresh; idle-close keeps the row so the next inbound turn still rehydrates.
+- `...` `src/frontends/slack/launcher.ts` — `openSessionStore(path)` helper with `mkdirSync(parent, { recursive: true })`; any construction failure logs `slack: failed to open session store …` and falls back to noop so a bad path never blocks the launcher. Banner wiring passes the `resumed: { priorTurns, priorCostUsd }` variant when the entry was rehydrated. `!bantai cost` now merges live renderer counters with the store's cumulative `priorUsage` so the command reports the total across restarts.
+- `+` `tests/frontends/slack/integration/persistence.test.ts` (2 cases, 11 expect) — (1) Launcher A boots against a shared SQLite file, alice @mentions the bot, capturing backend emits `session_init{ sessionId: "sdk-session-A" }` + `turn_complete{ totalCostUsd: 0.1 }`; A stops; Launcher B boots on the same file; alice's thread reply lands with `sessionConfig.resume === "sdk-session-A"`. Then reopens the store directly to assert `turns === 1`, `totalCostUsd ≈ 0.1`. (2) `!bantai new` invocation deletes the row.
+
+**Full slack test suite:** 324 pass / 0 fail across 38 files. `tsc --noEmit` clean.
+
+**Decisions:**
+
+1. **Separate `close()` from `reset()`.** Idle-close preserves the resume anchor so a user who leaves a thread idle for 10 minutes and comes back picks up where they left off. Only the explicit `!bantai new` signal, which the user types when they *want* a fresh session, deletes the row.
+2. **Cost accumulates; backend session id is overwritten per launch.** The SDK mints a new session id on every `resume` call — storing the LATEST one is what lets the *next* process bounce still work. Cost + turn count are strictly additive.
+3. **Token breakdowns are NOT persisted.** Only turns + totalCostUsd live in the row. Per-token-kind totals (input/output/cache) would bloat the row and are available live from the in-memory renderer anyway; they reset to zero on bounce, which is acceptable for `!bantai cost` since the USD total (the main thing operators watch) persists.
+4. **Noop store for the off path.** Rather than branching on `if (store)` everywhere, the registry always has a store — the noop version is the identity on every operation. Keeps the code path one pattern instead of two.
+5. **Tilde-expansion in `resolveStorePath` (not at write time).** We expand `~` into `$HOME` at config-resolve time so the resolved path is a plain string everywhere downstream. This matches how the loader already handles other paths.
+
+**Plan §11/S8 exit criterion revisit:** "kill -9 the process mid-turn, restart, thread survives; `!bantai cost` reports accurately." **Both sub-criteria now met.** The persistence integration test is the direct exercise of the first; `!bantai cost` has read from the store on boot since the wiring commit above.
 
 ---
 

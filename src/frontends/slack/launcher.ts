@@ -1,19 +1,18 @@
 /**
  * Slack Launcher — boots the Slack frontend server.
  *
- * Phase S0 (this slice):
- *   1. Load slack.toml (cwd/~/.bantai/slack.toml) — validated with zod.
- *   2. Create a Bolt App (Socket Mode or HTTP), optionally pointed at
- *      minislack via the `slack_api_url` override.
- *   3. Register event handlers (message, app_mention, reactions, block
- *      actions, view submissions).
- *   4. For every inbound text message, post "ack" back to the same
- *      channel/thread.
+ * Phase S1 (current): wires the full round-trip pipeline:
  *
- * Phases S1+ replace the ack handler with:
- *   - inbox → router → SessionHost → AgentBackend pipeline,
- *   - a rich view layer (reactions, Block Kit cards, streaming),
- *   - SQLite persistence.
+ *   Slack event → inbox (dedup + gate + turn-build) → router (resolver +
+ *   session registry) → SessionHost.send → backend emits AgentEvents →
+ *   view event-renderer → chat.postMessage.
+ *
+ * Each inbound text message drives a full agent turn. The bot posts one
+ * assistant message per turn (no streaming yet — S2 adds streaming + status
+ * reactions).
+ *
+ * Phase S2+ plug in: streaming (three-tier), reaction state machine, Block
+ * Kit cards, approvals, SQLite persistence.
  */
 
 import type { App } from "@slack/bolt"
@@ -22,7 +21,20 @@ import { log } from "../../utils/logger"
 import { loadSlackConfig } from "./config/loader"
 import type { ResolvedSlackConfig } from "./config/schema"
 import { createBoltApp, verifyAuth } from "./transport/bolt"
-import { postMessage, registerEvents, type InboundSlackEvent } from "./transport/events"
+import { registerEvents, type InboundSlackEvent } from "./transport/events"
+import {
+  createSessionRegistry,
+  type SessionEntry,
+  type SessionRegistry,
+  type BuildHostOpts,
+  type HostPair,
+} from "./router/registry"
+import { resolveProjectForChannel } from "./router/resolver"
+import { createDedupCache } from "./inbox/dedup"
+import { decideGate } from "./inbox/gate"
+import { buildInboundTurn } from "./inbox/turn-builder"
+import { createEventRenderer } from "./view/event-renderer"
+import { createUserCache, type UserCache } from "./view/user-cache"
 
 export interface LaunchSlackOpts extends CLIFlags {
   /** Explicit slack.toml path — takes precedence over config search. */
@@ -39,12 +51,19 @@ export interface LaunchSlackOpts extends CLIFlags {
    * Integration tests use this; the CLI path does not.
    */
   returnHandle?: boolean
+  /**
+   * Test hook — override the router's host factory (e.g. plug in a stub
+   * backend that emits canned events). Production code leaves this unset.
+   */
+  buildHost?: (opts: BuildHostOpts) => HostPair
 }
 
 export interface SlackLaunchHandle {
   app: App
   config: ResolvedSlackConfig
   botUserId: string
+  registry: SessionRegistry
+  userCache: UserCache
   stop(): Promise<void>
 }
 
@@ -57,7 +76,6 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     cwd: opts.config.cwd,
     inline: opts.slackConfigInline,
   })
-
   if (opts.slackApiUrlOverride) {
     config.workspace.slackApiUrl = opts.slackApiUrlOverride
   }
@@ -71,52 +89,142 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   const app = createBoltApp({ config })
   await app.start()
   const auth = await verifyAuth(app)
+  const launchCwd = opts.config.cwd ?? process.cwd()
+  const workspaceId = auth.teamId ?? "unknown"
+
+  const registry = createSessionRegistry({
+    workspace: workspaceId,
+    ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
+  })
+  const dedup = createDedupCache()
+  const userCache = createUserCache(app)
 
   registerEvents({
     app,
     botUserId: auth.botUserId,
-    onInbound: buildAckHandler(app),
+    onInbound: buildRoutingHandler({
+      app,
+      config,
+      registry,
+      dedup,
+      userCache,
+      botUserId: auth.botUserId,
+      workspaceId,
+      launchCwd,
+      renderedEntries: new WeakSet(),
+    }),
   })
 
-  log.info(`slack: server ready — bot user ${auth.botUserId}`)
+  log.info(`slack: server ready — bot user ${auth.botUserId}, team ${workspaceId}`)
 
   const handle: SlackLaunchHandle = {
     app,
     config,
     botUserId: auth.botUserId,
+    registry,
+    userCache,
     async stop() {
+      registry.closeAll()
       await app.stop()
     },
   }
 
   if (opts.returnHandle) return handle
 
-  // CLI path: block until SIGINT / SIGTERM, then shut down cleanly.
   await waitForSignal()
   log.info("slack: received shutdown signal — stopping")
-  await app.stop()
+  await handle.stop()
   return undefined
 }
 
 // ---------------------------------------------------------------------------
-// S0 handler — "ack" every inbound text message.
+// S1 inbound handler — the round-trip pipeline
 // ---------------------------------------------------------------------------
 
-function buildAckHandler(app: App) {
-  return async (event: InboundSlackEvent): Promise<void> => {
-    if (event.kind !== "message" && event.kind !== "app_mention") return
-    const threadTs = event.threadTs ?? event.ts
-    await postMessage(app, {
-      channel: event.channel,
-      threadTs,
-      text: `ack: received "${truncate(event.text, 80)}"`,
-    })
-  }
+interface RoutingCtx {
+  app: App
+  config: ResolvedSlackConfig
+  registry: SessionRegistry
+  dedup: ReturnType<typeof createDedupCache>
+  userCache: UserCache
+  botUserId: string
+  workspaceId: string
+  launchCwd: string
+  /** Tracks which session entries already have an event-renderer subscribed. */
+  renderedEntries: WeakSet<SessionEntry>
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s
-  return `${s.slice(0, max - 1)}…`
+function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Promise<void> {
+  return async (event) => {
+    if (event.kind !== "message" && event.kind !== "app_mention") {
+      // Other event kinds are routed by later phases (reactions → commands,
+      // block actions → approvals). For S1 we short-circuit.
+      return
+    }
+    // Dedup by channel:ts. Both message and app_mention carry both.
+    const key = `${event.channel}:${event.ts}`
+    if (!ctx.dedup.markFresh(key)) {
+      log.debug(`slack: duplicate ${event.kind} ${key}, ignoring`)
+      return
+    }
+
+    const sessionParts = {
+      workspace: ctx.workspaceId,
+      channelId: event.channel,
+      threadTs: event.threadTs,
+    }
+    const existing = ctx.registry.peek(sessionParts)
+
+    const project = resolveProjectForChannel(ctx.config, event.channel, {
+      launchCwd: ctx.launchCwd,
+    })
+
+    const decision = decideGate({
+      channel: event.channel,
+      text: event.text,
+      threadTs: event.threadTs,
+      botUserId: ctx.botUserId,
+      requireMention: project.requireMention,
+      autoJoinThreads: project.autoJoinThreads,
+      threadHasActiveSession: !!existing,
+    })
+    if (!decision.accept) {
+      log.debug(`slack: gate rejected ${event.kind} ${key} (${decision.reason})`)
+      return
+    }
+
+    const displayName = await ctx.userCache.displayName(event.user)
+    const turn = buildInboundTurn({
+      text: event.text,
+      channel: event.channel,
+      ts: event.ts,
+      threadTs: event.threadTs,
+      userId: event.user,
+      userDisplayName: displayName,
+      botUserId: ctx.botUserId,
+    })
+
+    // Lazy-create the SessionHost on first turn; subsequent turns reuse it.
+    const entry = ctx.registry.getOrCreate(
+      sessionParts,
+      project,
+      turn.parentTs,
+    )
+
+    // Attach a renderer once per session. The WeakSet on the closure tracks
+    // which entries are already bound so we don't double-subscribe on
+    // subsequent turns into the same thread.
+    if (!ctx.renderedEntries.has(entry)) {
+      ctx.renderedEntries.add(entry)
+      const renderer = createEventRenderer({
+        app: ctx.app,
+        binding: { channel: turn.channel, threadTs: turn.parentTs },
+      })
+      entry.subscribe(renderer.onEvent)
+    }
+
+    entry.send({ text: turn.text })
+  }
 }
 
 // ---------------------------------------------------------------------------

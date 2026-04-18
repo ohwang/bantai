@@ -99,6 +99,49 @@ export const DefaultsSchema = z
 export type DefaultsConfig = z.infer<typeof DefaultsSchema>
 
 // ---------------------------------------------------------------------------
+// [mcp_servers.<name>]  — global registry of available MCP servers.
+//
+// Per-channel configs list names from this registry to opt in; an unlisted
+// channel sees the SDK's default (claude's built-in MCP set, nothing for
+// other backends). Three shapes are supported, matching the Claude SDK's
+// discriminated union: stdio (the common case), http, and sse. Every
+// secret-bearing field (env values, HTTP headers) accepts the SecretRef
+// indirection so tokens stay out of the TOML on disk.
+// ---------------------------------------------------------------------------
+
+const McpStdioServerSchema = z
+  .object({
+    type: z.literal("stdio").optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), SecretRefSchema).optional(),
+  })
+  .strict()
+
+const McpHttpServerSchema = z
+  .object({
+    type: z.literal("http"),
+    url: z.string().url(),
+    headers: z.record(z.string(), SecretRefSchema).optional(),
+  })
+  .strict()
+
+const McpSseServerSchema = z
+  .object({
+    type: z.literal("sse"),
+    url: z.string().url(),
+    headers: z.record(z.string(), SecretRefSchema).optional(),
+  })
+  .strict()
+
+export const McpServerSpecSchema = z.union([
+  McpStdioServerSchema,
+  McpHttpServerSchema,
+  McpSseServerSchema,
+])
+export type McpServerSpec = z.infer<typeof McpServerSpecSchema>
+
+// ---------------------------------------------------------------------------
 // [[channels]]  — reserved for S1+; validated but unused in S0.
 // ---------------------------------------------------------------------------
 
@@ -130,6 +173,12 @@ export const SlackConfigSchema = z
     workspace: WorkspaceSchema,
     defaults: DefaultsSchema.optional().default({}),
     channels: z.array(ChannelOverrideSchema).default([]),
+    /**
+     * Global MCP server registry. Channels reference these by name via
+     * `[[channels]].mcp_servers = ["git", "brave-search"]`. Empty by
+     * default — most self-hosts rely on the backend's built-in MCP set.
+     */
+    mcp_servers: z.record(z.string(), McpServerSpecSchema).default({}),
   })
   .strict()
 export type SlackConfig = z.infer<typeof SlackConfigSchema>
@@ -150,6 +199,14 @@ export interface ResolvedSlackConfig {
   }
   defaults: DefaultsConfig
   channels: ChannelOverride[]
+  /**
+   * Global MCP registry — name → server spec (stdio/http/sse). Channels
+   * opt in by listing names in `mcp_servers = [...]`. Secrets in env/
+   * headers are NOT yet resolved here — `resolveMcpServersForChannel`
+   * resolves them lazily per-session so process.env mutations between
+   * boot and first turn are picked up.
+   */
+  mcpServers: Record<string, McpServerSpec>
   /** Where the config was loaded from, for log lines + diagnostics. */
   source: string
 }
@@ -171,6 +228,7 @@ export function resolveSlackConfig(
     },
     defaults: parsed.defaults,
     channels: parsed.channels,
+    mcpServers: parsed.mcp_servers,
     source,
   }
 }

@@ -275,6 +275,9 @@ export function buildSessionConfigFromProject(
     ...(project.model ? { model: project.model } : {}),
     ...(project.systemPromptAppend ? { systemPrompt: project.systemPromptAppend } : {}),
     ...(project.allowedTools ? { allowedTools: project.allowedTools } : {}),
+    ...(project.resolvedMcpServers
+      ? { mcpServers: project.resolvedMcpServers }
+      : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   }
   return { ...base, ...overlay }

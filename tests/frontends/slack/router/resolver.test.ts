@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { loadSlackConfig } from "../../../../src/frontends/slack/config/loader"
-import { resolveProjectForChannel } from "../../../../src/frontends/slack/router/resolver"
+import {
+  resolveMcpServersForChannel,
+  resolveProjectForChannel,
+} from "../../../../src/frontends/slack/router/resolver"
+import type { McpServerSpec } from "../../../../src/frontends/slack/config/schema"
 
 async function makeConfig(inline: unknown, env: NodeJS.ProcessEnv = {}) {
   return await loadSlackConfig({ inline, env })
@@ -100,5 +104,59 @@ describe("resolveProjectForChannel", () => {
     const proj = resolveProjectForChannel(cfg, "C0MISSING", { launchCwd: "/cwd", env: {} })
     expect(proj.env.MISSING).toBeUndefined()
     expect(Object.keys(proj.env).length).toBe(0)
+  })
+
+  it("parses the global mcp_servers registry and filters per-channel", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      mcp_servers: {
+        git: { command: "mcp-git", args: ["--repo", "."] },
+        search: {
+          type: "http",
+          url: "https://example.com/mcp",
+          headers: { Authorization: "Bearer token" },
+        },
+      },
+      channels: [{ id: "C0MCP", mcp_servers: ["git"] }],
+    })
+    expect(Object.keys(cfg.mcpServers)).toEqual(["git", "search"])
+    const proj = resolveProjectForChannel(cfg, "C0MCP", { launchCwd: "/cwd" })
+    expect(proj.resolvedMcpServers).toBeDefined()
+    expect(Object.keys(proj.resolvedMcpServers!)).toEqual(["git"])
+    const git = proj.resolvedMcpServers!["git"]
+    expect(git).toEqual({ command: "mcp-git", args: ["--repo", "."] })
+  })
+
+  it("channels without mcp_servers leave resolvedMcpServers undefined", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      mcp_servers: { git: { command: "mcp-git" } },
+      channels: [{ id: "C0NO_MCP" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0NO_MCP", { launchCwd: "/cwd" })
+    expect(proj.resolvedMcpServers).toBeUndefined()
+  })
+})
+
+describe("resolveMcpServersForChannel", () => {
+  const registry: Record<string, McpServerSpec> = {
+    git: { command: "mcp-git", args: [] },
+    search: { type: "http", url: "https://example.com/mcp" },
+  }
+
+  it("returns undefined when the channel doesn't opt in", () => {
+    expect(resolveMcpServersForChannel(registry, undefined, "C0")).toBeUndefined()
+  })
+  it("returns {} when the channel explicitly disables all servers", () => {
+    expect(resolveMcpServersForChannel(registry, [], "C0")).toEqual({})
+  })
+  it("returns the named subset", () => {
+    expect(resolveMcpServersForChannel(registry, ["git"], "C0")).toEqual({
+      git: { command: "mcp-git", args: [] },
+    })
+  })
+  it("drops unknown names but keeps the known ones", () => {
+    const out = resolveMcpServersForChannel(registry, ["git", "typo"], "C0")
+    expect(Object.keys(out!)).toEqual(["git"])
   })
 })

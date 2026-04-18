@@ -12,7 +12,8 @@
  * already-resolved slack config and receives a typed ProjectConfig back.
  */
 
-import type { ResolvedSlackConfig, VerbosityLevel } from "../config/schema"
+import type { McpServerSpec, ResolvedSlackConfig, VerbosityLevel } from "../config/schema"
+import { log } from "../../../utils/logger"
 
 export type BackendId = "claude" | "codex" | "gemini" | "copilot" | "acp" | "mock"
 
@@ -39,6 +40,13 @@ export interface ProjectConfig {
   allowedTools?: string[]
   /** Subset of MCP servers to load. Undefined → load all. */
   mcpServers?: string[]
+  /**
+   * Fully-resolved MCP server map, ready to hand to
+   * `SessionConfig.mcpServers`. Empty map → use backend defaults.
+   * Populated by `resolveProjectForChannel` from the global
+   * `[mcp_servers.<name>]` registry, filtered by `mcpServers` above.
+   */
+  resolvedMcpServers?: Record<string, McpServerSpec>
   /** Slack user ids authorised to approve tool use. Empty → everyone can. */
   approvers: string[]
   /** Max verbosity of bot output in the channel. */
@@ -94,6 +102,12 @@ export function resolveProjectForChannel(
   const verbosity = override?.verbosity ?? defaults.verbosity
   const requireMention = override?.require_mention ?? defaults.require_mention
 
+  const resolvedMcpServers = resolveMcpServersForChannel(
+    config.mcpServers,
+    override?.mcp_servers,
+    channelId,
+  )
+
   return {
     channelId,
     channelName: override?.name,
@@ -104,6 +118,7 @@ export function resolveProjectForChannel(
     systemPromptAppend: override?.system_prompt_append,
     allowedTools: override?.allowed_tools,
     mcpServers: override?.mcp_servers,
+    ...(resolvedMcpServers ? { resolvedMcpServers } : {}),
     approvers,
     verbosity,
     requireMention,
@@ -114,6 +129,41 @@ export function resolveProjectForChannel(
     autoJoinThreads: defaults.auto_join_threads,
     env: resolveEnvRefs(override?.env, env),
   }
+}
+
+/**
+ * Resolve the per-channel MCP server subset against the global registry.
+ *
+ * - If the channel doesn't list any names (`undefined`) → `undefined`
+ *   (use backend defaults — don't touch `SessionConfig.mcpServers`).
+ * - If the channel lists `[]` → `{}` (explicitly empty — disable every
+ *   registered server for this channel).
+ * - Otherwise → pick the subset by name. Unknown names log a single
+ *   `log.warn` so misconfiguration is visible without crashing the
+ *   launcher.
+ */
+export function resolveMcpServersForChannel(
+  registry: Record<string, McpServerSpec>,
+  requestedNames: string[] | undefined,
+  channelIdForLog: string,
+): Record<string, McpServerSpec> | undefined {
+  if (requestedNames === undefined) return undefined
+  const out: Record<string, McpServerSpec> = {}
+  const unknown: string[] = []
+  for (const name of requestedNames) {
+    const spec = registry[name]
+    if (!spec) {
+      unknown.push(name)
+      continue
+    }
+    out[name] = spec
+  }
+  if (unknown.length > 0) {
+    log.warn(
+      `slack: channel ${channelIdForLog} references unknown MCP servers: ${unknown.join(", ")} (registry keys: ${Object.keys(registry).join(", ") || "<empty>"})`,
+    )
+  }
+  return out
 }
 
 function resolveEnvRefs(

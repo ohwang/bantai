@@ -20,7 +20,7 @@ import type { CLIFlags } from "../../cli/options"
 import { log } from "../../utils/logger"
 import { loadSlackConfig } from "./config/loader"
 import type { ResolvedSlackConfig } from "./config/schema"
-import { createBoltApp, verifyAuth } from "./transport/bolt"
+import { createBoltApp, runBootDiagnostics, verifyAuth } from "./transport/bolt"
 import { registerEvents, type InboundSlackEvent } from "./transport/events"
 import {
   createSessionRegistry,
@@ -128,6 +128,12 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   const app = createBoltApp({ config })
   await app.start()
   const auth = await verifyAuth(app)
+  // Boot-time scope probes — best-effort, never blocks startup. Log each
+  // finding as a warn so operators see the missing-scope list without
+  // having to know which probe failed.
+  for (const f of await runBootDiagnostics(app)) {
+    log.warn(`slack diagnostic: ${f.message}`)
+  }
   const launchCwd = opts.config.cwd ?? process.cwd()
   const workspaceId = auth.teamId ?? "unknown"
 

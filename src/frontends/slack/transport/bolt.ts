@@ -114,6 +114,58 @@ export async function verifyAuth(app: App): Promise<{
   return payload
 }
 
+/**
+ * Best-effort boot-time diagnostics. After auth.test has succeeded, poke
+ * a handful of "cheap" Slack API calls that each require a specific scope
+ * bantai uses, and log a warn for any that come back with `missing_scope`
+ * or `invalid_auth`. Boots proceed either way — operators see the list so
+ * they know which scopes to add at the admin console.
+ *
+ * Each probe is tiny, cacheable, or no-op in effect:
+ *   - conversations.list(limit=1, types=public_channel) — exercises
+ *     `channels:read`. Works on any workspace that has at least one
+ *     public channel (all do).
+ *   - users.list(limit=1) — exercises `users:read`.
+ *   - reactions.list(limit=1) — exercises `reactions:read`.
+ *
+ * Non-probe: `chat:write` is validated indirectly when the bot tries to
+ * post its first message. We intentionally don't fire a probe post to
+ * avoid spamming the workspace on boot.
+ */
+export interface DiagnosticFinding {
+  code: string
+  message: string
+}
+
+export async function runBootDiagnostics(
+  app: App,
+): Promise<DiagnosticFinding[]> {
+  const findings: DiagnosticFinding[] = []
+  async function probe(code: string, fn: () => Promise<{ ok?: boolean; error?: string }>) {
+    try {
+      const res = await fn()
+      if (!res.ok) {
+        findings.push({
+          code,
+          message: `probe ${code} returned error=${res.error ?? "unknown"}`,
+        })
+      }
+    } catch (err) {
+      const message = (err as { data?: { error?: string }; message?: string })
+      const errCode = message.data?.error ?? message.message ?? String(err)
+      findings.push({ code, message: `probe ${code} threw: ${errCode}` })
+    }
+  }
+  await probe("channels.read", () =>
+    app.client.conversations.list({ limit: 1, types: "public_channel" }),
+  )
+  await probe("users.read", () => app.client.users.list({ limit: 1 }))
+  await probe("reactions.read", () =>
+    app.client.reactions.list({ limit: 1 }),
+  )
+  return findings
+}
+
 function withApiSuffix(url: string): string {
   if (url.endsWith("/")) return `${url}api/`
   if (url.endsWith("/api/")) return url

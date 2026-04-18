@@ -70,6 +70,10 @@ export interface ProjectConfig {
   showCost: boolean
   /** Should the bot auto-attach to threads it's posted in without re-mention? */
   autoJoinThreads: boolean
+  /** Max seconds a single turn may run before auto-interrupt. 0 → disabled. */
+  turnTimeoutS: number
+  /** Max cumulative USD per session. 0 → disabled. */
+  maxBudgetUsd: number
   /** Extra env vars to pass to the backend process. Resolved from SecretRefs. */
   env: Record<string, string>
 }
@@ -136,6 +140,8 @@ export function resolveProjectForChannel(
     sessionBanner: defaults.session_banner,
     showCost: defaults.show_cost,
     autoJoinThreads: defaults.auto_join_threads,
+    turnTimeoutS: override?.turn_timeout_s ?? defaults.turn_timeout_s,
+    maxBudgetUsd: override?.max_budget_usd ?? defaults.max_budget_usd,
     env: resolveEnvRefs(override?.env, env),
   }
 }

@@ -94,6 +94,18 @@ export const DefaultsSchema = z
      * renders per-category token breakdowns.
      */
     show_cost: z.boolean().default(false),
+    /**
+     * Maximum seconds a single turn may run before the renderer interrupts
+     * it via `backend.interrupt()`. 0 or undefined → disabled. Implemented
+     * at the renderer level so per-channel overrides work naturally.
+     */
+    turn_timeout_s: z.number().int().nonnegative().default(0),
+    /**
+     * Hard session cost cap in USD. When cumulative session cost exceeds
+     * this, the next turn is interrupted on turn_start and subsequent
+     * turns refuse to run until `!bantai new`. 0 or undefined → disabled.
+     */
+    max_budget_usd: z.number().nonnegative().default(0),
   })
   .strict()
 export type DefaultsConfig = z.infer<typeof DefaultsSchema>
@@ -160,6 +172,8 @@ export const ChannelOverrideSchema = z
     verbosity: VerbosityLevelSchema.optional(),
     require_mention: z.boolean().optional(),
     permission_mode: z.string().optional(),
+    turn_timeout_s: z.number().int().nonnegative().optional(),
+    max_budget_usd: z.number().nonnegative().optional(),
     env: z.record(z.string(), SecretRefSchema).optional(),
   })
   .strict()

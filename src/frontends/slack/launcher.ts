@@ -468,6 +468,17 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
         },
         verbosity: project.verbosity,
         showCost: project.showCost,
+        turnTimeoutS: project.turnTimeoutS,
+        onTurnTimeout: () => {
+          // Driver the backend to actually stop producing events — the
+          // renderer's :hourglass: post is decorative; the interrupt is
+          // load-bearing.
+          entry.host.backend.interrupt()
+        },
+        maxBudgetUsd: project.maxBudgetUsd,
+        onBudgetExceeded: () => {
+          entry.host.backend.interrupt()
+        },
         approvals: ctx.approvals.bindSession({
           sessionKey: entry.key,
           approvers: project.approvers,

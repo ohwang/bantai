@@ -143,6 +143,28 @@ export interface CreateRendererOpts {
    * to 200 lines.
    */
   toolOutputFileLines?: number
+  /**
+   * Optional per-turn deadline in seconds. When set, the renderer arms a
+   * timer on turn_start and calls `onTurnTimeout()` if turn_complete hasn't
+   * landed by then. 0 / undefined → disabled.
+   */
+  turnTimeoutS?: number
+  /**
+   * Called when `turnTimeoutS` elapses before a turn_complete arrives. The
+   * launcher wires this to `backend.interrupt()` so the backend actually
+   * stops producing events. Pure function — the renderer itself only
+   * renders the :hourglass_flowing_sand: warning, it does NOT call the
+   * backend directly (keeps the module frontend-agnostic).
+   */
+  onTurnTimeout?: () => void
+  /**
+   * Optional session-wide cost cap in USD. Checked on every turn_complete;
+   * if cumulative cost crosses the threshold, `onBudgetExceeded()` is
+   * called once (subsequent turns still fire the callback so the launcher
+   * can choose to gate them). 0 / undefined → disabled.
+   */
+  maxBudgetUsd?: number
+  onBudgetExceeded?: (cumulativeUsd: number, cap: number) => void
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
@@ -175,6 +197,10 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     verbosity !== "silent" && verbosity !== "concise"
   const showCost = opts.showCost ?? false
   const toolOutputFileLines = Math.max(1, opts.toolOutputFileLines ?? 200)
+  const turnTimeoutMs = (opts.turnTimeoutS ?? 0) * 1000
+  const maxBudgetUsd = opts.maxBudgetUsd ?? 0
+  let turnTimeoutTimer: ReturnType<typeof setTimeout> | undefined
+  let budgetAlreadyExceeded = false
   const fileClient: SlackFileClient | undefined =
     opts.fileClient ?? (isLiveApp(app) ? buildSlackFileClient(app) : undefined)
 
@@ -223,6 +249,53 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     totalCostUsd: 0,
+  }
+
+  function armTurnTimeout(): void {
+    if (turnTimeoutMs <= 0) return
+    clearTurnTimeout()
+    turnTimeoutTimer = setTimeout(() => {
+      turnTimeoutTimer = undefined
+      if (!inTurn) return
+      try {
+        opts.onTurnTimeout?.()
+      } catch (err) {
+        log.error(`slack renderer: onTurnTimeout threw: ${String(err)}`)
+      }
+      void sendAdapter
+        .postMessage({
+          channel: binding.channel,
+          threadTs: binding.threadTs,
+          text: `:hourglass_flowing_sand: turn exceeded ${opts.turnTimeoutS ?? 0}s — interrupting`,
+        })
+        .catch((err) => log.warn(`slack renderer: timeout notice post failed: ${String(err)}`))
+    }, turnTimeoutMs)
+  }
+
+  function clearTurnTimeout(): void {
+    if (turnTimeoutTimer !== undefined) {
+      clearTimeout(turnTimeoutTimer)
+      turnTimeoutTimer = undefined
+    }
+  }
+
+  function maybeNotifyBudget(): void {
+    if (maxBudgetUsd <= 0) return
+    if (cumulative.totalCostUsd < maxBudgetUsd) return
+    if (budgetAlreadyExceeded) return
+    budgetAlreadyExceeded = true
+    try {
+      opts.onBudgetExceeded?.(cumulative.totalCostUsd, maxBudgetUsd)
+    } catch (err) {
+      log.error(`slack renderer: onBudgetExceeded threw: ${String(err)}`)
+    }
+    void sendAdapter
+      .postMessage({
+        channel: binding.channel,
+        threadTs: binding.threadTs,
+        text: `:moneybag: session cost $${cumulative.totalCostUsd.toFixed(4)} crossed cap $${maxBudgetUsd.toFixed(2)} — interrupting`,
+      })
+      .catch((err) => log.warn(`slack renderer: budget notice post failed: ${String(err)}`))
   }
 
   function ensureStream(): OutboundStream {
@@ -573,6 +646,7 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
           inTurn = true
           finalText = undefined
           resetTurnState()
+          armTurnTimeout()
           break
         case "text_delta":
           if (verbosity !== "silent") ensureStream().append(event.text)
@@ -596,6 +670,8 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
               event.usage.cacheWriteTokens ?? 0
             cumulative.totalCostUsd += event.usage.totalCostUsd ?? 0
           }
+          clearTurnTimeout()
+          maybeNotifyBudget()
           void endTurn("done").catch((err) =>
             log.error(`slack renderer: endTurn threw: ${String(err)}`),
           )
@@ -714,6 +790,7 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     },
     destroy() {
       batcher.destroy()
+      clearTurnTimeout()
       if (inTurn) {
         void endTurn("interrupted").catch(() => undefined)
       } else {

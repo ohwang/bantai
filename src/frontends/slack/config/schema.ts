@@ -159,6 +159,7 @@ export const ChannelOverrideSchema = z
     approvers: z.array(z.string()).optional(),
     verbosity: VerbosityLevelSchema.optional(),
     require_mention: z.boolean().optional(),
+    permission_mode: z.string().optional(),
     env: z.record(z.string(), SecretRefSchema).optional(),
   })
   .strict()

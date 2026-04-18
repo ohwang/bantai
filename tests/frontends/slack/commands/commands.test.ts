@@ -64,6 +64,7 @@ function project(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     approvers: [],
     verbosity: "normal",
     requireMention: true,
+    permissionMode: "default",
     triggerName: "bantai",
     controlPrefix: "!bantai",
     sessionBanner: true,

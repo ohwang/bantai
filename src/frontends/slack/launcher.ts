@@ -30,6 +30,7 @@ import {
   type HostPair,
 } from "./router/registry"
 import { resolveProjectForChannel } from "./router/resolver"
+import { auditSlackConfig } from "./router/audit"
 import { createDedupCache } from "./inbox/dedup"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
@@ -113,6 +114,16 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       (config.workspace.slackApiUrl ? `, api=${config.workspace.slackApiUrl}` : "") +
       `)`,
   )
+
+  // Run the boot-time config audit BEFORE we stand up Bolt / the registry.
+  // Findings are informational; we still proceed with launch so a partial
+  // misconfiguration doesn't block the operator.
+  for (const finding of auditSlackConfig(config, {
+    launchCwd: opts.config.cwd ?? process.cwd(),
+  })) {
+    if (finding.severity === "warn") log.warn(`slack audit: ${finding.message}`)
+    else log.info(`slack audit: ${finding.message}`)
+  }
 
   const app = createBoltApp({ config })
   await app.start()

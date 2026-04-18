@@ -49,6 +49,13 @@ export interface ProjectConfig {
   resolvedMcpServers?: Record<string, McpServerSpec>
   /** Slack user ids authorised to approve tool use. Empty → everyone can. */
   approvers: string[]
+  /**
+   * Backend permission mode: "default" (prompt on mutating tools),
+   * "plan" (read-only), "acceptEdits" (auto-accept edits), or
+   * "bypassPermissions" (no prompts). Strings rather than a literal
+   * union so new SDK modes don't require a schema bump.
+   */
+  permissionMode: string
   /** Max verbosity of bot output in the channel. */
   verbosity: VerbosityLevel
   /** Does the bot require an @mention in channels? DMs are always triggered. */
@@ -101,6 +108,7 @@ export function resolveProjectForChannel(
   const approvers = override?.approvers ?? defaults.approvers
   const verbosity = override?.verbosity ?? defaults.verbosity
   const requireMention = override?.require_mention ?? defaults.require_mention
+  const permissionMode = override?.permission_mode ?? defaults.permission_mode
 
   const resolvedMcpServers = resolveMcpServersForChannel(
     config.mcpServers,
@@ -122,6 +130,7 @@ export function resolveProjectForChannel(
     approvers,
     verbosity,
     requireMention,
+    permissionMode,
     triggerName: defaults.trigger_name,
     controlPrefix: defaults.control_prefix,
     sessionBanner: defaults.session_banner,

@@ -73,6 +73,21 @@ export interface EventRenderer {
   flush(): void
   /** Stop the renderer. Does NOT post any pending text. */
   destroy(): void
+  /**
+   * Cumulative cost + token totals for this session, summed across every
+   * turn the renderer has seen. Drives `!bantai cost` and the future cost
+   * cap (plan §S8). Fresh renderers report zeros.
+   */
+  cumulativeUsage(): CumulativeUsage
+}
+
+export interface CumulativeUsage {
+  turns: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  totalCostUsd: number
 }
 
 export interface CreateRendererOpts {
@@ -198,6 +213,17 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   let lastInputTokens = 0
   let lastOutputTokens = 0
   let lastCostUsd = 0
+  // Session-cumulative usage — sums every turn_complete.usage plus every
+  // standalone cost_usage event. Exposed via renderer.cumulativeUsage()
+  // for `!bantai cost` and future cost-cap enforcement.
+  const cumulative: CumulativeUsage = {
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    totalCostUsd: 0,
+  }
 
   function ensureStream(): OutboundStream {
     if (!stream) {
@@ -560,6 +586,16 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
           break
         case "turn_complete":
           if (event.usage) turnUsage = event.usage
+          // Session-cumulative usage update.
+          cumulative.turns += 1
+          if (event.usage) {
+            cumulative.inputTokens += event.usage.inputTokens ?? 0
+            cumulative.outputTokens += event.usage.outputTokens ?? 0
+            cumulative.cacheReadTokens += event.usage.cacheReadTokens ?? 0
+            cumulative.cacheCreationTokens +=
+              event.usage.cacheWriteTokens ?? 0
+            cumulative.totalCostUsd += event.usage.totalCostUsd ?? 0
+          }
           void endTurn("done").catch((err) =>
             log.error(`slack renderer: endTurn threw: ${String(err)}`),
           )
@@ -684,6 +720,9 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
         cancelPendingApprovals()
         cancelPendingElicitations()
       }
+    },
+    cumulativeUsage() {
+      return { ...cumulative }
     },
   }
 }

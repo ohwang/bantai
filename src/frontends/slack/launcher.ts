@@ -573,6 +573,20 @@ async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
       const list = await existing.host.backend.availableModels()
       return list.map((m) => m.id)
     },
+    cumulativeUsage() {
+      const renderer = existing ? ctx.renderers.get(existing) : undefined
+      if (!renderer) {
+        return {
+          turns: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          totalCostUsd: 0,
+        }
+      }
+      return renderer.cumulativeUsage()
+    },
     project,
     workspace: sessionParts.workspace,
     channel,

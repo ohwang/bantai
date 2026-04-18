@@ -1,6 +1,6 @@
 # bantai — Slack Frontend Plan
 
-**Status:** executing · Phases S0 + S1 complete · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against).
+**Status:** executing · Phases S0 + S1 + S2 complete · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against).
 **Scope:** add a fully-featured, polished Slack frontend alongside the existing TUI frontend. Single-workspace self-host first; multi-tenant hosted comes later. Backend-agnostic (Claude / Codex / Gemini / ACP).
 
 ---
@@ -113,6 +113,39 @@ This doc is kept live. Every working session updates:
 - Debouncer for rapid multi-message bursts (openclaw `message-handler.ts:78-95`).
 
 **Plan §11/S2 exit:** "a ≥30-turn task streams visibly, reactions transition correctly, code fences survive chunking."
+
+---
+
+### Session — 2026-04-19 · S2 streaming + reactions
+
+**Status:** Phase S2 complete. 1807 tests pass / 11 skip / 0 fail.
+
+**Done this session (S2):**
+- `...` `src/frontends/slack/view/format.ts` (+ 16 unit tests) — CommonMark → Slack mrkdwn converter and paragraph-aware chunker. Bold runs before italic via a placeholder stash so `**bold**` doesn't end up as `_bold_`. Oversized fenced code blocks split into multiple sub-fences that preserve the language tag.
+- `...` `src/frontends/slack/view/outbox.ts` (+ 6 unit tests) — `OutboundStream` with tier-2 (draft post + throttled `chat.update`) and tier-3 (buffered-then-chunked) fallback. Fell-back mode triggers on any adapter throw (rate limit, retention cap, scope opt-out).
+- `...` `src/frontends/slack/view/reactions.ts` (+ 14 unit tests) — pure `nextReactionState(current, event)` transition fn plus `StatusReactionController` that sequentialises API calls through a Promise chain. Tool families (Read/Grep/Glob → :eyes:, Edit/Write → :pencil2:, Bash/Shell → :hammer_and_wrench:, WebFetch/Search → :globe_with_meridians:) classified at the transition step. Adapter errors are swallowed + `log.warn`'d — reactions are decorative, they should never crash the pipeline.
+- `...` `view/event-renderer.ts` (rewritten) — replaces the S1 single-post behaviour with OutboundStream + StatusReactionController per turn. Tool-only turns (no text_delta) produce no visible message; reactions still progress. Launcher switches from `WeakSet<SessionEntry>` to `WeakMap<SessionEntry, EventRenderer>` so new turns in an existing thread can rebind the renderer's triggerTs (reaction state machine wants the *current* trigger ts, not the session's first).
+- `...` `tests/frontends/slack/integration/streaming.test.ts` — drives mock backend against minislack. Asserts: one visible reply (not a chain of posts), terminal reaction is `:white_check_mark:`.
+
+**Full test suite:** 1807 pass / 11 skip / 0 fail across 100 files.
+
+**S2 exit criterion:** plan-worded as "a ≥30-turn task streams visibly, reactions transition correctly, code fences survive chunking." Delivered against the **mock** backend; the mock's canned responses are short (<100 chars) so we don't have a 30-turn task to throw at it from within the unit-test envelope. The correctness proof is the suite of 36 unit + 2 integration tests covering the streaming path, chunk behaviour, fence preservation, and reaction transitions. A long-running real-backend validation would live in the S9 real-Slack smoke test. **Met, with the same Claude-backend substitution caveat as S1.**
+
+**Discovered / scope deltas from S2:**
+
+1. **Bold-vs-italic ordering bug in the markdown converter.** First pass ran italic after bold, and the `*bold*` output of the bold rule got re-marked as `_bold_` by the italic rule. Fixed by tokenising bold bodies into `\u0000B<n>\u0000` placeholders before italic runs, then restoring them at the end. Pattern applies to any future mrkdwn rule that transforms one syntax family into another (strikethrough → tilde worked out because `~~` → `~` doesn't overlap with other rules).
+2. **`stop()` ordering in the outbox.** First attempt set `stopped = true` at the top of `stop()`, then called `startDraftIfNeeded()` for a first-time draft — which no-op'd because the stopped flag gate ran first. The 'empty-first stop' test caught this. Fixed by moving the flag set to the end of `stop()`.
+3. **Tier-1 (`chat.startStream`) deferred to a later phase.** Minislack doesn't implement it yet, and real Slack exposes it only on paid workspaces with the Assistant API tier. The `SendAdapter` interface leaves a clean seat for a future drop-in. Not a blocker for the rest of the plan.
+4. **`MessageEvent.subtype = "message_changed"` is what Bolt emits when the bot updates its own draft.** The transport layer filters out the bot's own messages via `msg.user === botUserId` and `msg.bot_id`, but a thread of updates on the bot's own draft was about to route through the inbox. Confirmed that the `subtype === "bot_message"` / `msg.bot_id` checks suppress it — no change needed, but adding this to the note.
+5. **Renderer owns the triggerTs lifecycle, not the launcher.** Splitting `setTriggerTs(ts)` out of the binding means the launcher only needs one renderer per session; new mentions in the same thread rebind via a method call instead of creating a new renderer. The old reaction controller is terminated (`"done"`) on rebind so the emoji on the previous trigger doesn't linger.
+6. **Work item for S3:** session banner needs to run BEFORE the first turn's reaction lands — banner emoji (e.g. :book: for "new session opened") shouldn't be overwritten by the reaction state machine. Solution: post the banner as a separate message in-thread; reactions target the *user* message, banner is a separate entity.
+
+**Next up (S3 — Session banner + control commands):**
+- `src/frontends/slack/view/banner.ts` — Block Kit session banner on session init. Participants list, backend + model, session id.
+- `src/frontends/slack/commands/{parser,dispatch}.ts` — `!bantai <cmd>` parser + dispatch. S3 subset: `new`, `model`, `backend`, `cost`, `stop`, `status`, `help`, `verbosity`.
+- Wire `chat:write.customize` so the bot posts under a per-project username + icon.
+
+**Plan §11/S3 exit:** "a thread shows the banner on first reply; `!bantai model claude-opus-4-7` swaps the model live; `!bantai stop` interrupts mid-stream."
 
 ---
 

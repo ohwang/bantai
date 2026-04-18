@@ -36,9 +36,13 @@
     "@openai/codex-sdk": "^0.120.0",
     "@opentui/core": "0.1.99",
     "@opentui/solid": "0.1.99",
+    "@slack/bolt": "^4.7.0",
+    "@slack/web-api": "^7.15.0",
     "commander": "^14.0.3",
     "fuzzysort": "^3.1.0",
-    "solid-js": "^1.9.0"
+    "smol-toml": "^1.4.3",
+    "solid-js": "^1.9.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@slack/types": "^2.20.1",

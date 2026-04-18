@@ -194,6 +194,13 @@ export const SlackConfigSchema = z
      * default — most self-hosts rely on the backend's built-in MCP set.
      */
     mcp_servers: z.record(z.string(), McpServerSpecSchema).default({}),
+    /**
+     * SQLite path for per-session persistence (plan §S8 crash recovery).
+     * Tilde-expansion and default resolution happen in the loader. An
+     * empty string disables persistence — restarts start every thread
+     * fresh.
+     */
+    store_path: z.string().default(""),
   })
   .strict()
 export type SlackConfig = z.infer<typeof SlackConfigSchema>
@@ -222,6 +229,11 @@ export interface ResolvedSlackConfig {
    * boot and first turn are picked up.
    */
   mcpServers: Record<string, McpServerSpec>
+  /**
+   * Resolved absolute path to the session-persistence SQLite file. Empty
+   * string → persistence disabled (registry uses a no-op store).
+   */
+  storePath: string
   /** Where the config was loaded from, for log lines + diagnostics. */
   source: string
 }
@@ -244,6 +256,23 @@ export function resolveSlackConfig(
     defaults: parsed.defaults,
     channels: parsed.channels,
     mcpServers: parsed.mcp_servers,
+    storePath: resolveStorePath(parsed.store_path, env),
     source,
   }
+}
+
+/**
+ * Resolve the session-store path:
+ *   - Empty string (`""` — explicit) → persistence disabled.
+ *   - `~/...` → expanded against `$HOME` (or /tmp fallback on odd envs).
+ *   - Any other absolute or relative path is returned verbatim.
+ */
+function resolveStorePath(raw: string, env: NodeJS.ProcessEnv): string {
+  if (!raw) return ""
+  if (raw.startsWith("~")) {
+    const home = env.HOME ?? env.USERPROFILE ?? ""
+    if (!home) return raw
+    return `${home}${raw.slice(1)}`
+  }
+  return raw
 }

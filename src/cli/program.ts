@@ -143,6 +143,38 @@ export async function runCli(argv: string[]): Promise<void> {
     })
   })
   slackCmd
+    .command("doctor")
+    .description("Verify slack.toml + workspace install without starting the server")
+    .option(
+      "--slack-config <path>",
+      "Path to slack.toml (default: ./.bantai/slack.toml, ~/.bantai/slack.toml)",
+    )
+    .option(
+      "--slack-api-url <url>",
+      "Override the Slack Web API base URL (e.g. minislack)",
+    )
+    .action(async (subOpts: {
+      slackConfig?: string
+      slackApiUrl?: string
+    }) => {
+      const { runSlackDoctor, formatSlackDoctorReport } = await import(
+        "../frontends/slack/doctor"
+      )
+      try {
+        const report = await runSlackDoctor({
+          ...(subOpts.slackConfig ? { configPath: subOpts.slackConfig } : {}),
+          ...(subOpts.slackApiUrl ? { slackApiUrlOverride: subOpts.slackApiUrl } : {}),
+        })
+        // eslint-disable-next-line no-console
+        console.log(formatSlackDoctorReport(report))
+        process.exit(report.findings.length === 0 ? 0 : 1)
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`slack doctor failed: ${(err as Error).message ?? String(err)}`)
+        process.exit(2)
+      }
+    })
+  slackCmd
     .command("init-manifest")
     .description("Print a Slack app manifest for bantai (paste into api.slack.com)")
     .option("--format <json|yaml>", "Output format (default: yaml)", "yaml")

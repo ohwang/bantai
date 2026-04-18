@@ -835,6 +835,17 @@ export interface SessionConfig {
   thinking?: ThinkingConfig
   /** Effort level for controlling reasoning depth */
   effort?: EffortLevel
+  /**
+   * Extra environment variables to inject into the backend spawn. Used by
+   * the Slack frontend to isolate per-channel settings — notably
+   * `CLAUDE_CONFIG_DIR`, `NPM_CONFIG_CACHE`, and auth tokens — so two
+   * channels can run different skills/MCP auth without colliding.
+   *
+   * Claude adapter: passes this verbatim into the SDK's `env` option, which
+   * is merged on top of `process.env`. Backends that don't support a
+   * per-query env (e.g. mock, ACP presets) ignore the field.
+   */
+  env?: Record<string, string>
 }
 
 /** Backend that owns a session */

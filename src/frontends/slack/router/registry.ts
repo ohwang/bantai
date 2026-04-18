@@ -141,11 +141,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
     parentTs: string,
     sessionConfigOverlay: Partial<SessionConfig> | undefined,
   ): SessionEntry {
-    const sessionConfig: SessionConfig = {
-      cwd: project.projectDir,
-      ...(project.model ? { model: project.model } : {}),
-      ...sessionConfigOverlay,
-    }
+    const sessionConfig: SessionConfig = buildSessionConfigFromProject(project, sessionConfigOverlay)
     const { host, backend } = buildHost({ project, sessionConfig })
 
     const subscribers = new Set<EventSubscriber>()
@@ -243,6 +239,45 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
     },
   }
   return registry
+}
+
+// ---------------------------------------------------------------------------
+// SessionConfig builder — maps ProjectConfig into the protocol-level config.
+// Exported for unit tests + for the banner/dispatch layers to reflect what
+// the backend will actually see without duplicating the precedence rules.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a SessionConfig that reflects the per-channel ProjectConfig:
+ *
+ *   - project.projectDir          → sessionConfig.cwd
+ *   - project.model               → sessionConfig.model
+ *   - project.systemPromptAppend  → sessionConfig.systemPrompt
+ *   - project.allowedTools        → sessionConfig.allowedTools
+ *   - project.mcpServers (subset) → sessionConfig.mcpServers
+ *   - project.claudeConfigDir     → sessionConfig.env.CLAUDE_CONFIG_DIR
+ *   - project.env (freeform)      → merged into sessionConfig.env
+ *   - overlay                     → shallow-merged on top of everything
+ *
+ * The overlay wins so callers (e.g. /switch, future session resume) can
+ * override specific fields without having to rebuild the full map.
+ */
+export function buildSessionConfigFromProject(
+  project: ProjectConfig,
+  overlay?: Partial<SessionConfig>,
+): SessionConfig {
+  const env: Record<string, string> = { ...project.env }
+  if (project.claudeConfigDir && project.backend === "claude") {
+    env.CLAUDE_CONFIG_DIR = project.claudeConfigDir
+  }
+  const base: SessionConfig = {
+    cwd: project.projectDir,
+    ...(project.model ? { model: project.model } : {}),
+    ...(project.systemPromptAppend ? { systemPrompt: project.systemPromptAppend } : {}),
+    ...(project.allowedTools ? { allowedTools: project.allowedTools } : {}),
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+  }
+  return { ...base, ...overlay }
 }
 
 // ---------------------------------------------------------------------------

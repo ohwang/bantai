@@ -762,6 +762,12 @@ export class ClaudeAdapter implements AgentBackend {
       includePartialMessages: true,
       ...(config.thinking ? { thinking: config.thinking } : {}),
       ...(config.effort ? { effort: config.effort } : {}),
+      // Per-session env for per-channel isolation (Slack frontend S7):
+      // the SDK merges this on top of process.env, so we only need to
+      // forward the delta here.
+      ...(config.env && Object.keys(config.env).length > 0
+        ? { env: { ...process.env, ...config.env } }
+        : {}),
     }
     log.info("ClaudeAdapter: options built", {
       model: opts.model,

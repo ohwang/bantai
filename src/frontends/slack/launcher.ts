@@ -159,6 +159,11 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       }
     },
   })
+  // Flip to true in handle.stop() so the inbound routing layer can
+  // shortcut new turns with a "shutting down" ack instead of spinning up
+  // a doomed SessionHost.
+  const shuttingDown = { value: false }
+
   const attachmentStagingDir =
     opts.attachmentStagingDir ??
     pathJoin(homedir(), ".bantai", "slack-attachments")
@@ -210,6 +215,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       renderers: new WeakMap(),
       projectOverrides: new Map(),
       bannerPosted: new WeakSet(),
+      shuttingDown,
     }),
   })
 
@@ -222,6 +228,10 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     registry,
     userCache,
     async stop() {
+      // Stop accepting new turns BEFORE tearing anything down so inbound
+      // events that race the signal get an ephemeral "shutting down"
+      // rather than being dispatched into a session that's about to die.
+      shuttingDown.value = true
       approvals.closeAll()
       elicitations.closeAll()
       registry.closeAll()
@@ -270,6 +280,13 @@ interface RoutingCtx {
   projectOverrides: Map<string, ProjectConfig>
   /** Sessions for which we've already posted the banner. */
   bannerPosted: WeakSet<SessionEntry>
+  /**
+   * Set to true once `handle.stop()` begins. Inbound events arriving after
+   * this briefly ack with a "bot is shutting down" ephemeral and drop on
+   * the floor — rather than spinning up a fresh session that will die
+   * mid-turn when `registry.closeAll()` runs moments later.
+   */
+  shuttingDown: { value: boolean }
 }
 
 /**
@@ -305,6 +322,23 @@ function parseSessionKey(
 
 function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Promise<void> {
   return async (event) => {
+    if (ctx.shuttingDown.value) {
+      // Best-effort: only message/app_mention events have a channel we can
+      // ephemerally reply on. Approvals/elicitations quietly drop since
+      // their coordinators have already been closed by `stop()`.
+      if (event.kind === "message" || event.kind === "app_mention") {
+        try {
+          await ctx.app.client.chat.postEphemeral({
+            channel: event.channel,
+            user: event.user,
+            text: ":zzz: bantai is shutting down — please retry in a moment",
+          })
+        } catch (err) {
+          log.debug(`slack: shutdown ephemeral post failed: ${String(err)}`)
+        }
+      }
+      return
+    }
     if (event.kind === "block_action") {
       const approvalRes = await ctx.approvals.handleBlockAction({
         actionId: event.actionId,

@@ -221,6 +221,23 @@ A missing Anthropic / OpenAI / etc. API key. Check your backend's CLI works stan
 bun run ./src/index.ts   # launches the TUI — if the backend errors here, it'll error in Slack too
 ```
 
+## End-to-end smoke test against your workspace
+
+The repo ships an optional live-Slack smoke test at `tests/e2e/slack-live.test.ts`. It skips by default (CI keeps working without credentials). Opt in by exporting three env vars and running the test:
+
+```bash
+export BANTAI_SLACK_LIVE_BOT_TOKEN=xoxb-…
+export BANTAI_SLACK_LIVE_APP_TOKEN=xapp-…
+export BANTAI_SLACK_LIVE_CHANNEL=C0...         # a channel the bot is in
+bun test tests/e2e/slack-live.test.ts
+```
+
+The test boots the launcher against real Slack, posts an `@bantai` probe, and polls for the bot's reply in the same thread. Costs are capped at `$0.50` and `60s` so a misbehaving backend can't run up the bill.
+
+## Metrics
+
+When `workspace.mode = "http"`, the launcher exposes a Prometheus-compatible `/metrics` endpoint on the same HTTP receiver as the Events API. Point your scraper at `http://<host>:<port>/metrics` — the surface includes `bantai_slack_turn_started_total`, `_completed_total`, `_errored_total`, `_approval_{requested,approved,denied}_total`, `_cost_usd_sum`, and a `_sessions_active` gauge. Socket Mode has no HTTP surface so the endpoint isn't exposed there, but the same counters can be read via `SlackLaunchHandle.metrics.snapshot()` in tests.
+
 ## Session persistence
 
 With `store_path` set, bantai writes a small SQLite row per live (channel, thread) pair tracking the backend session id + cumulative turn count + USD cost. A process restart (deploy, crash, `kill -9`) rehydrates each thread's session on the next inbound message — the backend resumes instead of starting fresh, and `!bantai cost` continues to report totals across restarts. `!bantai new` explicitly forgets the row for its thread.

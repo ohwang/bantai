@@ -138,13 +138,13 @@ export async function runCli(argv: string[]): Promise<void> {
   const minislackCmd = new Command("minislack")
     .description("Run a fake Slack workspace (dev + integration tests)")
     .option("--port <n>", "Port (default 3102; 0 = ephemeral)", "3102")
-    .option("--persist", "Persist to ~/.bantai/minislack/<workspace>/")
+    .option("--persist [dir]", "Persist state to <dir> (default: ~/.bantai/minislack/default)")
     .option("--fixture <name>", "empty | basic | threaded | multi-user", "basic")
     .option("--no-web", "Skip serving the web UI")
   minislackCmd.action(async () => {
     const opts = minislackCmd.opts() as {
       port?: string
-      persist?: boolean
+      persist?: boolean | string
       fixture?: string
       web?: boolean
     }
@@ -153,10 +153,16 @@ export async function runCli(argv: string[]): Promise<void> {
       console.error(`Error: --port must be a non-negative integer, got "${opts.port}"`)
       process.exit(1)
     }
+    const persist =
+      typeof opts.persist === "string"
+        ? opts.persist
+        : opts.persist === true
+          ? "__default__"
+          : undefined
     await launchMinislack({
       port: portNum,
       fixture: (opts.fixture ?? "basic") as FixtureName,
-      persist: opts.persist ? "default" : undefined,
+      persist,
       serveWeb: opts.web !== false,
     })
   })

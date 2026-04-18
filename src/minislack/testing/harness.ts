@@ -17,6 +17,9 @@ import { buildWebBundle, type WebBundle } from "../server/web-bundle"
 import type { Workspace, User, Channel, Message } from "../types/slack"
 import type { SlackEvent } from "../types/events"
 import { applyFixture, type FixtureName } from "./fixtures"
+import { createDiskStorage } from "../storage/disk"
+import { createMemoryStorage } from "../storage/memory"
+import type { StorageBackend } from "../storage/types"
 
 export interface UserClient {
   user: User
@@ -56,19 +59,33 @@ export interface WorkspaceSnapshot {
 export interface StartMinislackOpts {
   /** 0 = ephemeral port (default for tests). */
   port?: number
-  /** Preset or a snapshot to rehydrate. Phase 1 supports only named presets. */
+  /** Preset to seed a fresh workspace. Ignored if --persist has saved state. */
   fixture?: FixtureName
-  /** Reserved for Phase 8. */
+  /**
+   * When set, persist workspace state to this directory.
+   * `<persist>/workspace.json` + `<persist>/files/<id>.bin` are loaded at
+   * startup (if present) and rewritten on mutations.
+   */
   persist?: string
   /** Reserved for Phase 2. */
   serveWeb?: boolean
 }
 
 export async function startMinislack(opts: StartMinislackOpts = {}): Promise<MinislackHandle> {
-  const ws = createWorkspace({ teamName: "Minislack", teamDomain: "minislack" })
   const bus = createEventBus()
+  const storage: StorageBackend = opts.persist
+    ? createDiskStorage({ root: opts.persist })
+    : createMemoryStorage()
 
-  if (opts.fixture) applyFixture(ws, opts.fixture)
+  let ws: Workspace | null = await storage.load()
+  if (!ws) {
+    ws = createWorkspace({ teamName: "Minislack", teamDomain: "minislack" })
+    if (opts.fixture) applyFixture(ws, opts.fixture)
+  } else if (opts.fixture) {
+    console.warn(
+      `[minislack] --persist loaded existing state; ignoring fixture '${opts.fixture}'`,
+    )
+  }
 
   const sockets = createSocketsRegistry()
 
@@ -114,6 +131,15 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
   baseHttp = `http://${host}:${resolvedPort}`
   wsBase = `ws://${host}:${resolvedPort}`
 
+  // Persisted file URLs carry an absolute base from a prior run. Rebase them
+  // onto this run's host:port so clients can fetch bytes.
+  for (const file of ws.files.values()) {
+    file.url_private = rebaseFileUrl(file.url_private, baseHttp)
+    file.url_private_download = rebaseFileUrl(file.url_private_download, baseHttp)
+  }
+
+  const unsubStorage = storage.attach(ws, bus)
+
   const handle: MinislackHandle = {
     port: resolvedPort,
     url: baseHttp,
@@ -137,6 +163,8 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
       return snapshotWorkspace(ws)
     },
     async stop() {
+      unsubStorage()
+      await storage.stop()
       server.stop(true)
     },
   }
@@ -146,6 +174,16 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Swap the scheme+host+port prefix of a persisted file URL with the current
+ * server base. Leaves anything after the host untouched (path, query).
+ */
+function rebaseFileUrl(prev: string, baseHttp: string): string {
+  const match = prev.match(/^https?:\/\/[^/]+/)
+  if (!match) return prev
+  return baseHttp + prev.slice(match[0].length)
+}
 
 function resolveOrCreateUser(ws: Workspace, nameOrId: string): User {
   if (ws.users.has(nameOrId)) return ws.users.get(nameOrId)!

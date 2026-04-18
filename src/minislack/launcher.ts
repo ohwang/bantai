@@ -5,21 +5,28 @@
  * and blocks on SIGINT. Ctrl+C → handle.stop() → exit.
  */
 
+import path from "node:path"
+import os from "node:os"
 import { startMinislack } from "./testing/harness"
 import type { FixtureName } from "./testing/fixtures"
 
 export interface MinislackFlags {
   port?: number
   fixture?: FixtureName
+  /** Pass "__default__" for ~/.bantai/minislack/default, or an absolute path. */
   persist?: string
   serveWeb?: boolean
 }
 
 export async function launchMinislack(flags: MinislackFlags): Promise<void> {
+  const persistDir = flags.persist === "__default__"
+    ? path.join(os.homedir(), ".bantai", "minislack", "default")
+    : flags.persist
+
   const handle = await startMinislack({
     port: flags.port,
     fixture: flags.fixture ?? "basic",
-    persist: flags.persist,
+    persist: persistDir,
     serveWeb: flags.serveWeb,
   })
 

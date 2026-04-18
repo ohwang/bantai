@@ -122,6 +122,14 @@ export function getFileBytes(ws: Workspace, fileId: string): Uint8Array | undefi
 }
 
 /**
+ * Seed bytes for a file id without creating a record. Used by the storage
+ * layer during rehydration so that reloaded files serve the same content.
+ */
+export function setFileBytes(ws: Workspace, fileId: string, bytes: Uint8Array): void {
+  getBytesMap(ws).set(fileId, bytes)
+}
+
+/**
  * Attach an existing file to a channel's message `files[]` array and emit
  * `file_shared`. Safe to call multiple times — the file id is deduped and
  * the channel id is appended to the file record's channel list only once.

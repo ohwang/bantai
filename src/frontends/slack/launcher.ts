@@ -33,7 +33,7 @@ import { resolveProjectForChannel } from "./router/resolver"
 import { createDedupCache } from "./inbox/dedup"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
-import { createEventRenderer } from "./view/event-renderer"
+import { createEventRenderer, type EventRenderer } from "./view/event-renderer"
 import { createUserCache, type UserCache } from "./view/user-cache"
 
 export interface LaunchSlackOpts extends CLIFlags {
@@ -111,7 +111,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       botUserId: auth.botUserId,
       workspaceId,
       launchCwd,
-      renderedEntries: new WeakSet(),
+      renderers: new WeakMap(),
     }),
   })
 
@@ -150,8 +150,12 @@ interface RoutingCtx {
   botUserId: string
   workspaceId: string
   launchCwd: string
-  /** Tracks which session entries already have an event-renderer subscribed. */
-  renderedEntries: WeakSet<SessionEntry>
+  /**
+   * One event-renderer per live session. We keep a map (not just a set) so
+   * the handler can update the per-turn triggerTs when a new mention lands
+   * in the same thread.
+   */
+  renderers: WeakMap<SessionEntry, EventRenderer>
 }
 
 function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Promise<void> {
@@ -219,13 +223,22 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
     // Attach a renderer once per session. The WeakSet on the closure tracks
     // which entries are already bound so we don't double-subscribe on
     // subsequent turns into the same thread.
-    if (!ctx.renderedEntries.has(entry)) {
-      ctx.renderedEntries.add(entry)
-      const renderer = createEventRenderer({
+    let renderer = ctx.renderers.get(entry)
+    if (!renderer) {
+      renderer = createEventRenderer({
         app: ctx.app,
-        binding: { channel: turn.channel, threadTs: turn.parentTs },
+        binding: {
+          channel: turn.channel,
+          threadTs: turn.parentTs,
+          triggerTs: turn.triggerTs,
+        },
       })
+      ctx.renderers.set(entry, renderer)
       entry.subscribe(renderer.onEvent)
+    } else {
+      // New turn from a new message in the same thread — rebind the
+      // reaction controller to the new trigger ts.
+      renderer.setTriggerTs(turn.triggerTs)
     }
 
     entry.send({ text: turn.text })

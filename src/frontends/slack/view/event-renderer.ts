@@ -46,6 +46,11 @@ import {
 } from "./blocks/tool-card"
 import { buildPlanBlocks } from "./blocks/plan"
 import { buildThinkingBlocks } from "./blocks/thinking"
+import {
+  buildSlackFileClient,
+  uploadFileBestEffort,
+  type SlackFileClient,
+} from "./upload"
 
 export interface RendererBinding {
   /** Channel id to post replies in. */
@@ -109,6 +114,20 @@ export interface CreateRendererOpts {
    * is emitted regardless).
    */
   showCost?: boolean
+  /**
+   * Test hook — replace the production file client that powers long-
+   * output auto-upload. When absent, the renderer builds one from `app`;
+   * when `app` itself is a stub (unit tests), any upload attempt will
+   * no-op silently via `uploadFileBestEffort`.
+   */
+  fileClient?: SlackFileClient
+  /**
+   * Threshold at which a tool_use_end.output triggers an auto-upload. Any
+   * output whose line count exceeds this is uploaded as a file and the
+   * tool card renders a permalink instead of an inline preview. Defaults
+   * to 200 lines.
+   */
+  toolOutputFileLines?: number
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
@@ -140,6 +159,9 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   const annotationsEnabled =
     verbosity !== "silent" && verbosity !== "concise"
   const showCost = opts.showCost ?? false
+  const toolOutputFileLines = Math.max(1, opts.toolOutputFileLines ?? 200)
+  const fileClient: SlackFileClient | undefined =
+    opts.fileClient ?? (isLiveApp(app) ? buildSlackFileClient(app) : undefined)
 
   let triggerTs: string | undefined = binding.triggerTs
   let stream: OutboundStream | undefined
@@ -363,19 +385,58 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     const input = toolInputCache.get(event.id)
     const started = toolStartTime.get(event.id)
     const elapsedMs = started !== undefined ? Date.now() - started : undefined
-    const card = buildToolCompletedCard({
-      id: event.id,
-      tool,
-      input,
-      output: event.output,
-      ...(event.error !== undefined ? { error: event.error } : {}),
-      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
-      verbosity,
-    })
-    if (!card) return
     const prior = toolChain.get(event.id) ?? Promise.resolve()
     const next = prior
       .then(async () => {
+        // Decide whether to offload the output to a file before rendering.
+        let renderOutput = event.output
+        let permalink: string | undefined
+        const lineCount = event.output ? event.output.split("\n").length : 0
+        if (
+          fileClient &&
+          !event.error &&
+          lineCount > toolOutputFileLines &&
+          event.output
+        ) {
+          const filename = suggestToolOutputFilename(tool, event.id)
+          const res = await uploadFileBestEffort(fileClient, {
+            filename,
+            content: event.output,
+            channel: binding.channel,
+            threadTs: binding.threadTs,
+          })
+          if (res) {
+            permalink = res.permalink ?? undefined
+            // Replace the body with a short summary — the upload carries
+            // the full content. The full output is still available via
+            // the permalink the card will show.  Stay strictly under the
+            // tool card's 6-line preview so none of this gets truncated.
+            const head = event.output.split("\n").slice(0, 4).join("\n")
+            renderOutput =
+              `${head}\n… full output (${lineCount} lines) in attached file`
+          }
+        }
+
+        const card = buildToolCompletedCard({
+          id: event.id,
+          tool,
+          input,
+          output: renderOutput,
+          ...(event.error !== undefined ? { error: event.error } : {}),
+          ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+          verbosity,
+        })
+        if (!card) return
+        // If we uploaded, append a permalink context block.
+        if (permalink) {
+          card.blocks.push({
+            type: "context",
+            elements: [
+              { type: "mrkdwn", text: `:paperclip: <${permalink}|Full output>` },
+            ],
+          })
+        }
+
         const ts = toolCardTs.get(event.id)
         try {
           if (ts) {
@@ -402,6 +463,14 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
       })
       .catch(() => undefined)
     toolChain.set(event.id, next)
+  }
+
+  function suggestToolOutputFilename(tool: string, toolId: string): string {
+    const base = `${tool.toLowerCase()}-${toolId.slice(0, 8)}`.replace(/[^a-z0-9_-]/g, "")
+    // Agents produce free-form output; default to .txt so syntax highlight
+    // doesn't misinterpret it. Callers that produce JSON/diff can still
+    // switch extension in a future polish pass.
+    return `${base}.txt`
   }
 
   /** Recover the tool name from the start event — tool_use_end doesn't carry it. */
@@ -666,6 +735,18 @@ export function buildCostFooter(args: {
     text: `cost: ${compact}${breakdown}`,
     blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }],
   }
+}
+
+/**
+ * True when `app` has a live Bolt client we can use for file uploads.
+ * Unit tests pass a `{} as App` stub — we detect the absence of the
+ * client and skip wiring the file surface so uploads silently no-op.
+ */
+function isLiveApp(app: App): boolean {
+  const client = (app as { client?: unknown }).client
+  if (!client || typeof client !== "object") return false
+  const files = (client as { files?: unknown }).files
+  return typeof files === "object" && files !== null
 }
 
 function formatTokens(n: number): string {

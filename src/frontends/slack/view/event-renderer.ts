@@ -26,6 +26,7 @@ import type { App } from "@slack/bolt"
 import type { ConversationEvent } from "../../../protocol/types"
 import { EventBatcher } from "../../../utils/event-batcher"
 import { log } from "../../../utils/logger"
+import type { ApprovalHook } from "../approvals/coordinator"
 import {
   createOutboundStream,
   type OutboundStream,
@@ -72,6 +73,13 @@ export interface CreateRendererOpts {
    * Test hook: replaces the live ReactionAdapter (reactions.add + reactions.remove).
    */
   reactionAdapter?: ReactionAdapter
+  /**
+   * Optional approval hook. When present, every `permission_request` event
+   * is handed off to the hook; the launcher wires this to the approval
+   * coordinator so cards land in Slack and clicks route back to the
+   * backend's canUseTool resolver.
+   */
+  approvals?: ApprovalHook
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
@@ -104,6 +112,9 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   let reactions: StatusReactionController | undefined
   let finalText: string | undefined
   let inTurn = false
+  /** permission_request ids we've handed off to approvals but not yet heard
+   *  a permission_response for. Used to auto-deny on interrupt/destroy. */
+  const pendingApprovals = new Set<string>()
 
   function ensureStream(): OutboundStream {
     if (!stream) {
@@ -129,8 +140,22 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     return reactions
   }
 
+  function cancelPendingApprovals(): void {
+    if (!opts.approvals || pendingApprovals.size === 0) return
+    const ids = Array.from(pendingApprovals)
+    pendingApprovals.clear()
+    for (const id of ids) {
+      try {
+        opts.approvals.onCancel(id)
+      } catch (err) {
+        log.error(`slack renderer: approval cancel threw for ${id}: ${String(err)}`)
+      }
+    }
+  }
+
   async function endTurn(terminal: "done" | "interrupted" | "error"): Promise<void> {
     inTurn = false
+    if (terminal !== "done") cancelPendingApprovals()
     const s = stream
     const r = reactions
     const final = finalText
@@ -178,6 +203,27 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
             void postErrorInline(event.code, event.message, event.severity ?? "recoverable")
           }
           break
+        case "permission_request":
+          if (opts.approvals) {
+            pendingApprovals.add(event.id)
+            try {
+              opts.approvals.onRequest({
+                request: event,
+                channel: binding.channel,
+                threadTs: binding.threadTs,
+              })
+            } catch (err) {
+              log.error(`slack renderer: approval onRequest threw: ${String(err)}`)
+            }
+          } else {
+            log.warn(
+              `slack renderer: permission_request ${event.id} (${event.tool}) — no approval hook wired, backend will block`,
+            )
+          }
+          break
+        case "permission_response":
+          pendingApprovals.delete(event.id)
+          break
         default:
           // Every other event is fed to reactions (above) but produces no
           // visible body. S3+ tool cards + plan updates hook here.
@@ -223,6 +269,8 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
       batcher.destroy()
       if (inTurn) {
         void endTurn("interrupted").catch(() => undefined)
+      } else {
+        cancelPendingApprovals()
       }
     },
   }

@@ -41,6 +41,10 @@ import { dispatchCommand, type CommandContext } from "./commands/dispatch"
 import type { VerbosityLevel } from "./config/schema"
 import type { ConversationEvent } from "../../protocol/types"
 import type { ProjectConfig } from "./router/resolver"
+import {
+  createApprovalCoordinator,
+  type ApprovalCoordinator,
+} from "./approvals/coordinator"
 
 export interface LaunchSlackOpts extends CLIFlags {
   /** Explicit slack.toml path — takes precedence over config search. */
@@ -104,6 +108,28 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   })
   const dedup = createDedupCache()
   const userCache = createUserCache(app)
+  const defaultAdapter = buildDefaultSendAdapter(app)
+  const approvals = createApprovalCoordinator({
+    adapter: defaultAdapter,
+    lookupSession(sessionKey) {
+      // Sessions are keyed by `slack:<workspace>:<channel>:<threadTs|main>`.
+      // Parse out the channel + thread and walk the registry.
+      const parts = parseSessionKey(sessionKey)
+      if (!parts) return undefined
+      const entry = registry.peek(parts)
+      if (!entry) return undefined
+      return {
+        approve: (id, opts) => {
+          entry.host.backend.approveToolUse(id, {
+            ...(opts?.alwaysAllow ? { alwaysAllow: true } : {}),
+          })
+        },
+        deny: (id, reason) => {
+          entry.host.backend.denyToolUse(id, reason)
+        },
+      }
+    },
+  })
 
   registerEvents({
     app,
@@ -117,6 +143,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       botUserId: auth.botUserId,
       workspaceId,
       launchCwd,
+      approvals,
       renderers: new WeakMap(),
       projectOverrides: new Map(),
       bannerPosted: new WeakSet(),
@@ -132,6 +159,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     registry,
     userCache,
     async stop() {
+      approvals.closeAll()
       registry.closeAll()
       await app.stop()
     },
@@ -158,6 +186,8 @@ interface RoutingCtx {
   botUserId: string
   workspaceId: string
   launchCwd: string
+  /** Cross-session approval coordinator (registry + block-actions handler). */
+  approvals: ApprovalCoordinator
   /**
    * One event-renderer per live session. We keep a map (not just a set) so
    * the handler can update the per-turn triggerTs when a new mention lands
@@ -174,11 +204,54 @@ interface RoutingCtx {
   bannerPosted: WeakSet<SessionEntry>
 }
 
+/**
+ * Parse a session key of the form `slack:<workspace>:<channel>:<threadTs|main>`
+ * back into the parts the registry expects. Returns undefined when the
+ * key doesn't match the expected shape — approval clicks arriving for a
+ * dead session then log + no-op rather than crashing.
+ */
+function parseSessionKey(
+  key: string,
+): { workspace: string; channelId: string; threadTs?: string } | undefined {
+  const parts = key.split(":")
+  if (parts.length !== 4) return undefined
+  if (parts[0] !== "slack") return undefined
+  const [, workspace, channelId, thread] = parts as [string, string, string, string]
+  return {
+    workspace,
+    channelId,
+    ...(thread === "main" ? {} : { threadTs: thread }),
+  }
+}
+
 function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Promise<void> {
   return async (event) => {
+    if (event.kind === "block_action") {
+      const res = await ctx.approvals.handleBlockAction({
+        actionId: event.actionId,
+        userId: event.user,
+        channel: event.channel,
+      })
+      if (res.kind === "unauthorized") {
+        // Best-effort ephemeral note so the clicker sees why nothing happened.
+        try {
+          if (event.channel) {
+            await ctx.app.client.chat.postEphemeral({
+              channel: event.channel,
+              user: event.user,
+              text: `You are not on the approver list for this action.`,
+            })
+          }
+        } catch (err) {
+          log.debug(`slack: chat.postEphemeral failed: ${String(err)}`)
+        }
+      } else if (res.kind === "malformed") {
+        log.debug(`slack: non-approval block_action ignored: ${event.actionId}`)
+      }
+      return
+    }
     if (event.kind !== "message" && event.kind !== "app_mention") {
-      // Other event kinds are routed by later phases (reactions → commands,
-      // block actions → approvals).
+      // Other event kinds are routed by later phases (reactions, file_shared).
       return
     }
     // Dedup by channel:ts. Both message and app_mention carry both.
@@ -258,6 +331,10 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
           threadTs: turn.parentTs,
           triggerTs: turn.triggerTs,
         },
+        approvals: ctx.approvals.bindSession({
+          sessionKey: entry.key,
+          approvers: project.approvers,
+        }),
       })
       ctx.renderers.set(entry, renderer)
       entry.subscribe(renderer.onEvent)

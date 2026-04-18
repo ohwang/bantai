@@ -106,6 +106,20 @@ export interface CreateRegistryOpts {
    * the rest of the registry code path stays uniform.
    */
   store?: SessionStore
+  /**
+   * Metrics hook. The registry increments lifecycle counters through this
+   * interface so the launcher's Prometheus `/metrics` endpoint reflects
+   * real session activity. Omitted in tests that don't care about metrics.
+   */
+  metrics?: RegistryMetricsHook
+}
+
+export interface RegistryMetricsHook {
+  onSessionOpened(activeCount: number): void
+  onSessionClosed(activeCount: number): void
+  onTurnStarted(): void
+  onTurnCompleted(addCostUsd: number): void
+  onTurnErrored(): void
 }
 
 export interface BuildHostOpts {
@@ -153,6 +167,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
   const idleMs = opts.idleTimeoutMs ?? 10 * 60 * 1000
   const buildHost = opts.buildHost ?? defaultBuildHost
   const store: SessionStore = opts.store ?? createNoopSessionStore()
+  const metrics: RegistryMetricsHook = opts.metrics ?? noopMetricsHook()
 
   function touchIdle(entry: SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> }) {
     if (entry._idleTimer) clearTimeout(entry._idleTimer)
@@ -221,6 +236,11 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
               } else if (event.type === "turn_complete") {
                 const addUsd = event.usage?.totalCostUsd ?? 0
                 store.recordTurn(key, addUsd)
+                metrics.onTurnCompleted(addUsd)
+              } else if (event.type === "turn_start") {
+                metrics.onTurnStarted()
+              } else if (event.type === "error" && event.severity === "fatal") {
+                metrics.onTurnErrored()
               }
             } catch (err) {
               log.warn(`slack: session store update failed for ${key}: ${String(err)}`)
@@ -279,6 +299,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
           log.error(`slack: host.close threw for ${key}: ${String(err)}`)
         }
         entries.delete(key)
+        metrics.onSessionClosed(entries.size)
       },
       reset() {
         try {
@@ -303,6 +324,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
       const entry = buildEntry(key, project, parentTs, parts, sessionConfigOverlay)
       entries.set(key, entry)
       touchIdle(entry as SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> })
+      metrics.onSessionOpened(entries.size)
       log.info(
         `slack: opened session ${key} (backend=${project.backend}, cwd=${project.projectDir}${entry.resumed ? ", resumed" : ""})`,
       )
@@ -322,6 +344,17 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
     },
   }
   return registry
+}
+
+/** Default no-op metrics hook — keeps the pump code path uniform. */
+function noopMetricsHook(): RegistryMetricsHook {
+  return {
+    onSessionOpened() {},
+    onSessionClosed() {},
+    onTurnStarted() {},
+    onTurnCompleted() {},
+    onTurnErrored() {},
+  }
 }
 
 // ---------------------------------------------------------------------------

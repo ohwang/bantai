@@ -27,9 +27,22 @@ export interface CreateBoltAppOpts {
    * isn't noisy in terminals; bantai's own log module handles routing.
    */
   logLevel?: LogLevel
+  /**
+   * Additional HTTP routes to register on the HTTPReceiver. Ignored for
+   * Socket Mode (no receiver surface to attach to). Used by the launcher
+   * to expose `/metrics` in http mode — see `metrics/collector.ts`.
+   */
+  customRoutes?: Array<{
+    path: string
+    method: string | string[]
+    handler: (
+      req: import("node:http").IncomingMessage,
+      res: import("node:http").ServerResponse,
+    ) => void
+  }>
 }
 
-export function createBoltApp({ config, logLevel }: CreateBoltAppOpts): App {
+export function createBoltApp({ config, logLevel, customRoutes }: CreateBoltAppOpts): App {
   const { workspace } = config
   if (!workspace.botToken) {
     throw new Error(
@@ -83,6 +96,9 @@ export function createBoltApp({ config, logLevel }: CreateBoltAppOpts): App {
     endpoints: workspace.webhookPath,
     logLevel: logLevel ?? LogLevel.WARN,
     clientOptions: baseClientOptions,
+    ...(customRoutes && customRoutes.length > 0
+      ? { customRoutes: customRoutes as never }
+      : {}),
   })
 }
 

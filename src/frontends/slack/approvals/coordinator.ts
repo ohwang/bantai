@@ -123,12 +123,26 @@ export interface CreateCoordinatorOpts {
     setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
     clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   }
+  /**
+   * Optional metrics hook. The launcher wires this to the Prometheus
+   * collector so `/metrics` reflects real approval traffic. Absent in
+   * tests that don't care.
+   */
+  metrics?: ApprovalMetricsHook
+}
+
+export interface ApprovalMetricsHook {
+  onRequested(): void
+  onApproved(): void
+  onDenied(): void
 }
 
 export function createApprovalCoordinator(
   opts: CreateCoordinatorOpts,
 ): ApprovalCoordinator {
   const defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_APPROVAL_TTL_MS
+  const metrics: ApprovalMetricsHook =
+    opts.metrics ?? { onRequested() {}, onApproved() {}, onDenied() {} }
 
   const registry: ApprovalRegistry = createApprovalRegistry({
     onTimeout: (record) => {
@@ -181,9 +195,16 @@ export function createApprovalCoordinator(
       return
     }
     try {
-      if (decision === "allow") session.approve(record.request.id)
-      else if (decision === "allowAlways") session.approve(record.request.id, { alwaysAllow: true })
-      else session.deny(record.request.id, decision === "timeout" ? "timed out, auto-denied" : undefined)
+      if (decision === "allow") {
+        session.approve(record.request.id)
+        metrics.onApproved()
+      } else if (decision === "allowAlways") {
+        session.approve(record.request.id, { alwaysAllow: true })
+        metrics.onApproved()
+      } else {
+        session.deny(record.request.id, decision === "timeout" ? "timed out, auto-denied" : undefined)
+        metrics.onDenied()
+      }
     } catch (err) {
       log.error(`slack approvals: backend approve/deny threw for ${record.request.id}: ${String(err)}`)
     }
@@ -194,6 +215,7 @@ export function createApprovalCoordinator(
       return {
         onRequest({ request, channel, threadTs }) {
           const ttlMs = binding.ttlMs ?? defaultTtlMs
+          metrics.onRequested()
           void (async () => {
             try {
               const rendered = buildApprovalBlocks({

@@ -52,6 +52,10 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { createSlackUploadMcpServer } from "./mcp/slack-upload"
 import { buildSlackFileClient } from "./view/upload"
 import {
+  createMetricsCollector,
+  type MetricsCollector,
+} from "./metrics/collector"
+import {
   createNoopSessionStore,
   createSessionStore,
   type SessionStore,
@@ -96,6 +100,8 @@ export interface SlackLaunchHandle {
   botUserId: string
   registry: SessionRegistry
   userCache: UserCache
+  /** Live metrics collector — exposed for tests + future introspection. */
+  metrics: MetricsCollector
   stop(): Promise<void>
 }
 
@@ -128,7 +134,32 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     else log.info(`slack audit: ${finding.message}`)
   }
 
-  const app = createBoltApp({ config })
+  // Metrics collector + /metrics route. Wired only in HTTP mode — Socket
+  // Mode has no HTTP receiver surface to attach to, so scrapers can't
+  // reach it anyway. The collector still exists in Socket Mode for
+  // symmetry (registry + coordinator record into it), just with no
+  // scrape endpoint.
+  const metrics: MetricsCollector = createMetricsCollector()
+  const metricsRoute =
+    config.workspace.mode === "http"
+      ? [
+          {
+            path: "/metrics",
+            method: "GET",
+            handler: (
+              _req: import("node:http").IncomingMessage,
+              res: import("node:http").ServerResponse,
+            ) => {
+              res.writeHead(200, {
+                "content-type": "text/plain; version=0.0.4; charset=utf-8",
+              })
+              res.end(metrics.render())
+            },
+          },
+        ]
+      : []
+
+  const app = createBoltApp({ config, customRoutes: metricsRoute })
   await app.start()
   const auth = await verifyAuth(app)
   // Boot-time scope probes — best-effort, never blocks startup. Log each
@@ -147,6 +178,18 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   const registry = createSessionRegistry({
     workspace: workspaceId,
     store,
+    metrics: {
+      onSessionOpened: (active) =>
+        metrics.setGauge("bantai_slack_sessions_active", active),
+      onSessionClosed: (active) =>
+        metrics.setGauge("bantai_slack_sessions_active", active),
+      onTurnStarted: () => metrics.inc("bantai_slack_turn_started_total"),
+      onTurnCompleted: (addUsd) => {
+        metrics.inc("bantai_slack_turn_completed_total")
+        if (addUsd > 0) metrics.add("bantai_slack_cost_usd_sum", addUsd)
+      },
+      onTurnErrored: () => metrics.inc("bantai_slack_turn_errored_total"),
+    },
     ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
   })
   const dedup = createDedupCache()
@@ -154,6 +197,11 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   const defaultAdapter = buildDefaultSendAdapter(app)
   const approvals = createApprovalCoordinator({
     adapter: defaultAdapter,
+    metrics: {
+      onRequested: () => metrics.inc("bantai_slack_approval_requested_total"),
+      onApproved: () => metrics.inc("bantai_slack_approval_approved_total"),
+      onDenied: () => metrics.inc("bantai_slack_approval_denied_total"),
+    },
     lookupSession(sessionKey) {
       // Sessions are keyed by `slack:<workspace>:<channel>:<threadTs|main>`.
       // Parse out the channel + thread and walk the registry.
@@ -258,6 +306,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     botUserId: auth.botUserId,
     registry,
     userCache,
+    metrics,
     async stop() {
       // Stop accepting new turns BEFORE tearing anything down so inbound
       // events that race the signal get an ephemeral "shutting down"

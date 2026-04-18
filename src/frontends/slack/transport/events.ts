@@ -21,9 +21,36 @@ import { log } from "../../../utils/logger"
 // Normalised inbound event shape
 // ---------------------------------------------------------------------------
 
+/** Minimal slice of Slack's FileObject carried on message events. */
+export interface InboundFileMetadata {
+  id: string
+  name?: string
+  mimetype?: string
+  filetype?: string
+  url_private?: string
+  url_private_download?: string
+}
+
 export type InboundSlackEvent =
-  | { kind: "message"; channel: string; user: string; text: string; ts: string; threadTs?: string; rawType: string }
-  | { kind: "app_mention"; channel: string; user: string; text: string; ts: string; threadTs?: string }
+  | {
+      kind: "message"
+      channel: string
+      user: string
+      text: string
+      ts: string
+      threadTs?: string
+      rawType: string
+      files?: InboundFileMetadata[]
+    }
+  | {
+      kind: "app_mention"
+      channel: string
+      user: string
+      text: string
+      ts: string
+      threadTs?: string
+      files?: InboundFileMetadata[]
+    }
   | { kind: "member_joined"; channel: string; user: string }
   | { kind: "file_shared"; channel?: string; user: string; fileId: string }
   | { kind: "reaction_added"; channel?: string; user: string; reaction: string; itemTs?: string; itemChannel?: string }
@@ -61,6 +88,9 @@ export function registerEvents({ app, onInbound, botUserId }: RegisterEventsOpts
       ts: msg.ts,
       threadTs: msg.thread_ts,
       rawType: msg.subtype ?? "message",
+      ...(msg.files && msg.files.length > 0
+        ? { files: msg.files.map(normaliseFile) }
+        : {}),
     })
   })
 
@@ -86,6 +116,9 @@ export function registerEvents({ app, onInbound, botUserId }: RegisterEventsOpts
       text: m.text,
       ts: m.ts,
       threadTs: m.thread_ts,
+      ...(m.files && m.files.length > 0
+        ? { files: m.files.map(normaliseFile) }
+        : {}),
     })
   })
 
@@ -225,6 +258,14 @@ interface MessageEventLike {
   text?: string
   ts?: string
   thread_ts?: string
+  files?: Array<{
+    id?: string
+    name?: string
+    mimetype?: string
+    filetype?: string
+    url_private?: string
+    url_private_download?: string
+  }>
 }
 
 interface AppMentionLike {
@@ -233,6 +274,7 @@ interface AppMentionLike {
   text?: string
   ts?: string
   thread_ts?: string
+  files?: MessageEventLike["files"]
 }
 
 interface ReactionAddedLike {
@@ -258,5 +300,18 @@ async function safeInvoke(handler: InboundHandler, event: InboundSlackEvent): Pr
     await handler(event)
   } catch (err) {
     log.error(`slack inbound handler threw for ${event.kind}: ${String(err)}`)
+  }
+}
+
+function normaliseFile(
+  f: NonNullable<MessageEventLike["files"]>[number],
+): InboundFileMetadata {
+  return {
+    id: f.id ?? "",
+    ...(f.name ? { name: f.name } : {}),
+    ...(f.mimetype ? { mimetype: f.mimetype } : {}),
+    ...(f.filetype ? { filetype: f.filetype } : {}),
+    ...(f.url_private ? { url_private: f.url_private } : {}),
+    ...(f.url_private_download ? { url_private_download: f.url_private_download } : {}),
   }
 }

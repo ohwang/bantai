@@ -49,6 +49,12 @@ import {
   createElicitationCoordinator,
   type ElicitationCoordinator,
 } from "./elicitations/coordinator"
+import {
+  createAttachmentFetcher,
+  type AttachmentFetcher,
+} from "./inbox/attachments"
+import { homedir } from "node:os"
+import { join as pathJoin } from "node:path"
 
 export interface LaunchSlackOpts extends CLIFlags {
   /** Explicit slack.toml path — takes precedence over config search. */
@@ -70,6 +76,14 @@ export interface LaunchSlackOpts extends CLIFlags {
    * backend that emits canned events). Production code leaves this unset.
    */
   buildHost?: (opts: BuildHostOpts) => HostPair
+  /**
+   * Test hook — override the inbound-attachment fetcher. Integration tests
+   * inject a fake fetcher so uploads can be driven without Slack's actual
+   * file-download endpoint.
+   */
+  attachmentFetcher?: AttachmentFetcher
+  /** Override the staging directory for inbound files. */
+  attachmentStagingDir?: string
 }
 
 export interface SlackLaunchHandle {
@@ -134,6 +148,20 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       }
     },
   })
+  const attachmentStagingDir =
+    opts.attachmentStagingDir ??
+    pathJoin(homedir(), ".bantai", "slack-attachments")
+  const attachments: AttachmentFetcher =
+    opts.attachmentFetcher ??
+    createAttachmentFetcher({
+      botToken: config.workspace.botToken ?? "",
+      stagingDir: attachmentStagingDir,
+      ...(config.workspace.slackApiUrl
+        ? {
+            rewriteUrl: rewriterForSlackApiUrl(config.workspace.slackApiUrl),
+          }
+        : {}),
+    })
   const elicitations = createElicitationCoordinator({
     adapter: defaultAdapter,
     app,
@@ -167,6 +195,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       launchCwd,
       approvals,
       elicitations,
+      attachments,
       renderers: new WeakMap(),
       projectOverrides: new Map(),
       bannerPosted: new WeakSet(),
@@ -214,6 +243,8 @@ interface RoutingCtx {
   approvals: ApprovalCoordinator
   /** Cross-session elicitation coordinator (card → modal → view_submission). */
   elicitations: ElicitationCoordinator
+  /** Fetches inbound file attachments into images / staging files. */
+  attachments: AttachmentFetcher
   /**
    * One event-renderer per live session. We keep a map (not just a set) so
    * the handler can update the per-turn triggerTs when a new mention lands
@@ -228,6 +259,17 @@ interface RoutingCtx {
   projectOverrides: Map<string, ProjectConfig>
   /** Sessions for which we've already posted the banner. */
   bannerPosted: WeakSet<SessionEntry>
+}
+
+/**
+ * When the launcher is pointed at a non-Slack API URL (minislack in tests,
+ * a mirror in air-gapped deploys), the file URLs on message events still
+ * carry `https://slack.com/...`. Rewrite them onto the configured host so
+ * the attachment fetcher can reach the bytes.
+ */
+function rewriterForSlackApiUrl(slackApiUrl: string): (url: string) => string {
+  const base = slackApiUrl.replace(/\/$/, "")
+  return (u) => u.replace(/^https?:\/\/[^/]+/, base)
 }
 
 /**
@@ -399,6 +441,26 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
       }
     } else {
       renderer.setTriggerTs(turn.triggerTs)
+    }
+
+    // Ingest any attached files on the inbound message. Images land in
+    // UserMessage.images; everything else is written to a channel-scoped
+    // staging dir and cited by absolute path in the text.
+    const incomingFiles = "files" in event ? event.files : undefined
+    if (incomingFiles && incomingFiles.length > 0) {
+      try {
+        const ingested = await ctx.attachments.fetch(incomingFiles, {
+          channelId: event.channel,
+          ts: event.ts,
+        })
+        entry.send({
+          text: turn.text + ingested.textHint,
+          ...(ingested.images.length > 0 ? { images: ingested.images } : {}),
+        })
+        return
+      } catch (err) {
+        log.error(`slack: attachment ingest failed: ${String(err)}. Proceeding without files.`)
+      }
     }
 
     entry.send({ text: turn.text })

@@ -184,6 +184,45 @@ This doc is kept live. Every working session updates:
 
 ---
 
+### Session — 2026-04-18 · S4 approvals + elicitation
+
+**Status:** Phase S4 complete. 1900 pass / 11 skip / 0 fail across 109 test files.
+
+**Done this session (S4):**
+- `...` `src/frontends/slack/view/blocks/approval.ts` (+15 unit tests) — pure Block Kit builder for the 3-button approval card (Allow once / Allow always / Deny), `buildResolvedApprovalBlocks()` for the in-place resolution, `encodeActionId` / `parseApprovalActionId` codec (`bantai:perm:<id>:<decision>`), 2600-char input truncation so the card stays under Slack's 3000-char block limit.
+- `...` `src/frontends/slack/view/approvals.ts` (+9 unit tests) — pending-approval registry keyed by `permission_request.id`. Atomic `resolve()` (first-of-click wins), TTL auto-reject (default 15 min), approver allow-list gating, `closeAll()` for launcher shutdown.
+- `...` `src/frontends/slack/approvals/coordinator.ts` (+12 unit tests) — glue between the renderer's `ApprovalHook` and the block-actions handler: posts the card → registers → on click / TTL / interrupt / shutdown, atomically resolves + `chat.update`s the resolved variant + calls `backend.approveToolUse`/`denyToolUse`. `lookupSession` indirection keeps the coordinator frontend-agnostic — the launcher supplies the `SessionEntry.host.backend` hookup.
+- `...` `src/frontends/slack/view/blocks/elicitation.ts` (+19 unit tests) — Block Kit builders for §8.2's two-stage flow: inline "Answer questions" / "Cancel" card → `views.open` modal with one input block per question (`static_select` / `multi_static_select` / `plain_text_input` by question shape). Slack option labels truncated to 74 chars. `parseElicitationSubmission` harvests `view.state.values` back into `Record<questionText, answer>` (multi-select joined with ", ").
+- `...` `src/frontends/slack/elicitations/coordinator.ts` (+8 unit tests) — mirrors the approvals coordinator for elicitations. `handleBlockAction` routes the "open" click to `views.open`, the "cancel" click to `backend.cancelElicitation`; `handleViewSubmission` harvests answers and routes to `backend.respondToElicitation`. `closeAll` on shutdown auto-cancels every outstanding elicitation.
+- `...` `src/frontends/slack/view/event-renderer.ts` — added `approvals?: ApprovalHook` + `elicitations?: ElicitationHook`. On `permission_request` / `elicitation_request` the renderer tracks the id locally + hands off to the hook; on `permission_response` / `elicitation_response` the id is cleared; on interrupt / destroy outstanding ids are auto-cancelled.
+- `...` `src/frontends/slack/launcher.ts` — creates one approval + one elicitation coordinator at boot, dispatches `block_action` / `view_submission` events into them, binds the per-session hook when minting a renderer, posts an ephemeral "not an approver" note on `unauthorized` clicks, `closeAll` on shutdown. Added `parseSessionKey()` to reverse the session-key encoding so the coordinator's `lookupSession` can find the `SessionEntry` from an action click.
+- `...` `tests/frontends/slack/integration/approvals.test.ts` (+4 cases) — full round-trip through minislack: @mention "run bash" → approval card appears → `fireInteractive` simulates the Allow / Deny click → card updates in place + mock continues; elicitation cancel click → card updates to "cancelled"; elicitation modal submit with a `static_select` value → card updates to "answered".
+
+**Full test suite:** 1900 pass / 11 skip / 0 fail across 109 files. 5594 expect() calls. Slack subtree alone: 184 pass across 19 files.
+
+**S4 exit criterion:** "Claude requests Bash → Slack shows three-button approval → click resolves in-place → tool executes." Demonstrated end-to-end against the mock backend in `approvals.test.ts` + the elicitation counterpart. **Met.**
+
+**Discovered / scope deltas from S4:**
+
+1. **Coordinator + registry split is worth it.** The registry is pure data (Map + TTL timers + atomicity); the coordinator does IO (post / update / lookup backend). Splitting them lets the registry be unit-tested with a fake clock without touching Slack wire shapes, and lets the coordinator be unit-tested with a fake SendAdapter without standing up minislack. Both independently tested at unit level; the full round-trip exercised once in the S4 integration test.
+2. **Backend callback lookup by session key, not by binding.** Earlier the `SessionApprovalBinding` also carried `approve` / `deny` callbacks — but that's redundant with the coordinator's `lookupSession`, which is already needed at decision time (TTL fires from the registry's own scheduler, not from the renderer). Collapsed both paths through `lookupSession`, which also correctly handles the "session evicted while approval was pending" case (card still updates visually; backend call skipped and logged).
+3. **Action_id as routing key.** `bantai:perm:<id>:<decision>` for approvals, `bantai:elic:<id>:<open|cancel>` for elicitations. The launcher tries the approval parser first; if it returns `malformed`, the elicitation handler gets a chance. This pattern will extend cleanly to tool-card buttons (S5) and plan checkbox blocks (S5/S6) without a central router.
+4. **Elicitation ALWAYS opens a modal.** Plan §8.2 allowed an inline `static_select` for single-question / no-free-text cases — but the modal path covers every shape uniformly (free-text, multi-select, multi-question), and the extra click is a cheap UX trade for a single code path. The block builder still uses `static_select` / `multi_static_select` inside the modal where appropriate.
+5. **Whitespace-only free-text answers are dropped, not submitted.** The modal would accept them; we'd then hand empty strings to the backend, which is a worse outcome than "please try again". `parseElicitationSubmission` drops them and the coordinator returns `no_answers` — the pending record stays so the user can re-open the card's modal via the "Answer questions" button.
+6. **Elicitation `deny` from the backend mock** — the mock emits `elicitation_response` regardless of user answer shape; this made writing the integration test easier. Real backends (Claude SDK) may expect a specific deny reason when the user cancels; we pass "User declined to answer" / "timed out, auto-denied" as human-readable reasons.
+7. **Config surface untouched.** Per-channel `approvers: string[]` was already wired through resolver.ts / dispatch.ts at S3 (the control command `!bantai permissions` is still deferred until the approval flow actually runs — that's now). Reading `project.approvers` into the `SessionApprovalBinding` was a two-line change.
+
+**Next up (S5 — Tool visibility + verbosity):**
+- `view/blocks/tool-card.ts` — tool-start → collapsible card, tool-end → outcome + "Show output" button.
+- `view/blocks/plan.ts` — ACP `plan_update` → checklist block, edited in-place.
+- Cost footer on `turn_complete` (per verbosity level).
+- `view/blocks/thinking.ts` — appended collapsible on verbose / debug.
+- Verbosity still per-channel (S3 already persists it); S5 makes the different levels demonstrably differ.
+
+**Plan §11/S5 exit:** "The four verbosity levels demonstrably differ in a fixture run; snapshot tests cover every combination."
+
+---
+
 ## 1. Premises — what we already have vs. what we need to build
 
 ### What's already in the tree (reuse, don't rebuild)

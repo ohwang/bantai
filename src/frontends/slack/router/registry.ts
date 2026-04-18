@@ -267,7 +267,11 @@ export function buildSessionConfigFromProject(
   overlay?: Partial<SessionConfig>,
 ): SessionConfig {
   const env: Record<string, string> = { ...project.env }
-  if (project.claudeConfigDir && project.backend === "claude") {
+  if (project.claudeConfigDir) {
+    // Claude SDK reads CLAUDE_CONFIG_DIR at invocation time. Non-claude
+    // backends ignore it, so setting it unconditionally does no harm and
+    // keeps the mapping uniform across backends that might one day learn
+    // to honour it.
     env.CLAUDE_CONFIG_DIR = project.claudeConfigDir
   }
   const base: SessionConfig = {

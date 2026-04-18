@@ -56,14 +56,14 @@ describe("buildSessionConfigFromProject", () => {
     })
   })
 
-  it("does not inject CLAUDE_CONFIG_DIR for non-claude backends", () => {
+  it("injects CLAUDE_CONFIG_DIR regardless of backend (ignored by non-claude backends at runtime)", () => {
     const cfg = buildSessionConfigFromProject(
       fakeProject({
         backend: "codex",
         claudeConfigDir: "/tmp/claude-cfg/channel-a",
       }),
     )
-    expect(cfg.env).toBeUndefined()
+    expect(cfg.env).toEqual({ CLAUDE_CONFIG_DIR: "/tmp/claude-cfg/channel-a" })
   })
 
   it("merges project.env on top of CLAUDE_CONFIG_DIR", () => {

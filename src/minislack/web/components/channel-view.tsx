@@ -80,22 +80,38 @@ export function ChannelView() {
     }
   }
 
+  const channelLabel = () => {
+    const ch = currentChannel()
+    if (!ch) return ""
+    if (ch.is_channel && "name" in ch) return `#${(ch as any).name}`
+    if (ch.is_group && "name" in ch) return `🔒 ${(ch as any).name}`
+    const currentUserId = session.current()?.userId
+    if (ch.is_im) {
+      const otherId = ch.members.find((m) => m !== currentUserId) ?? (ch as any).user
+      const other = otherId ? ws.state.usersById[otherId] : undefined
+      return other ? `● ${other.real_name || other.name}` : `● ${otherId ?? ch.id}`
+    }
+    if (ch.is_mpim) {
+      const others = ch.members.filter((m) => m !== currentUserId)
+      return `● ${others.map((m) => ws.state.usersById[m]?.name ?? m).join(", ")}`
+    }
+    return (ch as { id: string }).id
+  }
+
   return (
     <section class="channel-panel">
       <header class="channel-header">
         <Show when={currentChannel()} fallback={<h2>No channel selected</h2>}>
           {(ch) => (
             <>
-              <h2>
-                {"name" in ch() ? `#${(ch() as any).name}` : ch().id}
-              </h2>
+              <h2>{channelLabel()}</h2>
               <span class="count">{ch().members.length} member{ch().members.length === 1 ? "" : "s"}</span>
             </>
           )}
         </Show>
       </header>
       <div class="messages" ref={(el) => (scrollRef = el)}>
-        <Show when={messages().length > 0} fallback={<div class="msg empty">No messages yet. Say hello 👋</div>}>
+        <Show when={messages().length > 0} fallback={<div class="messages-empty">No messages yet. Say hello 👋</div>}>
           <For each={messages()}>{(m) => <MessageRow msg={m} />}</For>
         </Show>
       </div>

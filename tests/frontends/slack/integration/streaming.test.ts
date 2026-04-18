@@ -72,6 +72,11 @@ describe("slack frontend S2 — streaming + reactions", () => {
           backend: "mock",
           verbosity: "normal",
           require_mention: true,
+          // S3 posts a session banner on session_init; that would add a
+          // second reply alongside the streamed assistant message. S2's
+          // assertion is specifically about the *streaming* surface being
+          // one visible message, so we opt out of the banner here.
+          session_banner: false,
         },
       },
     })) as SlackLaunchHandle

@@ -33,8 +33,14 @@ import { resolveProjectForChannel } from "./router/resolver"
 import { createDedupCache } from "./inbox/dedup"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
-import { createEventRenderer, type EventRenderer } from "./view/event-renderer"
+import { buildDefaultSendAdapter, createEventRenderer, type EventRenderer } from "./view/event-renderer"
+import { postSessionBanner } from "./view/banner"
 import { createUserCache, type UserCache } from "./view/user-cache"
+import { parseControlCommand } from "./commands/parser"
+import { dispatchCommand, type CommandContext } from "./commands/dispatch"
+import type { VerbosityLevel } from "./config/schema"
+import type { ConversationEvent } from "../../protocol/types"
+import type { ProjectConfig } from "./router/resolver"
 
 export interface LaunchSlackOpts extends CLIFlags {
   /** Explicit slack.toml path — takes precedence over config search. */
@@ -112,6 +118,8 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       workspaceId,
       launchCwd,
       renderers: new WeakMap(),
+      projectOverrides: new Map(),
+      bannerPosted: new WeakSet(),
     }),
   })
 
@@ -156,13 +164,21 @@ interface RoutingCtx {
    * in the same thread.
    */
   renderers: WeakMap<SessionEntry, EventRenderer>
+  /**
+   * Mutable per-channel project view — populated on first resolve, updated
+   * by `!bantai verbosity` / `!bantai model` etc. without touching the
+   * underlying immutable ResolvedSlackConfig.
+   */
+  projectOverrides: Map<string, ProjectConfig>
+  /** Sessions for which we've already posted the banner. */
+  bannerPosted: WeakSet<SessionEntry>
 }
 
 function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Promise<void> {
   return async (event) => {
     if (event.kind !== "message" && event.kind !== "app_mention") {
       // Other event kinds are routed by later phases (reactions → commands,
-      // block actions → approvals). For S1 we short-circuit.
+      // block actions → approvals).
       return
     }
     // Dedup by channel:ts. Both message and app_mention carry both.
@@ -184,9 +200,7 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
     }
     const existing = ctx.registry.peek(sessionParts)
 
-    const project = resolveProjectForChannel(ctx.config, event.channel, {
-      launchCwd: ctx.launchCwd,
-    })
+    const project = mutableProjectFor(ctx, event.channel)
 
     const decision = decideGate({
       channel: event.channel,
@@ -213,6 +227,21 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
       botUserId: ctx.botUserId,
     })
 
+    // Is this a control command invocation? If so, dispatch + return
+    // without opening / running a backend turn.
+    const cmd = parseControlCommand(turn.text, { prefix: project.controlPrefix })
+    if (cmd) {
+      await handleControlCommand({
+        ctx,
+        cmd,
+        project,
+        channel: event.channel,
+        threadTs: turn.parentTs,
+        sessionParts,
+      })
+      return
+    }
+
     // Lazy-create the SessionHost on first turn; subsequent turns reuse it.
     const entry = ctx.registry.getOrCreate(
       sessionParts,
@@ -220,9 +249,6 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
       turn.parentTs,
     )
 
-    // Attach a renderer once per session. The WeakSet on the closure tracks
-    // which entries are already bound so we don't double-subscribe on
-    // subsequent turns into the same thread.
     let renderer = ctx.renderers.get(entry)
     if (!renderer) {
       renderer = createEventRenderer({
@@ -235,14 +261,121 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
       })
       ctx.renderers.set(entry, renderer)
       entry.subscribe(renderer.onEvent)
+      // Post the session banner on the first session_init we see from
+      // this entry. The one-shot subscriber is detached the first time it
+      // fires so subsequent turns don't re-post a banner.
+      if (project.sessionBanner) {
+        attachBannerOnce(ctx, entry, project, turn.channel, turn.parentTs)
+      }
     } else {
-      // New turn from a new message in the same thread — rebind the
-      // reaction controller to the new trigger ts.
       renderer.setTriggerTs(turn.triggerTs)
     }
 
     entry.send({ text: turn.text })
   }
+}
+
+/**
+ * Resolve the project config for the channel, returning a MUTABLE snapshot
+ * (so `!bantai verbosity <l>` can update the in-memory view). The SlackConfig
+ * itself stays immutable in this launcher; mutations travel via
+ * `ctx.projectOverrides.set(channelId, nextConfig)`.
+ */
+function mutableProjectFor(ctx: RoutingCtx, channelId: string): ProjectConfig {
+  const cached = ctx.projectOverrides.get(channelId)
+  if (cached) return cached
+  const fresh = resolveProjectForChannel(ctx.config, channelId, {
+    launchCwd: ctx.launchCwd,
+  })
+  ctx.projectOverrides.set(channelId, fresh)
+  return fresh
+}
+
+interface CommandRouteArgs {
+  ctx: RoutingCtx
+  cmd: { cmd: string; args: string }
+  project: ProjectConfig
+  channel: string
+  threadTs: string
+  sessionParts: {
+    workspace: string
+    channelId: string
+    threadTs: string
+  }
+}
+
+async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
+  const { ctx, cmd, project, channel, threadTs, sessionParts } = args
+  const adapter = buildDefaultSendAdapter(ctx.app)
+  const existing = ctx.registry.peek(sessionParts)
+
+  const commandCtx: CommandContext = {
+    async sendReply(text) {
+      try {
+        await adapter.postMessage({ channel, threadTs, text })
+      } catch (err) {
+        log.error(`slack commands: sendReply failed: ${String(err)}`)
+      }
+    },
+    interrupt() {
+      existing?.host.backend.interrupt()
+    },
+    async setModel(model) {
+      if (existing) await existing.host.backend.setModel(model)
+      // Persist for future turns in this channel.
+      ctx.projectOverrides.set(project.channelId, { ...project, model })
+    },
+    async resetSession() {
+      existing?.close()
+    },
+    setVerbosity(level: VerbosityLevel) {
+      ctx.projectOverrides.set(project.channelId, { ...project, verbosity: level })
+    },
+    async availableModels() {
+      if (!existing) return []
+      const list = await existing.host.backend.availableModels()
+      return list.map((m) => m.id)
+    },
+    project,
+    workspace: sessionParts.workspace,
+    channel,
+    threadTs,
+  }
+  await dispatchCommand(cmd, commandCtx)
+}
+
+/**
+ * Subscribe one banner-poster. The subscriber captures the first
+ * `session_init` event's sessionId and posts the banner, then unsubscribes
+ * itself. Guarded by a WeakSet so we never post two banners for the same
+ * session.
+ */
+function attachBannerOnce(
+  ctx: RoutingCtx,
+  entry: SessionEntry,
+  project: ProjectConfig,
+  channel: string,
+  threadTs: string,
+): void {
+  if (ctx.bannerPosted.has(entry)) return
+  const adapter = buildDefaultSendAdapter(ctx.app)
+  let unsub: (() => void) | null = null
+  const subscriber = (event: ConversationEvent): void => {
+    if (event.type !== "session_init") return
+    ctx.bannerPosted.add(entry)
+    unsub?.()
+    unsub = null
+    postSessionBanner({
+      adapter,
+      channel,
+      threadTs,
+      inputs: {
+        project,
+        sessionId: event.sessionId,
+      },
+    }).catch((err) => log.error(`slack banner: ${String(err)}`))
+  }
+  unsub = entry.subscribe(subscriber)
 }
 
 // ---------------------------------------------------------------------------

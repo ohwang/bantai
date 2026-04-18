@@ -3,6 +3,7 @@
 import { createEffect, createSignal, For, Show } from "solid-js"
 import { useSession, useWorkspace } from "../state"
 import { conversationsReplies, postMessage } from "../api"
+import { MessageReactions } from "./reactions"
 import type { Message } from "../../types/slack"
 
 export function ThreadDrawer() {
@@ -120,6 +121,7 @@ function ThreadMessage(props: { msg: Message }) {
         <Show when={props.msg.text}>
           <div class="msg-text">{props.msg.text}</div>
         </Show>
+        <MessageReactions msg={props.msg} />
       </div>
     </div>
   )

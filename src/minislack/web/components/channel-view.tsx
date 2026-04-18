@@ -3,6 +3,7 @@
 import { createEffect, createSignal, For, Show } from "solid-js"
 import { useSession, useWorkspace } from "../state"
 import { conversationsHistory, postMessage, uploadFile } from "../api"
+import { MessageReactions } from "./reactions"
 import type { File as SlackFile, Message } from "../../types/slack"
 
 export function ChannelView() {
@@ -165,6 +166,7 @@ function MessageRow(props: { msg: Message }) {
             <For each={files()}>{(f) => <FileView file={f} />}</For>
           </div>
         </Show>
+        <MessageReactions msg={props.msg} />
         <Show when={replyCount() > 0}>
           <button class="msg-thread-link" type="button" onClick={openThread}>
             {replyCount()} {replyCount() === 1 ? "reply" : "replies"}

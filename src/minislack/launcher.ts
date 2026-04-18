@@ -15,6 +15,8 @@ export interface MinislackFlags {
   fixture?: FixtureName
   /** Pass "__default__" for ~/.bantai/minislack/default, or an absolute path. */
   persist?: string
+  /** Path to a JSON file of custom emoji. Accepts a flat map or raw Slack emoji.list output. */
+  emojisFile?: string
   serveWeb?: boolean
 }
 
@@ -27,6 +29,7 @@ export async function launchMinislack(flags: MinislackFlags): Promise<void> {
     port: flags.port,
     fixture: flags.fixture ?? "basic",
     persist: persistDir,
+    emojisFile: flags.emojisFile,
     serveWeb: flags.serveWeb,
   })
 

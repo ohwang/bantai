@@ -434,6 +434,101 @@ html, body, #root {
   font-size: 11px;
 }
 
+/* Reactions --------------------------------------------------------------- */
+.msg-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  align-items: center;
+}
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.reaction-chip:hover { background: var(--panel-hover); }
+.reaction-chip.reaction-mine {
+  background: rgba(29, 155, 209, 0.18);
+  border-color: var(--link);
+  color: var(--link);
+}
+.reaction-glyph { font-size: 14px; }
+.reaction-count { font-variant-numeric: tabular-nums; }
+
+.reaction-add-wrap { position: relative; display: inline-block; }
+.reaction-add {
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 14px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.msg:hover .reaction-add,
+.reaction-add:focus,
+.reaction-add-wrap:focus-within .reaction-add {
+  opacity: 1;
+}
+.reaction-chip + .reaction-add-wrap .reaction-add { opacity: 1; }
+.reaction-add:hover { color: var(--text); }
+
+.reaction-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 240px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+.reaction-picker-search {
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.reaction-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.reaction-picker-cell {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 0;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: 4px;
+}
+.reaction-picker-cell:hover { background: var(--panel-hover); }
+
 /* Thread drawer ----------------------------------------------------------- */
 .thread-drawer {
   display: grid;

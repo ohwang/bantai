@@ -51,6 +51,7 @@ import {
 } from "./methods/users"
 import { teamInfo } from "./methods/team"
 import { botsInfo } from "./methods/bots"
+import { emojiList } from "./methods/emoji"
 import {
   filesCompleteUploadExternal,
   filesGetUploadURLExternal,
@@ -449,6 +450,8 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
         return slackOk(teamInfo(ctx.ws))
       case "bots.info":
         return slackOk(botsInfo(ctx.ws, { bot: args.bot as string | undefined }))
+      case "emoji.list":
+        return slackOk(emojiList(ctx.ws))
       case "users.conversations":
         return slackOk(
           usersConversations(ctx.ws, auth, {

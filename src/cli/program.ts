@@ -140,12 +140,14 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--port <n>", "Port (default 3102; 0 = ephemeral)", "3102")
     .option("--persist [dir]", "Persist state to <dir> (default: ~/.bantai/minislack/default)")
     .option("--fixture <name>", "empty | basic | threaded | multi-user", "basic")
+    .option("--emojis <file>", "Path to a JSON file of custom emoji ({ name: url-or-alias, ... } or raw emoji.list output)")
     .option("--no-web", "Skip serving the web UI")
   minislackCmd.action(async () => {
     const opts = minislackCmd.opts() as {
       port?: string
       persist?: boolean | string
       fixture?: string
+      emojis?: string
       web?: boolean
     }
     const portNum = opts.port !== undefined ? Number(opts.port) : 3102
@@ -163,6 +165,7 @@ export async function runCli(argv: string[]): Promise<void> {
       port: portNum,
       fixture: (opts.fixture ?? "basic") as FixtureName,
       persist,
+      emojisFile: opts.emojis,
       serveWeb: opts.web !== false,
     })
   })

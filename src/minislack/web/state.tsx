@@ -14,7 +14,7 @@
 
 import { createContext, useContext, createSignal, onCleanup, batch, type ParentComponent, type Accessor } from "solid-js"
 import { createStore, produce, type SetStoreFunction } from "solid-js/store"
-import { getWorkspace, getUserToken, type WorkspaceSummary } from "./api"
+import { emojiList, getWorkspace, getUserToken, type WorkspaceSummary } from "./api"
 import { subscribeEvents } from "./events"
 import type { Channel, Message, User } from "../types/slack"
 import type { MessageEvent, SlackEvent } from "../types/events"
@@ -98,6 +98,8 @@ export interface WorkspaceState {
   repliesByThread: Record<string, Message[]>
   selectedChannel: string | null
   selectedThread: { channelId: string; parentTs: string } | null
+  /** Workspace custom emoji map (from emoji.list). Keys override defaults. */
+  customEmoji: Record<string, string>
   error: string | null
 }
 
@@ -125,6 +127,7 @@ export const WorkspaceProvider: ParentComponent = (props) => {
     repliesByThread: {},
     selectedChannel: null,
     selectedThread: null,
+    customEmoji: {},
     error: null,
   })
 
@@ -200,6 +203,15 @@ export const WorkspaceProvider: ParentComponent = (props) => {
   }
 
   refresh()
+  // Fire-and-forget custom-emoji fetch. Empty on a no-emoji workspace.
+  void (async () => {
+    try {
+      const res = await emojiList()
+      setState("customEmoji", res.emoji ?? {})
+    } catch {
+      // No big deal — fall back to default set.
+    }
+  })()
 
   return <WorkspaceContext.Provider value={value}>{props.children}</WorkspaceContext.Provider>
 }
@@ -280,10 +292,54 @@ function applyEvent(setState: SetStoreFunction<WorkspaceState>, evt: SlackEvent)
       )
       return
     }
+    case "reaction_added":
+    case "reaction_removed": {
+      const channel = evt.item.channel
+      const ts = evt.item.ts
+      setState(
+        produce((s) => {
+          // Update in both the channel feed and the thread bucket in case
+          // the reacted message is a reply.
+          const patch = (list: Message[] | undefined): Message[] | undefined => {
+            if (!list) return list
+            const idx = list.findIndex((m) => m.ts === ts)
+            if (idx < 0) return list
+            const m = list[idx]!
+            const reactions = [...(m.reactions ?? [])]
+            const rIdx = reactions.findIndex((r) => r.name === evt.reaction)
+            if (evt.type === "reaction_added") {
+              if (rIdx >= 0) {
+                const r = reactions[rIdx]!
+                if (!r.users.includes(evt.user)) {
+                  reactions[rIdx] = { ...r, users: [...r.users, evt.user], count: r.count + 1 }
+                }
+              } else {
+                reactions.push({ name: evt.reaction, count: 1, users: [evt.user] })
+              }
+            } else {
+              if (rIdx >= 0) {
+                const r = reactions[rIdx]!
+                const users = r.users.filter((u) => u !== evt.user)
+                if (users.length === 0) reactions.splice(rIdx, 1)
+                else reactions[rIdx] = { ...r, users, count: users.length }
+              }
+            }
+            list[idx] = { ...m, reactions }
+            return list
+          }
+          const feed = s.messagesByChannel[channel]
+          if (feed) s.messagesByChannel[channel] = patch(feed)!
+          for (const key of Object.keys(s.repliesByThread)) {
+            if (key.startsWith(`${channel}:`)) {
+              s.repliesByThread[key] = patch(s.repliesByThread[key])!
+            }
+          }
+        }),
+      )
+      return
+    }
     case "member_joined_channel":
     case "member_left_channel":
-    case "reaction_added":
-    case "reaction_removed":
     case "im_open":
     case "im_close":
     case "file_shared":

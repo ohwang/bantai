@@ -74,6 +74,25 @@ export function conversationsReplies(token: string, channel: string, ts: string,
   return callSlack<RepliesResp>("/api/conversations.replies", token, { channel, ts, limit })
 }
 
+export function reactionsAdd(token: string, channel: string, timestamp: string, name: string) {
+  return callSlack<{ ok: true }>("/api/reactions.add", token, { channel, timestamp, name })
+}
+
+export function reactionsRemove(token: string, channel: string, timestamp: string, name: string) {
+  return callSlack<{ ok: true }>("/api/reactions.remove", token, { channel, timestamp, name })
+}
+
+export interface EmojiListResp {
+  ok: true
+  emoji: Record<string, string>
+  categories_version: string
+  categories: Array<{ name: string; emoji_names: string[] }>
+}
+
+export function emojiList() {
+  return callSlack<EmojiListResp>("/api/emoji.list", undefined)
+}
+
 export async function openConversation(
   token: string,
   opts: { users?: string; channel?: string },

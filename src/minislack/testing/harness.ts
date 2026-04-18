@@ -17,10 +17,12 @@ import { buildWebBundle, type WebBundle } from "../server/web-bundle"
 import type { Workspace, User, Channel, Message } from "../types/slack"
 import type { SlackEvent } from "../types/events"
 import { applyFixture, type FixtureName } from "./fixtures"
+import { readFile } from "node:fs/promises"
 import { createDiskStorage } from "../storage/disk"
 import { createMemoryStorage } from "../storage/memory"
 import type { StorageBackend } from "../storage/types"
 import { createWsRegistry } from "../server/ws-registry"
+import { setWorkspaceEmoji } from "../server/methods/emoji"
 import {
   buildInteractive,
   buildSlashCommand,
@@ -102,6 +104,13 @@ export interface StartMinislackOpts {
    * startup (if present) and rewritten on mutations.
    */
   persist?: string
+  /**
+   * Path to a JSON file containing either raw Slack `emoji.list` output
+   * (`{ ok: true, emoji: { name: url, ... } }`) or a flat
+   * `{ name: url-or-alias, ... }` map. Loaded at boot and served as-is
+   * from `emoji.list`.
+   */
+  emojisFile?: string
   /** Reserved for Phase 2. */
   serveWeb?: boolean
 }
@@ -120,6 +129,18 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
     console.warn(
       `[minislack] --persist loaded existing state; ignoring fixture '${opts.fixture}'`,
     )
+  }
+
+  if (opts.emojisFile) {
+    try {
+      const raw = await readFile(opts.emojisFile, "utf8")
+      const parsed = JSON.parse(raw) as unknown
+      const emoji = normalizeEmojiInput(parsed)
+      setWorkspaceEmoji(ws, emoji)
+      console.log(`[minislack] loaded ${Object.keys(emoji).length} custom emoji from ${opts.emojisFile}`)
+    } catch (err) {
+      console.error(`[minislack] failed to load --emojis file ${opts.emojisFile}:`, err)
+    }
   }
 
   const sockets = createSocketsRegistry()
@@ -261,6 +282,24 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Accept either raw `emoji.list` output or a bare `{ name: url }` map and
+ * return a flat map. Custom emoji URLs use aliases like `alias:smile` —
+ * both forms are preserved as-is (the client only cares about the value).
+ */
+function normalizeEmojiInput(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {}
+  const obj = raw as Record<string, unknown>
+  const map = "emoji" in obj && typeof obj.emoji === "object" && obj.emoji
+    ? (obj.emoji as Record<string, unknown>)
+    : obj
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(map)) {
+    if (typeof v === "string") out[k] = v
+  }
+  return out
+}
 
 /**
  * Swap the scheme+host+port prefix of a persisted file URL with the current

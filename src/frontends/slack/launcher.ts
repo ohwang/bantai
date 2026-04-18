@@ -30,6 +30,11 @@ export interface LaunchSlackOpts extends CLIFlags {
   /** Override for [workspace].slack_api_url — the minislack URL in tests. */
   slackApiUrlOverride?: string
   /**
+   * Inline config object — bypasses the filesystem search. Integration tests
+   * use this to drive the launcher from in-process minislack handles.
+   */
+  slackConfigInline?: unknown
+  /**
    * When true, return after the server is ready instead of blocking forever.
    * Integration tests use this; the CLI path does not.
    */
@@ -50,6 +55,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   const config = await loadSlackConfig({
     path: opts.slackConfigPath,
     cwd: opts.config.cwd,
+    inline: opts.slackConfigInline,
   })
 
   if (opts.slackApiUrlOverride) {

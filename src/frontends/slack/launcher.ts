@@ -45,6 +45,10 @@ import {
   createApprovalCoordinator,
   type ApprovalCoordinator,
 } from "./approvals/coordinator"
+import {
+  createElicitationCoordinator,
+  type ElicitationCoordinator,
+} from "./elicitations/coordinator"
 
 export interface LaunchSlackOpts extends CLIFlags {
   /** Explicit slack.toml path — takes precedence over config search. */
@@ -130,6 +134,24 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       }
     },
   })
+  const elicitations = createElicitationCoordinator({
+    adapter: defaultAdapter,
+    app,
+    lookupSession(sessionKey) {
+      const parts = parseSessionKey(sessionKey)
+      if (!parts) return undefined
+      const entry = registry.peek(parts)
+      if (!entry) return undefined
+      return {
+        respond: (id, answers) => {
+          entry.host.backend.respondToElicitation(id, answers)
+        },
+        cancel: (id) => {
+          entry.host.backend.cancelElicitation(id)
+        },
+      }
+    },
+  })
 
   registerEvents({
     app,
@@ -144,6 +166,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       workspaceId,
       launchCwd,
       approvals,
+      elicitations,
       renderers: new WeakMap(),
       projectOverrides: new Map(),
       bannerPosted: new WeakSet(),
@@ -160,6 +183,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     userCache,
     async stop() {
       approvals.closeAll()
+      elicitations.closeAll()
       registry.closeAll()
       await app.stop()
     },
@@ -188,6 +212,8 @@ interface RoutingCtx {
   launchCwd: string
   /** Cross-session approval coordinator (registry + block-actions handler). */
   approvals: ApprovalCoordinator
+  /** Cross-session elicitation coordinator (card → modal → view_submission). */
+  elicitations: ElicitationCoordinator
   /**
    * One event-renderer per live session. We keep a map (not just a set) so
    * the handler can update the per-turn triggerTs when a new mention lands
@@ -227,12 +253,12 @@ function parseSessionKey(
 function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Promise<void> {
   return async (event) => {
     if (event.kind === "block_action") {
-      const res = await ctx.approvals.handleBlockAction({
+      const approvalRes = await ctx.approvals.handleBlockAction({
         actionId: event.actionId,
         userId: event.user,
         channel: event.channel,
       })
-      if (res.kind === "unauthorized") {
+      if (approvalRes.kind === "unauthorized") {
         // Best-effort ephemeral note so the clicker sees why nothing happened.
         try {
           if (event.channel) {
@@ -245,8 +271,30 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
         } catch (err) {
           log.debug(`slack: chat.postEphemeral failed: ${String(err)}`)
         }
-      } else if (res.kind === "malformed") {
-        log.debug(`slack: non-approval block_action ignored: ${event.actionId}`)
+        return
+      }
+      if (approvalRes.kind === "malformed") {
+        // Fall through to the elicitation coordinator.
+        const elicRes = await ctx.elicitations.handleBlockAction({
+          actionId: event.actionId,
+          userId: event.user,
+          triggerId: event.triggerId,
+          channel: event.channel,
+        })
+        if (elicRes.kind === "malformed") {
+          log.debug(`slack: unrecognised block_action ignored: ${event.actionId}`)
+        }
+      }
+      return
+    }
+    if (event.kind === "view_submission") {
+      const res = await ctx.elicitations.handleViewSubmission({
+        callbackId: event.callbackId,
+        userId: event.user,
+        values: event.values,
+      })
+      if (res.kind === "malformed") {
+        log.debug(`slack: unrecognised view_submission ignored: ${event.callbackId}`)
       }
       return
     }
@@ -334,6 +382,9 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
         approvals: ctx.approvals.bindSession({
           sessionKey: entry.key,
           approvers: project.approvers,
+        }),
+        elicitations: ctx.elicitations.bindSession({
+          sessionKey: entry.key,
         }),
       })
       ctx.renderers.set(entry, renderer)

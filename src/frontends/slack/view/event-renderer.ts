@@ -27,6 +27,7 @@ import type { ConversationEvent } from "../../../protocol/types"
 import { EventBatcher } from "../../../utils/event-batcher"
 import { log } from "../../../utils/logger"
 import type { ApprovalHook } from "../approvals/coordinator"
+import type { ElicitationHook } from "../elicitations/coordinator"
 import {
   createOutboundStream,
   type OutboundStream,
@@ -80,6 +81,14 @@ export interface CreateRendererOpts {
    * backend's canUseTool resolver.
    */
   approvals?: ApprovalHook
+  /**
+   * Optional elicitation hook. Same shape as `approvals` — the launcher
+   * wires it to the elicitation coordinator so `elicitation_request` events
+   * surface as an inline "Answer questions" card + modal, and the click
+   * path round-trips back through `backend.respondToElicitation` /
+   * `backend.cancelElicitation`.
+   */
+  elicitations?: ElicitationHook
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
@@ -115,6 +124,8 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   /** permission_request ids we've handed off to approvals but not yet heard
    *  a permission_response for. Used to auto-deny on interrupt/destroy. */
   const pendingApprovals = new Set<string>()
+  /** elicitation_request ids outstanding. Auto-cancelled on interrupt/destroy. */
+  const pendingElicitations = new Set<string>()
 
   function ensureStream(): OutboundStream {
     if (!stream) {
@@ -153,9 +164,25 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     }
   }
 
+  function cancelPendingElicitations(): void {
+    if (!opts.elicitations || pendingElicitations.size === 0) return
+    const ids = Array.from(pendingElicitations)
+    pendingElicitations.clear()
+    for (const id of ids) {
+      try {
+        opts.elicitations.onCancel(id)
+      } catch (err) {
+        log.error(`slack renderer: elicitation cancel threw for ${id}: ${String(err)}`)
+      }
+    }
+  }
+
   async function endTurn(terminal: "done" | "interrupted" | "error"): Promise<void> {
     inTurn = false
-    if (terminal !== "done") cancelPendingApprovals()
+    if (terminal !== "done") {
+      cancelPendingApprovals()
+      cancelPendingElicitations()
+    }
     const s = stream
     const r = reactions
     const final = finalText
@@ -224,6 +251,27 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
         case "permission_response":
           pendingApprovals.delete(event.id)
           break
+        case "elicitation_request":
+          if (opts.elicitations) {
+            pendingElicitations.add(event.id)
+            try {
+              opts.elicitations.onRequest({
+                request: event,
+                channel: binding.channel,
+                threadTs: binding.threadTs,
+              })
+            } catch (err) {
+              log.error(`slack renderer: elicitation onRequest threw: ${String(err)}`)
+            }
+          } else {
+            log.warn(
+              `slack renderer: elicitation_request ${event.id} — no hook wired, backend will block`,
+            )
+          }
+          break
+        case "elicitation_response":
+          pendingElicitations.delete(event.id)
+          break
         default:
           // Every other event is fed to reactions (above) but produces no
           // visible body. S3+ tool cards + plan updates hook here.
@@ -271,6 +319,7 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
         void endTurn("interrupted").catch(() => undefined)
       } else {
         cancelPendingApprovals()
+        cancelPendingElicitations()
       }
     },
   }

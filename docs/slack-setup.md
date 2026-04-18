@@ -1,0 +1,224 @@
+# Setting up bantai's Slack frontend
+
+This walks you from `git clone` → working bot in a real Slack workspace in under ten minutes. The flow assumes Socket Mode (easiest; no public HTTPS endpoint needed). Skip to the bottom for HTTP / Events API instead.
+
+## Prerequisites
+
+- Bun ≥ 1.3.11 (`curl -fsSL https://bun.sh/install | bash`)
+- A Slack workspace where you can install apps. Free / developer workspaces work fine.
+- An Anthropic API key (or another supported backend's credential — bantai works with Codex, Gemini, or any ACP backend too).
+
+## 1. Clone + install
+
+```bash
+git clone https://github.com/anthropics/bantai.git
+cd bantai
+bun install
+```
+
+Verify the build works:
+
+```bash
+bun run typecheck
+bun test tests/frontends/slack
+```
+
+## 2. Generate the Slack app manifest
+
+Slack wants a manifest (YAML or JSON) that declares your app's scopes, event subscriptions, and interactivity settings. bantai ships the right manifest so you don't have to click through 20 scope checkboxes:
+
+```bash
+bun run ./src/index.ts slack init-manifest > slack-manifest.yaml
+```
+
+Default is Socket Mode. If you need HTTP / Events API instead:
+
+```bash
+bun run ./src/index.ts slack init-manifest --http --request-url https://yourdomain.com/slack/events > slack-manifest.yaml
+```
+
+## 3. Create the Slack app
+
+1. Go to <https://api.slack.com/apps>.
+2. Click **Create New App** → **From an app manifest**.
+3. Pick your workspace.
+4. Paste the contents of `slack-manifest.yaml`.
+5. Click **Create**.
+
+Slack will show you the scopes + event subscriptions from the manifest. Confirm and continue.
+
+## 4. Install the app + copy tokens
+
+On the app's configuration page:
+
+1. **OAuth & Permissions** → **Install to Workspace** → **Allow**.
+   - Copy the **Bot User OAuth Token** (`xoxb-…`). This goes into `BANTAI_SLACK_BOT_TOKEN`.
+2. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes**.
+   - Name it `socket`, grant the `connections:write` scope, click **Generate**.
+   - Copy the token (`xapp-…`). This goes into `BANTAI_SLACK_APP_TOKEN`.
+3. Enable **Socket Mode** on the **Socket Mode** tab.
+4. Enable **Event Subscriptions** on that tab.
+5. Enable **Interactivity** on the **Interactivity & Shortcuts** tab (no URL needed in Socket Mode).
+
+## 5. Write `slack.toml`
+
+bantai looks for `./.bantai/slack.toml` first, then `~/.bantai/slack.toml`. Either works — create one of them:
+
+```toml
+[workspace]
+mode = "socket"
+bot_token = { env = "BANTAI_SLACK_BOT_TOKEN" }
+app_token = { env = "BANTAI_SLACK_APP_TOKEN" }
+
+[defaults]
+backend = "claude"
+model = "claude-opus-4-7"
+verbosity = "normal"
+require_mention = true
+session_banner = true
+approvers = []          # any user can approve tool use in the default config
+# approvers = ["U0123456", "U0123457"]   # recommended for production
+
+# Optional: per-channel overrides.
+# [[channels]]
+# id = "C0123456789"
+# name = "eng-backend"
+# project_dir = "/home/me/dev/backend"
+# backend = "claude"
+# model = "claude-opus-4-7"
+# approvers = ["U0ALICE"]
+# verbosity = "verbose"
+```
+
+Export your tokens + your backend's API key:
+
+```bash
+export BANTAI_SLACK_BOT_TOKEN=xoxb-...
+export BANTAI_SLACK_APP_TOKEN=xapp-...
+export ANTHROPIC_API_KEY=sk-...
+```
+
+## 6. Run the bot
+
+```bash
+bun run ./src/index.ts slack
+```
+
+You should see (roughly):
+
+```
+slack: loaded config from /you/.bantai/slack.toml (mode=socket)
+slack auth ok: user=U0YOURBOT bot=B0… team=T0…
+slack: server ready — bot user U0YOURBOT, team T0…
+```
+
+## 7. Verify it works
+
+In your Slack workspace:
+
+1. Invite the bot to a channel: `/invite @bantai`.
+2. Mention it: `@bantai please list the files in /tmp`.
+3. The bot should react with `:thought_balloon:`, post a working reply, and finish with `:white_check_mark:`.
+
+## Per-channel configuration
+
+Each `[[channels]]` override scopes its fields to one channel ID:
+
+```toml
+[[channels]]
+id = "C_YOUR_CHANNEL"
+name = "eng-backend"
+project_dir = "/home/me/dev/backend"
+backend = "codex"                  # this channel runs Codex instead of Claude
+model = "gpt-5-codex"
+approvers = ["U0ALICE", "U0BOB"]
+verbosity = "verbose"
+allowed_tools = ["Read", "Grep", "Bash"]
+claude_config_dir = "/home/me/.claude/eng-backend"
+system_prompt_append = "Focus on the backend service; ignore the frontend subtree."
+turn_timeout_s = 300               # auto-interrupt a turn after 5 min
+max_budget_usd = 10                # stop turn streaming if the session cost exceeds $10
+
+[[channels]]
+id = "C_OTHER_CHANNEL"
+name = "mobile"
+project_dir = "/home/me/dev/mobile"
+backend = "claude"
+model = "claude-haiku-4-5"
+approvers = ["U0CAROL"]
+verbosity = "concise"
+```
+
+Two different repos, two different backends, two different approver lists — one bot process, no cross-talk.
+
+## Control commands (per-channel)
+
+Any user in the channel can run these in-thread by typing `!bantai <cmd>`:
+
+- `!bantai help` — list all commands
+- `!bantai status` — show backend, model, cwd, verbosity, channel binding
+- `!bantai settings` — dump the fully resolved channel config (no secrets)
+- `!bantai cost` — session token + USD totals
+- `!bantai stop` — interrupt the current turn
+- `!bantai model <id>` — swap the active model live
+- `!bantai verbosity <silent|concise|normal|verbose|debug>` — adjust output detail
+- `!bantai new` — reset this thread's session
+
+Change the prefix by setting `control_prefix = "!jarvis"` (or whatever) under `[defaults]`.
+
+## HTTP / Events API mode (optional)
+
+If you can't use Socket Mode (e.g. a hosted deploy), switch the manifest generation:
+
+```bash
+bun run ./src/index.ts slack init-manifest --http --request-url https://yourdomain.com/slack/events > slack-manifest.yaml
+```
+
+And in `slack.toml`:
+
+```toml
+[workspace]
+mode = "http"
+bot_token = { env = "BANTAI_SLACK_BOT_TOKEN" }
+signing_secret = { env = "BANTAI_SLACK_SIGNING_SECRET" }
+port = 3000
+webhook_path = "/slack/events"
+```
+
+You're responsible for getting HTTPS in front of the bot — Slack refuses plain HTTP request URLs. ngrok / Cloudflare Tunnels / your load balancer are all fine.
+
+## Troubleshooting
+
+### `not_authed`, `invalid_auth`, `missing_scope`
+
+- Check `echo $BANTAI_SLACK_BOT_TOKEN` / `$BANTAI_SLACK_APP_TOKEN` — token rotation or a typo is the usual cause.
+- Re-install the app to the workspace after editing scopes. OAuth tokens are pinned to the scope set at install time.
+- The launcher runs a scope probe on boot; missing scopes show up as `slack diagnostic:` warn lines in the log.
+
+### Bot doesn't reply to @mentions
+
+- Is the bot a member of the channel? `/invite @bantai`.
+- Is the channel ID in a `[[channels]]` entry (if you have per-channel overrides)? `conversations.info` in Slack's API surface will show the ID.
+- Run `!bantai status` in-thread — if the bot responds to that, the routing layer is working; the silence is upstream (backend / model / auth).
+
+### `approvers.defaults_empty` warning
+
+The boot audit flags channels where any user can approve tool use. Set `approvers = ["U0YOUR_ID"]` under `[defaults]` or per-channel. Slack user IDs start with `U`; you can grab yours from the **Profile & account** → **Copy member ID** menu.
+
+### Bot posts but nothing shows up
+
+Slack's `chat:write.public` scope lets the bot post in channels it's not a member of. Without it, posts fail silently in public channels the bot hasn't been invited to. The manifest ships `chat:write.public` — re-install if you deleted it.
+
+### Turn never completes
+
+A missing Anthropic / OpenAI / etc. API key. Check your backend's CLI works standalone:
+
+```bash
+bun run ./src/index.ts   # launches the TUI — if the backend errors here, it'll error in Slack too
+```
+
+## What's next
+
+- `!bantai status` and `!bantai settings` are your debugging primitives — run them in a channel when something looks wrong.
+- Per-channel `claude_config_dir` lets you install different skills / MCP tokens / slash commands per channel without conflicts. See the Claude SDK docs for the `CLAUDE_CONFIG_DIR` layout.
+- See `plan-slack-integration.md` in the repo for the full architecture + phase roadmap.

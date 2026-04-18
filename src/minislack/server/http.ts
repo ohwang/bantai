@@ -109,12 +109,30 @@ export async function handleHttp(req: Request, ctx: HttpContext): Promise<Respon
     })
   }
 
-  // v2 upload — the externally-addressable byte PUT target. Never called by
-  // the Slack API dispatch above; its URL is handed out by
-  // files.getUploadURLExternal and the client PUTs raw bytes here.
-  if (pathname.startsWith("/_files/upload/") && req.method === "PUT") {
+  // v2 upload — the externally-addressable byte upload target. Never called
+  // by the Slack API dispatch above; its URL is handed out by
+  // files.getUploadURLExternal. Real Slack accepts both a raw `PUT` with the
+  // bytes as the body and a `POST multipart/form-data` with the bytes under
+  // the `file` field. We honour both here so clients written against either
+  // shape (Slack's own @slack/web-api posts multipart, some wrappers PUT
+  // raw) round-trip cleanly.
+  if (
+    pathname.startsWith("/_files/upload/") &&
+    (req.method === "PUT" || req.method === "POST")
+  ) {
     const token = pathname.slice("/_files/upload/".length).split("?")[0] ?? ""
-    const bytes = new Uint8Array(await req.arrayBuffer())
+    const contentType = req.headers.get("content-type") ?? ""
+    let bytes: Uint8Array
+    if (req.method === "POST" && contentType.includes("multipart/form-data")) {
+      const form = await req.formData()
+      const part = form.get("file")
+      if (!(part instanceof Blob)) {
+        return new Response("missing file field", { status: 400 })
+      }
+      bytes = new Uint8Array(await part.arrayBuffer())
+    } else {
+      bytes = new Uint8Array(await req.arrayBuffer())
+    }
     const ok = storePendingBytes(ctx.ws, token, bytes)
     if (!ok) return new Response("unknown upload token", { status: 404 })
     return new Response("OK", { status: 200 })

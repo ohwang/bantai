@@ -48,5 +48,8 @@
     "@slack/types": "^2.20.1",
     "@types/bun": "^1.3.12",
     "typescript": "^6.0.3"
+  },
+  "patchedDependencies": {
+    "follow-redirects@1.16.0": "patches/follow-redirects@1.16.0.patch"
   }
 }

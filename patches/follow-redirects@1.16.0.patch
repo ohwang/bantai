@@ -1,0 +1,20 @@
+diff --git a/index.js b/index.js
+index 3d32523ec32f38db18e05a67551f1948af67c144..28c02d40e8495a8d016e1110e0e3da3309981d00 100644
+--- a/index.js
++++ b/index.js
+@@ -644,7 +644,14 @@ function createErrorType(code, message, baseClass) {
+   function CustomError(properties) {
+     // istanbul ignore else
+     if (isFunction(Error.captureStackTrace)) {
+-      Error.captureStackTrace(this, this.constructor);
++      // Bun's V8 rejects captureStackTrace when `this` is not an Error
++      // instance. That happens below at `new (baseClass || Error)()` —
++      // we use the constructor to build a prototype chain, so `this` is
++      // the raw prototype object at that point, not an Error. Wrap in a
++      // try/catch so strict runtimes don't blow up at module init.
++      try {
++        Error.captureStackTrace(this, this.constructor);
++      } catch (_) {}
+     }
+     Object.assign(this, properties || {});
+     this.code = code;

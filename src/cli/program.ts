@@ -120,15 +120,27 @@ export async function runCli(argv: string[]): Promise<void> {
   }
 
   // -----------------------------------------------------------------------
-  // Frontend subcommand: slack (placeholder — runs the Slack server)
+  // Frontend subcommand: slack — runs the Slack frontend server
   // -----------------------------------------------------------------------
   const slackCmd = new Command("slack")
-    .description("Run bantai as a Slack frontend server (placeholder)")
+    .description("Run bantai as a Slack frontend server")
+    .option(
+      "--slack-config <path>",
+      "Path to slack.toml (default: ./.bantai/slack.toml, ~/.bantai/slack.toml)",
+    )
+    .option(
+      "--slack-api-url <url>",
+      "Override the Slack Web API base URL (e.g. for minislack: http://localhost:3102)",
+    )
   addGlobalOptions(slackCmd)
   slackCmd.action(async () => {
     const opts = { ...program.opts(), ...slackCmd.opts() }
     const flags = resolveFlags(opts)
-    await launchSlack(flags)
+    await launchSlack({
+      ...flags,
+      slackConfigPath: opts.slackConfig as string | undefined,
+      slackApiUrlOverride: opts.slackApiUrl as string | undefined,
+    })
   })
   program.addCommand(slackCmd)
 

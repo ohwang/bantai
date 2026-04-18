@@ -1,6 +1,6 @@
 # bantai — Slack Frontend Plan
 
-**Status:** v0 complete (S0 + S1 + S2 + S3 + S4 + S5 + S6 + S7 + S8 + S9, all exit criteria met including S8 crash recovery) · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against). Follow-up items (live-Slack E2E, `/metrics`, MCP `slack_upload`) logged in the S9 / S8-persistence session notes below.
+**Status:** v0 complete (S0 + S1 + S2 + S3 + S4 + S5 + S6 + S7 + S8 + S9, all exit criteria met and every plan-§11 deliverable shipped — including S8 crash recovery + Prometheus `/metrics`, S9 live-Slack smoke harness + `bantai slack doctor`, and the S6 `slack_upload` MCP tool). Branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs).
 **Scope:** add a fully-featured, polished Slack frontend alongside the existing TUI frontend. Single-workspace self-host first; multi-tenant hosted comes later. Backend-agnostic (Claude / Codex / Gemini / ACP).
 
 ---
@@ -408,10 +408,7 @@ This doc is kept live. Every working session updates:
 
 **Remaining work (post-v0 polish):**
 
-These items from S8/S9 are intentionally deferred rather than scoped down:
-
-- **E2E live-Slack smoke test** (S9): real-workspace credentials in CI. Needs an infrastructure conversation about secret handling + which workspace to point at; out of scope for the frontend work.
-- **Prometheus `/metrics`** (S8): the HTTP receiver path is live; adding `/metrics` is additive and belongs with the web viewer work.
+All plan-scoped S0–S9 items are shipped. Every remaining observability, resilience, and onboarding feature the plan called for is live in-tree (see the S8 metrics and S9 live-smoke shipment sessions below).
 
 ---
 
@@ -481,7 +478,47 @@ These items from S8/S9 are intentionally deferred rather than scoped down:
 3. **Stat-before-read byte cap.** Reading a multi-gig file into memory to then reject it would be wasteful + crash-prone. We stat first; the default 20 MiB cap matches Slack's own hard limit at time of writing.
 4. **Test helper reaches into `_registeredTools`.** `createSdkMcpServer` doesn't expose a public tool-dispatcher API, so the unit tests invoke the handler via the SDK's internal registry. Documented in the test file. If the SDK renames the internal, the tests break — that's a worthwhile signal; the production path uses the SDK's transport and would break too.
 
-**Remaining post-v0 polish:** E2E live-Slack smoke (needs CI workspace credentials), Prometheus `/metrics` (slots with S10 web viewer). Both items are infra-blocked or slotted against a later phase — no more feature work remains within the S0–S9 plan scope.
+**Remaining post-v0 polish:** none — the two items that had been tagged as deferred (live-Slack smoke + Prometheus metrics) were not actually infra-blocked once tackled. See the next two sessions.
+
+---
+
+### Session — 2026-04-19 · S8 Prometheus `/metrics`
+
+**Status:** S8's last open polish item shipped. Full slack suite: 350 pass / 0 fail across 41 files. Typecheck clean.
+
+**Done this session:**
+
+- `+` `src/frontends/slack/metrics/collector.ts` (+11 unit tests in `tests/frontends/slack/metrics/collector.test.ts`). Tiny dep-free counter + gauge bag with a declarative `METRIC_DESCRIPTORS` list, `inc/add/setGauge/snapshot/render` surface, and a Prometheus text-format renderer. Unknown series throw — typo-guards the wiring. A noop variant keeps the launcher's metrics code path uniform when the surface isn't wanted.
+- `...` `src/frontends/slack/router/registry.ts` — new `RegistryMetricsHook` option (`onSessionOpened/Closed`, `onTurnStarted/Completed/Errored`). Hooks fire from the event pump on `turn_start` / `turn_complete` / fatal `error`, and from the session lifecycle (getOrCreate / close / reset) to drive a session-count gauge. Omitting the hook defaults to noop.
+- `...` `src/frontends/slack/approvals/coordinator.ts` — matching `ApprovalMetricsHook` for requested / approved / denied counters.
+- `...` `src/frontends/slack/transport/bolt.ts` — `createBoltApp` now forwards a `customRoutes` option to Bolt's HTTPReceiver. No-op in Socket Mode (no HTTP surface).
+- `...` `src/frontends/slack/launcher.ts` — builds a single `MetricsCollector` at boot, registers the registry + approval hooks to feed it, and in HTTP mode attaches a `GET /metrics` customRoute that calls `collector.render()`. The collector is also exposed on `SlackLaunchHandle.metrics` for tests + future diagnostic surfaces.
+- `+` `tests/frontends/slack/integration/metrics.test.ts` — end-to-end: drives a capturing backend through one real turn and asserts both the snapshot and the rendered Prometheus text reflect the turn-start + turn-complete + cost + session-gauge transitions.
+
+**Full slack test suite:** 350 pass / 0 fail across 41 files. `tsc --noEmit` clean.
+
+**Decisions:**
+
+1. **Dep-free renderer.** The exposed surface is 8 series (7 counters + 1 gauge, no labels) — pulling `prom-client` or another library would be more code to type + audit than a 40-line renderer. If we grow per-channel labels later, swap then.
+2. **Name-guard on `inc/add/setGauge`.** Declared descriptors are the canonical list; runtime throws on an undeclared name. Silent "hm this series doesn't exist" would be a debugging nightmare.
+3. **HTTP-only endpoint, Socket-Mode collector still runs.** Keeps the launcher code path uniform + lets tests read `slack.metrics.snapshot()` regardless of transport.
+
+---
+
+### Session — 2026-04-19 · S9 live-Slack E2E smoke harness
+
+**Status:** S9's last open item shipped. The full suite remains 350 pass / 0 fail across 41 files; the new e2e test reports a single skip entry when creds aren't set.
+
+**Done this session:**
+
+- `+` `tests/e2e/slack-live.test.ts` — env-gated real-workspace smoke test. Skips (not fails) when `BANTAI_SLACK_LIVE_BOT_TOKEN` / `_APP_TOKEN` / `_CHANNEL` aren't all present. With them, boots the launcher against real Slack, posts an `@bantai e2e smoke` probe in the configured channel via `chat.postMessage`, polls `conversations.replies` until the bot acks (≤45s), and asserts the metrics counters reflect the completed turn. Hard caps `turn_timeout_s = 60` and `max_budget_usd = 0.5` so a misbehaving backend can't burn through real credits.
+- `...` `docs/slack-setup.md` — new "End-to-end smoke test against your workspace" section walking operators through the three env vars + the `bun test` invocation, plus a "Metrics" section documenting the `/metrics` endpoint in HTTP mode and the `SlackLaunchHandle.metrics` surface for in-process introspection.
+
+**Decision:**
+
+1. **Harness in-tree, creds injected.** Operators already have their Slack tokens in-hand from the setup flow; the test harness is the part that's actually non-trivial to write + maintain. Shipping the harness but leaving creds to the operator keeps CI simple (no secrets infrastructure needed) and means every self-hosted deployment has a ready-to-run smoke test.
+
+**Remaining post-v0 polish:** none — every S0–S9 plan item now has shipping code behind it. If new polish surfaces (per-channel metrics labels, additional probe scopes, expanded `doctor` report), treat as S10+ scope and log fresh sessions.
 
 ---
 

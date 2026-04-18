@@ -79,6 +79,10 @@ session_banner = true
 approvers = []          # any user can approve tool use in the default config
 # approvers = ["U0123456", "U0123457"]   # recommended for production
 
+# Persist per-session state so a process restart (crash, deploy) picks live
+# threads back up where they left off. Leave unset to disable persistence.
+store_path = "~/.bantai/slack.db"
+
 # Optional: per-channel overrides.
 # [[channels]]
 # id = "C0123456789"
@@ -216,6 +220,12 @@ A missing Anthropic / OpenAI / etc. API key. Check your backend's CLI works stan
 ```bash
 bun run ./src/index.ts   # launches the TUI — if the backend errors here, it'll error in Slack too
 ```
+
+## Session persistence
+
+With `store_path` set, bantai writes a small SQLite row per live (channel, thread) pair tracking the backend session id + cumulative turn count + USD cost. A process restart (deploy, crash, `kill -9`) rehydrates each thread's session on the next inbound message — the backend resumes instead of starting fresh, and `!bantai cost` continues to report totals across restarts. `!bantai new` explicitly forgets the row for its thread.
+
+Leave `store_path` unset (or set it to `""`) to disable persistence. Threads start fresh after every restart in that mode.
 
 ## What's next
 

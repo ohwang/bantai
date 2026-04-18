@@ -48,6 +48,9 @@ import {
   createAttachmentFetcher,
   type AttachmentFetcher,
 } from "./inbox/attachments"
+import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk"
+import { createSlackUploadMcpServer } from "./mcp/slack-upload"
+import { buildSlackFileClient } from "./view/upload"
 import {
   createNoopSessionStore,
   createSessionStore,
@@ -175,6 +178,22 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   // a doomed SessionHost.
   const shuttingDown = { value: false }
 
+  // Build the per-session `slack_upload` MCP server on demand. One config
+  // per (channel, threadTs) pair — the tool handler closes over the
+  // binding so the backend doesn't have to pass the context on every call.
+  const slackFileClient = buildSlackFileClient(app)
+  function slackUploadMcpFor(
+    channel: string,
+    threadTs: string,
+    cwd: string,
+  ): McpSdkServerConfigWithInstance {
+    return createSlackUploadMcpServer({
+      binding: { channel, threadTs },
+      fileClient: slackFileClient,
+      cwd,
+    })
+  }
+
   const attachmentStagingDir =
     opts.attachmentStagingDir ??
     pathJoin(homedir(), ".bantai", "slack-attachments")
@@ -227,6 +246,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       projectOverrides: new Map(),
       bannerPosted: new WeakSet(),
       shuttingDown,
+      slackUploadMcpFor,
     }),
   })
 
@@ -303,6 +323,16 @@ interface RoutingCtx {
    * mid-turn when `registry.closeAll()` runs moments later.
    */
   shuttingDown: { value: boolean }
+  /**
+   * Build a per-session `slack_upload` MCP server config. The launcher
+   * constructs one for every new SessionHost so the tool handler closes
+   * over the correct (channel, threadTs, cwd) binding.
+   */
+  slackUploadMcpFor: (
+    channel: string,
+    threadTs: string,
+    cwd: string,
+  ) => McpSdkServerConfigWithInstance
 }
 
 /**
@@ -499,6 +529,12 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
       sessionParts,
       project,
       turn.parentTs,
+      buildSessionMcpOverlay({
+        project,
+        channel: turn.channel,
+        threadTs: turn.parentTs,
+        slackUploadMcp: ctx.slackUploadMcpFor,
+      }),
     )
 
     let renderer = ctx.renderers.get(entry)
@@ -564,6 +600,39 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
     }
 
     entry.send({ text: turn.text })
+  }
+}
+
+/**
+ * Build the sessionConfigOverlay that injects the per-session `slack_upload`
+ * MCP server. Merges with `project.resolvedMcpServers` so a channel's
+ * user-configured MCP set remains active alongside the upload tool.
+ *
+ * Note: returning `undefined` when we have nothing to overlay keeps
+ * `SessionConfig.mcpServers` free to fall back to the backend's defaults
+ * (rather than being force-set to an empty map).
+ */
+function buildSessionMcpOverlay(args: {
+  project: ProjectConfig
+  channel: string
+  threadTs: string
+  slackUploadMcp: (
+    channel: string,
+    threadTs: string,
+    cwd: string,
+  ) => McpSdkServerConfigWithInstance
+}): Partial<import("../../protocol/types").SessionConfig> | undefined {
+  const upload = args.slackUploadMcp(
+    args.channel,
+    args.threadTs,
+    args.project.projectDir,
+  )
+  const base = args.project.resolvedMcpServers ?? {}
+  return {
+    mcpServers: {
+      ...base,
+      "bantai-slack-upload": upload,
+    },
   }
 }
 

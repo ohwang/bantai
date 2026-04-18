@@ -223,6 +223,48 @@ This doc is kept live. Every working session updates:
 
 ---
 
+### Session — 2026-04-18 · S5 tool visibility + verbosity
+
+**Status:** Phase S5 complete. 238 slack pass / 0 fail (full suite ~1920 pass / 11 skip / 0 fail).
+
+**Done this session (S5):**
+- `...` `src/frontends/slack/view/blocks/tool-card.ts` (+25 unit tests) — verbosity-aware block builder. `buildToolRunningCard` + `buildToolCompletedCard` with five distinct shapes (silent null / concise null / normal one-liner+preview / verbose input+output fences / debug +raw JSON). `buildConciseToolSummary` produces the `💭 N tools: A, B ×3` aggregator for concise mode. Tool-family → emoji map mirrors the reaction state machine. `summarizeInput()` prefers common shortcut keys (command, file_path, pattern, url, query) and annotates `(+N)` when the preferred field has siblings.
+- `...` `src/frontends/slack/view/blocks/plan.ts` (+5 unit tests) — `buildPlanBlocks` renders `plan_update.entries` as a clipboard header + bulleted list with status emoji (:hourglass_flowing_sand: / :arrows_counterclockwise: / :white_check_mark:) and strikethrough for completed steps. Priority tag italicised. 40-entry cap with "+N more" hint; per-line 220-char cap. Edited in place on subsequent plan_updates via the renderer's per-session `planMessageTs`.
+- `...` `src/frontends/slack/view/blocks/thinking.ts` (+6 unit tests) — `buildThinkingBlocks` only renders at verbose/debug; context header + quoted italic section with mrkdwn control-char escaping so `_bold_` inside a thinking trace doesn't bleed into the block format. 2600-char cap.
+- `...` `src/frontends/slack/view/event-renderer.ts` — threaded the three builders + a cost footer into the per-turn lifecycle:
+  - Per-turn state (reset on turn_start): tool id → { ts, start time, cached input, name }, plan ts (session-scoped), thinking accumulator + ts, latest cost/usage.
+  - Per-tool-id promise chain so `tool_use_end` always runs after its `tool_use_start`'s postMessage resolves — without this, the batcher runs both handlers fire-and-forget in the same microtask and the end path falls back to a fresh post instead of the in-place update.
+  - `postPerTurnAnnotations()` at endTurn("done"): awaits the full tool chain, then posts the concise summary (if concise + tools ran) and the cost footer (if show_cost is on + verbosity ≥ normal).
+  - `buildCostFooter()` lives in the same file — one-liner at normal (`:moneybag: 150 tok · $0.01`), per-category breakdown at verbose (`in 100, out 50, cache-r 20, cache-w 10`).
+- `...` Config surface: `show_cost: boolean = false` in `DefaultsSchema` + propagated to `ProjectConfig.showCost`. The launcher reads `project.showCost` → `createEventRenderer({showCost})`.
+- `...` Existing tests tightened: the pre-existing "no post when the turn emits no text" case was asserting zero posts at default verbosity, which is no longer true once tool cards are in play. Retitled and narrowed to "text stream does not post", matching its original intent (the OUTBOX doesn't spuriously post placeholders). The S2 streaming test's prompt was changed from "can you read the file please" (triggers the mock's tool sim) to "just say hello" (no tools), preserving its "exactly one streaming message" assertion.
+- `...` `tests/frontends/slack/view/event-renderer-verbosity.test.ts` (+10 cases) — unit-level coverage of the full verbosity matrix: silent produces nothing, concise posts a summary at turn_complete + no per-tool card, normal emits tool card (post+update) + text, verbose adds thinking + detailed cost, plan posts once and updates in place.
+- `...` `tests/frontends/slack/integration/verbosity.test.ts` (+6 cases) — one minislack+launcher fixture per verbosity level, each running "@bantai read the file please" and asserting shape: silent zero replies, concise has the `:thought_balloon:` aggregator, normal has `:white_check_mark: file_path: …`, verbose has ≥4 fences in the tool card, show_cost lands a `:moneybag:` footer.
+- `...` The integration test anchors on `:white_check_mark:` reaction landing on the trigger message (fires only after turn_complete → reactions.terminate("done")). Without that anchor, a naive 1s wait races the mock's ~3s word stream and turn_complete never arrives.
+
+**Full slack suite:** 238 pass / 0 fail across 24 files. Plan-wide test suite remains green.
+
+**S5 exit criterion:** "The four verbosity levels demonstrably differ in a fixture run; snapshot tests cover every combination." Demonstrated via `integration/verbosity.test.ts`: silent/concise/normal/verbose each produce a distinct thread shape, and show_cost lands a cost footer. Not a "snapshot" test in the Jest sense, but the per-level assertions serve the same purpose. **Met.**
+
+**Discovered / scope deltas from S5:**
+
+1. **Per-tool-id promise chain was load-bearing.** Without it, tool_use_end runs before tool_use_start's post has resolved, so `toolCardTs.get(id)` is undefined and the end handler falls back to a fresh post — two messages instead of one in-place update. Explicit serialisation by id preserves "one card per tool call" even when the backend emits start+end in the same batcher tick (very common for the mock, and plausible under high streaming load for real backends).
+2. **Cost footer is off by default (`show_cost = false`).** Plan §6 mandates this; we surface it as a config toggle rather than verbosity-coupled so workspaces can run at normal verbosity without pennies-per-turn noise. Verbosity still gates the footer's DETAIL level when enabled (one-liner at normal, breakdown at verbose/debug). Never emitted at silent/concise.
+3. **Concise's aggregator needed a "don't post on no-tool turns" guard.** An early-return when `toolHistory.length === 0` otherwise produces a `💭 0 tools:` line for every text-only reply. Trivial but the test caught it.
+4. **Thinking throttled at 250ms in-place.** Without throttling, verbose/debug turns with a lot of thinking deltas would storm chat.update. The throttle mirrors the outbox's streaming cadence (plan §6 250ms floor).
+5. **The pre-existing event-renderer unit test had an assumption that broke cleanly.** Rather than letting it silently pass by special-casing, we renamed + narrowed the case so it still guards the original concern (outbox doesn't spuriously post empty text). This kind of test rot is worth catching — had we left it, a future reader would have been confused about whether tool-only turns "should" produce nothing.
+6. **The streaming test's prompt change isolates concerns correctly.** The test is about the streaming outbox producing ONE visible message. Tools don't belong in that scope; switching to "just say hello" removes the confound without weakening the assertion.
+
+**Next up (S6 — File round-trip):**
+- `view/upload.ts` — 3-step `files.getUploadURLExternal` → presigned POST → `files.completeUploadExternal` port.
+- Inbound attachments → downloaded into a channel-scoped staging dir → path injected into the user turn (and, for images, embedded as base64 in `UserMessage.images`).
+- Long tool outputs (> configurable N lines) → auto-uploaded as snippet; link replaces the in-card preview.
+- Agent-generated artifacts → an MCP tool `slack_upload` exposed when the Slack frontend is active.
+
+**Plan §11/S6 exit:** "user posts a PNG → agent OCRs it; agent writes a 500-line diff → Slack shows a file snippet with preview."
+
+---
+
 ## 1. Premises — what we already have vs. what we need to build
 
 ### What's already in the tree (reuse, don't rebuild)

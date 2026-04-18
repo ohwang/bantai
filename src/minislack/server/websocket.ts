@@ -56,7 +56,7 @@ export function buildWebSocketHandler(ctx: WsContext) {
       socket.data.appId = appId
 
       // hello immediately
-      socket.send(JSON.stringify(buildHello()))
+      socket.send(JSON.stringify(buildHello(appId)))
 
       // Subscribe with the app's event filter
       const types = (app.subscribed_events.length > 0

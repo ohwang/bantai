@@ -16,6 +16,27 @@ import type {
   Workspace,
 } from "../types/slack"
 
+/**
+ * Fields shared by every Channel variant that the store populates identically.
+ * Keeps create sites focused on per-variant bookkeeping.
+ */
+function baseChannelFields(ws: Workspace, created: number, members: string[]) {
+  return {
+    updated: created * 1000,
+    is_shared: false,
+    is_org_shared: false,
+    is_ext_shared: false,
+    is_pending_ext_shared: false,
+    pending_shared: [] as string[],
+    shared_team_ids: [ws.team.id],
+    is_member: true,
+    num_members: members.length,
+    context_team_id: ws.team.id,
+    previous_names: [] as string[],
+    unlinked: 0,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
@@ -56,6 +77,7 @@ export function createPublicChannel(
     creator: opts.creator,
     members,
     messages: new Map(),
+    ...baseChannelFields(ws, created, members),
     topic: {
       value: opts.topic ?? "",
       creator: opts.creator,
@@ -105,6 +127,7 @@ export function createPrivateGroup(
     creator: opts.creator,
     members,
     messages: new Map(),
+    ...baseChannelFields(ws, created, members),
     topic: {
       value: opts.topic ?? "",
       creator: opts.creator,
@@ -134,6 +157,7 @@ export function openDirectMessage(
   const id = nextId(ws, "D")
   const created = Math.floor(Date.now() / 1000)
   const other = userIdA === userIdB ? userIdA : userIdB
+  const dmMembers = userIdA === userIdB ? [userIdA] : [userIdA, userIdB]
   const dm: DirectMessage = {
     id,
     is_channel: false,
@@ -146,8 +170,9 @@ export function openDirectMessage(
     is_open: true,
     created,
     creator: userIdA,
-    members: userIdA === userIdB ? [userIdA] : [userIdA, userIdB],
+    members: dmMembers,
     messages: new Map(),
+    ...baseChannelFields(ws, created, dmMembers),
   }
   ws.channels.set(id, dm)
   return dm
@@ -184,6 +209,7 @@ export function createMpim(
     creator,
     members,
     messages: new Map(),
+    ...baseChannelFields(ws, created, members),
   }
   ws.channels.set(id, mpim)
   return mpim
@@ -257,6 +283,8 @@ export function joinChannel(
   if (!ch) throw new MinislackError("channel_not_found", channelId)
   if (ch.members.includes(userId)) return
   ch.members.push(userId)
+  ch.num_members = ch.members.length
+  ch.updated = Date.now()
 }
 
 export function leaveChannel(
@@ -267,12 +295,26 @@ export function leaveChannel(
   const ch = ws.channels.get(channelId)
   if (!ch) throw new MinislackError("channel_not_found", channelId)
   ch.members = ch.members.filter((m) => m !== userId)
+  ch.num_members = ch.members.length
+  ch.updated = Date.now()
 }
 
 export function assertMember(ch: Channel, userId: string): void {
   if (!ch.members.includes(userId)) {
     throw new MinislackError("not_in_channel", `user ${userId} is not in ${ch.id}`)
   }
+}
+
+/**
+ * API-safe view of a Channel: drops the internal `messages` Map and `last_read`
+ * (which Slack returns only when scoped). Use this whenever a Channel ships over
+ * the wire as a JSON response.
+ */
+export type ChannelView = Omit<Channel, "messages" | "last_read">
+
+export function channelView(ch: Channel): ChannelView {
+  const { messages: _m, last_read: _lr, ...rest } = ch
+  return rest as ChannelView
 }
 
 // ---------------------------------------------------------------------------

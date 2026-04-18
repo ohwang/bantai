@@ -11,9 +11,10 @@ import {
   getReactions,
   removeReaction,
 } from "../../core/reactions"
+import { getMessage } from "../../core/messages"
 import { MinislackError } from "../../core/channels"
 import type { EventBus } from "../../core/events"
-import type { Channel, Reaction, Workspace } from "../../types/slack"
+import type { Channel, Message, Reaction, Workspace } from "../../types/slack"
 import type { ReactionAddedEvent, ReactionRemovedEvent } from "../../types/events"
 import type { AuthContext } from "../auth"
 
@@ -98,10 +99,13 @@ export interface ReactionGetResponse {
   ok: true
   type: "message"
   channel: string
-  message: {
-    ts: string
-    reactions: Reaction[]
-  }
+  /**
+   * With `full: true` we return the complete Message (Slack's shape).
+   * With `full: false` (or omitted) we still return a Message but only the
+   * reactions + ts fields are guaranteed — clients that read .text should
+   * pass `full: true` so the type-narrow is unambiguous.
+   */
+  message: (Message & { reactions: Reaction[] }) | { ts: string; reactions: Reaction[] }
 }
 
 export function reactionsGet(
@@ -114,6 +118,16 @@ export function reactionsGet(
     ts: args.timestamp,
     full: args.full,
   })
+  if (args.full) {
+    const msg = getMessage(ch, args.timestamp)
+    if (!msg) throw new MinislackError("message_not_found", args.timestamp)
+    return {
+      ok: true,
+      type: "message",
+      channel: ch.id,
+      message: { ...msg, reactions },
+    }
+  }
   return {
     ok: true,
     type: "message",

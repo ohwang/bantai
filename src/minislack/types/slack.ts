@@ -49,18 +49,49 @@ export interface User {
   bot_id?: string      // B…
   deleted: boolean
   profile: UserProfile
+  /** Unix seconds of last profile update. Slack clients read this for cache busting. */
+  updated: number
+  /** Slack-style hex color string (no #). Clients render it behind the avatar. */
+  color: string
+  tz: string           // IANA tz, e.g. "America/Los_Angeles"
+  tz_label: string     // human label, e.g. "Pacific Daylight Time"
+  tz_offset: number    // seconds east of UTC
+  is_admin: boolean
+  is_owner: boolean
+  is_primary_owner: boolean
+  is_restricted: boolean
+  is_ultra_restricted: boolean
+  /** True for app-only users (no human login). */
+  is_app_user: boolean
+  has_2fa: boolean
+  locale?: string
 }
 
 export interface UserProfile {
   real_name: string
   display_name: string
+  /** Server-computed normalized forms. Slack mirrors these; clients key off them. */
+  real_name_normalized: string
+  display_name_normalized: string
   email?: string
+  /** Slack-style 40-char hash used as a cache key for avatar CDN. */
+  avatar_hash: string
+  status_text: string
+  status_emoji: string
+  status_expiration: number
+  /** The user's team id. Mirrors User.team_id in most profiles. */
+  team: string
+  first_name?: string
+  last_name?: string
+  title?: string
+  phone?: string
   image_24?: string
   image_32?: string
   image_48?: string
   image_72?: string
   image_192?: string
   image_512?: string
+  image_1024?: string
 }
 
 export interface Bot {
@@ -100,12 +131,29 @@ interface ChannelBase {
   id: string
   created: number       // unix seconds
   creator: string       // user id
+  /** Last mutation timestamp (unix ms). Slack clients use this for cache invalidation. */
+  updated: number
   /** Ordered member ids. */
   members: string[]
   /** Message ts -> Message, sorted logically by ts ascending. */
   messages: Map<string, Message>
   /** ts of the last read position (not modeled per-user in v0). */
   last_read?: string
+  /** Slack "shared channels" flags — minislack is always single-workspace. */
+  is_shared: boolean
+  is_org_shared: boolean
+  is_ext_shared: boolean
+  is_pending_ext_shared: boolean
+  pending_shared: string[]
+  shared_team_ids: string[]
+  /** Whether the caller is a member. Populated by the API layer, not the store. */
+  is_member: boolean
+  /** Size of members[] — cheap to compute, bolt reads it before paginating. */
+  num_members: number
+  /** Team that this channel's context belongs to. */
+  context_team_id: string
+  previous_names: string[]
+  unlinked: number
 }
 
 export interface PublicChannel extends ChannelBase {
@@ -196,12 +244,18 @@ export interface Message {
   files?: File[]
   reactions?: Reaction[]
   edited?: { user: string; ts: string }
-  /** "me_message", "bot_message", etc. Undefined for a plain user post. */
+  /** "me_message", "bot_message", "thread_broadcast", etc. Undefined for plain posts. */
   subtype?: string
   /** Marker written on chat.delete — we keep the record so `ts` stays reserved. */
   tombstone?: boolean
   /** Client-side idempotency id; echoed back on post. */
   client_msg_id?: string
+  /** Workspace id the message was posted in. Mirrors Slack responses. */
+  team?: string
+  /** For thread replies, the user id of the parent message's author. */
+  parent_user_id?: string
+  /** Whether the author is subscribed to the thread (mirror of a bolt client flag). */
+  subscribed?: boolean
 }
 
 export interface Reaction {
@@ -213,19 +267,37 @@ export interface Reaction {
 export interface File {
   id: string           // F…
   created: number      // unix seconds
+  /** Backcompat alias for `created`. Slack emits both. */
+  timestamp: number
   user: string         // uploader user id
+  /** Team id the file was uploaded in. */
+  user_team?: string
   name: string
   title: string
   mimetype: string
   filetype: string     // "png", "jpg", "txt", ...
   pretty_type: string  // "PNG", "JPEG", ...
   size: number
+  /** "hosted" | "external" | "snippet" | "post". minislack always emits hosted. */
+  mode: "hosted" | "external" | "snippet" | "post"
+  editable: boolean
+  is_external: boolean
+  external_type: string
+  is_public: boolean
+  public_url_shared: boolean
+  display_as_bot: boolean
+  username: string
   /** URL served by minislack's /files/:id. */
   url_private: string
   url_private_download: string
+  /** Slack client deep link — minislack uses a /files/:id#permalink marker. */
+  permalink: string
+  permalink_public: string
   /** Image files only: intrinsic pixel size when known. */
   original_w?: number
   original_h?: number
+  image_exif_rotation?: number
+  has_rich_preview: boolean
   /** Channels that have shared this file. */
   channels: string[]
   groups: string[]
@@ -254,10 +326,23 @@ export interface EventEnvelope<TPayload = unknown> {
 }
 
 export interface EventsApiPayload<TEvent> {
+  /** Legacy verification token. bolt-middlewares still log it. */
+  token: string
   team_id: string
   api_app_id: string
   event: TEvent
   event_id: string
   event_time: number
   type: "event_callback"
+  /** Each delivery carries the authorizations that applied. */
+  authorizations: Array<{
+    enterprise_id: string | null
+    team_id: string
+    user_id: string
+    is_bot: boolean
+    is_enterprise_install: boolean
+  }>
+  is_ext_shared_channel: boolean
+  context_team_id: string
+  context_enterprise_id: string | null
 }

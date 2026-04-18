@@ -42,10 +42,18 @@ export function createUser(ws: Workspace, opts: CreateUserOpts): User {
   const prefix = "U"
   const id = nextId(ws, prefix)
   const real_name = opts.real_name ?? opts.name
+  const now = Math.floor(Date.now() / 1000)
   const profile: UserProfile = {
     real_name,
     display_name: opts.name,
+    real_name_normalized: normalizeName(real_name),
+    display_name_normalized: normalizeName(opts.name),
     email: opts.email,
+    avatar_hash: "g" + id.slice(1, 13).toLowerCase(),
+    status_text: "",
+    status_emoji: "",
+    status_expiration: 0,
+    team: ws.team.id,
   }
   const user: User = {
     id,
@@ -57,9 +65,36 @@ export function createUser(ws: Workspace, opts: CreateUserOpts): User {
     bot_id: opts.bot_id,
     deleted: false,
     profile,
+    updated: now,
+    color: pickUserColor(id),
+    tz: "America/Los_Angeles",
+    tz_label: "Pacific Daylight Time",
+    tz_offset: -25200,
+    is_admin: false,
+    is_owner: false,
+    is_primary_owner: false,
+    is_restricted: false,
+    is_ultra_restricted: false,
+    is_app_user: !!opts.is_bot,
+    has_2fa: false,
   }
   ws.users.set(id, user)
   return user
+}
+
+/** Slack normalizes names by lowering + stripping non-[a-z0-9_-] chars. */
+function normalizeName(raw: string): string {
+  return raw.toLowerCase().replace(/[^a-z0-9_-]+/g, "")
+}
+
+/** Deterministic color picker — cycles through Slack's classic palette. */
+const USER_COLORS = [
+  "9f69e7", "4bbe2e", "e7392d", "3c989f", "674b1b",
+  "8f4a2b", "4cc091", "e96699", "5870dd", "9b3b45",
+]
+function pickUserColor(userId: string): string {
+  const n = Number(userId.slice(1)) || 0
+  return USER_COLORS[n % USER_COLORS.length]!
 }
 
 /** Resolve a user by id OR by handle (@name). Returns undefined if missing. */
@@ -97,24 +132,28 @@ export function updateUser(
   if (patch.name !== undefined) {
     user.name = patch.name
     user.profile.display_name = patch.name
+    user.profile.display_name_normalized = normalizeName(patch.name)
   }
   if (patch.real_name !== undefined) {
     user.real_name = patch.real_name
     user.profile.real_name = patch.real_name
+    user.profile.real_name_normalized = normalizeName(patch.real_name)
   }
   if (patch.email !== undefined) {
     user.profile.email = patch.email
   }
   if (patch.profile) {
     user.profile = { ...user.profile, ...patch.profile }
-    // Keep root mirrors in sync with profile overrides when both are present.
     if (patch.profile.real_name !== undefined) {
       user.real_name = patch.profile.real_name
+      user.profile.real_name_normalized = normalizeName(patch.profile.real_name)
     }
     if (patch.profile.display_name !== undefined) {
       user.name = patch.profile.display_name
+      user.profile.display_name_normalized = normalizeName(patch.profile.display_name)
     }
   }
+  user.updated = Math.floor(Date.now() / 1000)
   return user
 }
 

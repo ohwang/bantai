@@ -33,14 +33,18 @@ export type SlackEvent =
 
 export interface MessageEvent {
   type: "message"
-  /** Undefined for plain user posts; "bot_message" / "me_message" etc. for subtypes. */
+  /** Undefined for plain user posts; "bot_message" / "me_message" / "thread_broadcast" / "file_share" / "channel_join" etc. */
   subtype?: string
   event_ts: string
   ts: string
   thread_ts?: string
+  /** For thread replies, the parent message's author. */
+  parent_user_id?: string
   channel: string
   channel_type: "channel" | "group" | "im" | "mpim" | "app_home"
   user: string
+  /** Team id the message was posted in. */
+  team?: string
   bot_id?: string
   app_id?: string
   text: string

@@ -9,6 +9,7 @@
 
 import { MinislackError } from "../../core/channels"
 import { listUsers } from "../../core/users"
+import { paginate } from "../pagination"
 import type {
   Channel,
   User,
@@ -38,11 +39,11 @@ export function usersList(
   args: UsersListArgs = {},
 ): UsersListResponse {
   const members = listUsers(ws, { include_deleted: !!args.include_deleted })
-  const limit = args.limit ?? 1000
+  const page = paginate(members, { limit: args.limit, cursor: args.cursor })
   return {
     ok: true,
-    members: members.slice(0, limit),
-    response_metadata: { next_cursor: "" },
+    members: page.items,
+    response_metadata: { next_cursor: page.next_cursor },
   }
 }
 
@@ -64,6 +65,26 @@ export function usersInfo(ws: Workspace, args: UsersInfoArgs): UsersInfoResponse
   const user = ws.users.get(args.user)
   if (!user) throw new MinislackError("user_not_found", args.user)
   return { ok: true, user }
+}
+
+// ---------------------------------------------------------------------------
+// users.lookupByEmail
+// ---------------------------------------------------------------------------
+
+export interface UsersLookupByEmailArgs {
+  email?: string
+}
+
+export function usersLookupByEmail(
+  ws: Workspace,
+  args: UsersLookupByEmailArgs,
+): UsersInfoResponse {
+  if (!args.email) throw new MinislackError("users_not_found", "missing email")
+  const needle = args.email.trim().toLowerCase()
+  for (const u of ws.users.values()) {
+    if (u.profile.email?.toLowerCase() === needle) return { ok: true, user: u }
+  }
+  throw new MinislackError("users_not_found", args.email)
 }
 
 // ---------------------------------------------------------------------------
@@ -105,11 +126,11 @@ export function usersConversations(
     if (!matchesTypeFilter(ch, requested)) continue
     out.push(ch)
   }
-  const limit = args.limit ?? 1000
+  const page = paginate(out, { limit: args.limit, cursor: args.cursor })
   return {
     ok: true,
-    channels: out.slice(0, limit),
-    response_metadata: { next_cursor: "" },
+    channels: page.items,
+    response_metadata: { next_cursor: page.next_cursor },
   }
 }
 

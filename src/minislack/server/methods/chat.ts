@@ -11,6 +11,7 @@ import {
   editMessage,
   postMessageDetailed,
 } from "../../core/messages"
+import { nextTs } from "../../core/ts"
 import { MinislackError } from "../../core/channels"
 import { channelTypeOf, messageToMessageEvent } from "../../core/event-mappers"
 import type { EventBus } from "../../core/events"
@@ -27,6 +28,8 @@ export interface ChatPostMessageArgs {
   channel: string
   text?: string
   thread_ts?: string
+  /** When true on a thread reply, also surface the message in the channel. */
+  reply_broadcast?: boolean
   blocks?: (KnownBlock | Block)[]
   attachments?: MessageAttachment[]
   client_msg_id?: string
@@ -65,6 +68,11 @@ export function chatPostMessage(
       ? { bot_id: ctx.botId, app_id: ctx.appId }
       : {}),
   })
+  // reply_broadcast on a thread reply: Slack stamps the message with
+  // subtype "thread_broadcast" so the channel feed renders a copy.
+  if (args.reply_broadcast && msg.thread_ts && msg.thread_ts !== msg.ts) {
+    msg.subtype = "thread_broadcast"
+  }
   bus.publish(messageToMessageEvent(msg, ch))
   if (threadParent) {
     bus.publish(buildThreadParentChanged(threadParent, ch))
@@ -185,11 +193,13 @@ export function chatDelete(
     ts: args.ts,
     userId,
   })
+  // event_ts is the wall-clock of the delete, not the original post.
+  const deleteEventTs = nextTs(ws, ch.id)
   const evt: MessageDeletedEvent = {
     type: "message",
     subtype: "message_deleted",
-    event_ts: args.ts,
-    ts: args.ts,
+    event_ts: deleteEventTs,
+    ts: deleteEventTs,
     deleted_ts: args.ts,
     channel: ch.id,
     channel_type: channelTypeOf(ch),
@@ -203,6 +213,60 @@ export function chatDelete(
   }
   bus.publish(evt)
   return { ok: true, channel: ch.id, ts: args.ts }
+}
+
+// ---------------------------------------------------------------------------
+// chat.postEphemeral — visible only to one user; nothing stored in the channel.
+// ---------------------------------------------------------------------------
+
+export interface ChatPostEphemeralArgs {
+  channel: string
+  user: string
+  text?: string
+  blocks?: (KnownBlock | Block)[]
+  attachments?: MessageAttachment[]
+  thread_ts?: string
+}
+
+export interface ChatPostEphemeralResponse {
+  ok: true
+  message_ts: string
+}
+
+export function chatPostEphemeral(
+  ws: Workspace,
+  _bus: EventBus,
+  ctx: AuthContext,
+  args: ChatPostEphemeralArgs,
+): ChatPostEphemeralResponse {
+  const ch = resolve(ws, args.channel)
+  if (!ctx.userId) throw new MinislackError("not_authed")
+  if (!ws.users.has(args.user)) {
+    throw new MinislackError("user_not_in_channel", args.user)
+  }
+  // Ephemerals don't persist; we mint a ts so clients can correlate.
+  const ts = nextTs(ws, ch.id)
+  return { ok: true, message_ts: ts }
+}
+
+// ---------------------------------------------------------------------------
+// chat.meMessage — "/me shrugs" style. Routes through postMessage with subtype.
+// ---------------------------------------------------------------------------
+
+export interface ChatMeMessageArgs {
+  channel: string
+  text: string
+}
+
+export function chatMeMessage(
+  ws: Workspace,
+  bus: EventBus,
+  ctx: AuthContext,
+  args: ChatMeMessageArgs,
+): ChatPostMessageResponse {
+  const res = chatPostMessage(ws, bus, ctx, { channel: args.channel, text: args.text })
+  res.message.subtype = "me_message"
+  return res
 }
 
 function buildMessageChanged(

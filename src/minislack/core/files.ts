@@ -93,19 +93,33 @@ export function createFileRecord(
   const base = baseUrl().replace(/\/$/, "")
   const url_private = `${base}/files/${id}`
   const url_private_download = `${base}/files/${id}?download=1`
+  const uploader = ws.users.get(opts.user)
 
   const file: File = {
     id,
     created,
+    timestamp: created,
     user: opts.user,
+    user_team: ws.team.id,
     name: opts.name,
     title: opts.title ?? opts.name,
     mimetype: opts.mimetype,
     filetype,
     pretty_type,
     size: opts.bytes.byteLength,
+    mode: "hosted",
+    editable: false,
+    is_external: false,
+    external_type: "",
+    is_public: false,
+    public_url_shared: false,
+    display_as_bot: !!uploader?.is_bot,
+    username: uploader?.name ?? "",
     url_private,
     url_private_download,
+    permalink: `${base}/files/${id}`,
+    permalink_public: "",
+    has_rich_preview: false,
     channels: opts.channels ? [...opts.channels] : [],
     groups: opts.groups ? [...opts.groups] : [],
     ims: opts.ims ? [...opts.ims] : [],
@@ -152,6 +166,9 @@ export function attachFileToMessage(
   if (!existing.some((f) => f.id === fileId)) {
     msg.files = [...existing, file]
   }
+  // Slack stamps the carrying message with subtype "file_share" once any
+  // file is attached. Bots routinely filter on this subtype.
+  if (!msg.subtype) msg.subtype = "file_share"
 
   // Track the channel on the file record (mirrors Slack's channels/groups/ims).
   const bucket: "channels" | "groups" | "ims" = ch.is_im

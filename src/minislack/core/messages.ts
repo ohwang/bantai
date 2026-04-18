@@ -69,7 +69,7 @@ export function postMessageDetailed(ws: Workspace, opts: PostMessageOpts): PostM
   if (opts.thread_ts) {
     const candidate = ch.messages.get(opts.thread_ts)
     if (!candidate || candidate.tombstone) {
-      throw new MinislackError("thread_not_found", `parent message ${opts.thread_ts} missing`)
+      throw new MinislackError("message_not_found", `parent message ${opts.thread_ts} missing`)
     }
     // If someone replies to a reply, hoist to the top-level parent — Slack
     // flattens threads to one level.
@@ -77,7 +77,7 @@ export function postMessageDetailed(ws: Workspace, opts: PostMessageOpts): PostM
       ? ch.messages.get(candidate.thread_ts)
       : candidate
     if (!parent) {
-      throw new MinislackError("thread_not_found", `root of ${opts.thread_ts} missing`)
+      throw new MinislackError("message_not_found", `root of ${opts.thread_ts} missing`)
     }
   }
 
@@ -85,19 +85,25 @@ export function postMessageDetailed(ws: Workspace, opts: PostMessageOpts): PostM
   const isReply = !!parent && parent.ts !== ts
   const effectiveThreadTs = parent ? parent.ts : undefined
 
+  // Real Slack stamps a client_msg_id server-side when the caller didn't
+  // supply one. bolt-js warns on its absence.
+  const clientMsgId = opts.client_msg_id ?? (opts.bot_id ? undefined : crypto.randomUUID())
+
   const msg: Message = {
     type: "message",
     ts,
     channel: ch.id,
     user: opts.userId,
     text: opts.text,
+    team: ws.team.id,
     ...(opts.bot_id ? { bot_id: opts.bot_id, subtype: "bot_message" } : {}),
     ...(opts.app_id ? { app_id: opts.app_id } : {}),
     ...(opts.blocks ? { blocks: opts.blocks } : {}),
     ...(opts.attachments ? { attachments: opts.attachments } : {}),
     ...(effectiveThreadTs ? { thread_ts: effectiveThreadTs } : {}),
-    ...(opts.client_msg_id ? { client_msg_id: opts.client_msg_id } : {}),
+    ...(clientMsgId ? { client_msg_id: clientMsgId } : {}),
     ...(opts.files && opts.files.length > 0 ? { files: [...opts.files] } : {}),
+    ...(isReply && parent ? { parent_user_id: parent.user } : {}),
   }
   ch.messages.set(ts, msg)
 
@@ -191,7 +197,7 @@ export function listReplies(
 ): { messages: Message[]; has_more: boolean } {
   const parent = ch.messages.get(threadTs)
   if (!parent || parent.tombstone) {
-    throw new MinislackError("thread_not_found", threadTs)
+    throw new MinislackError("message_not_found", threadTs)
   }
   const inclusive = !!opts.inclusive
   const out: Message[] = [parent]

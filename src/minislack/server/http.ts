@@ -19,16 +19,26 @@ import {
   createSocketRegistry,
   type SocketRegistry,
 } from "./methods/apps"
-import { chatDelete, chatPostMessage, chatUpdate } from "./methods/chat"
+import {
+  chatDelete,
+  chatMeMessage,
+  chatPostEphemeral,
+  chatPostMessage,
+  chatUpdate,
+} from "./methods/chat"
 import {
   reactionsAdd,
   reactionsGet,
   reactionsRemove,
 } from "./methods/reactions"
 import {
+  conversationsCreate,
   conversationsHistory,
   conversationsInfo,
+  conversationsJoin,
+  conversationsLeave,
   conversationsList,
+  conversationsMembers,
   conversationsOpen,
   conversationsReplies,
 } from "./methods/conversations"
@@ -36,8 +46,11 @@ import {
   usersConversations,
   usersInfo,
   usersList,
+  usersLookupByEmail,
   usersProfileGet,
 } from "./methods/users"
+import { teamInfo } from "./methods/team"
+import { botsInfo } from "./methods/bots"
 import {
   filesCompleteUploadExternal,
   filesGetUploadURLExternal,
@@ -250,6 +263,7 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             channel: str(args.channel),
             text: args.text as string | undefined,
             thread_ts: args.thread_ts as string | undefined,
+            reply_broadcast: toBool(args.reply_broadcast),
             blocks: args.blocks as chatBlocks,
             attachments: args.attachments as chatAttachments,
             client_msg_id: args.client_msg_id as string | undefined,
@@ -270,6 +284,24 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
           chatDelete(ctx.ws, ctx.bus, auth, {
             channel: str(args.channel),
             ts: str(args.ts),
+          }),
+        )
+      case "chat.postEphemeral":
+        return slackOk(
+          chatPostEphemeral(ctx.ws, ctx.bus, auth, {
+            channel: str(args.channel),
+            user: str(args.user),
+            text: args.text as string | undefined,
+            blocks: args.blocks as chatBlocks,
+            attachments: args.attachments as chatAttachments,
+            thread_ts: args.thread_ts as string | undefined,
+          }),
+        )
+      case "chat.meMessage":
+        return slackOk(
+          chatMeMessage(ctx.ws, ctx.bus, auth, {
+            channel: str(args.channel),
+            text: str(args.text),
           }),
         )
       case "reactions.add":
@@ -302,6 +334,7 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             types: args.types as string | undefined,
             exclude_archived: toBool(args.exclude_archived),
             limit: toNum(args.limit),
+            cursor: args.cursor as string | undefined,
           }),
         )
       case "conversations.history":
@@ -316,6 +349,39 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
         )
       case "conversations.info":
         return slackOk(conversationsInfo(ctx.ws, { channel: str(args.channel) }))
+      case "conversations.members":
+        return slackOk(
+          conversationsMembers(ctx.ws, {
+            channel: str(args.channel),
+            limit: toNum(args.limit),
+            cursor: args.cursor as string | undefined,
+          }),
+        )
+      case "conversations.join": {
+        if (!auth.userId) throw new MinislackError("not_authed")
+        return slackOk(
+          conversationsJoin(ctx.ws, ctx.bus, auth.userId, {
+            channel: str(args.channel),
+          }),
+        )
+      }
+      case "conversations.leave": {
+        if (!auth.userId) throw new MinislackError("not_authed")
+        return slackOk(
+          conversationsLeave(ctx.ws, ctx.bus, auth.userId, {
+            channel: str(args.channel),
+          }),
+        )
+      }
+      case "conversations.create": {
+        if (!auth.userId) throw new MinislackError("not_authed")
+        return slackOk(
+          conversationsCreate(ctx.ws, ctx.bus, auth.userId, {
+            name: str(args.name),
+            is_private: toBool(args.is_private),
+          }),
+        )
+      }
       case "conversations.replies":
         return slackOk(
           conversationsReplies(ctx.ws, {
@@ -370,10 +436,19 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
           usersList(ctx.ws, {
             include_deleted: toBool(args.include_deleted),
             limit: toNum(args.limit),
+            cursor: args.cursor as string | undefined,
           }),
         )
       case "users.info":
         return slackOk(usersInfo(ctx.ws, { user: str(args.user) }))
+      case "users.lookupByEmail":
+        return slackOk(
+          usersLookupByEmail(ctx.ws, { email: args.email as string | undefined }),
+        )
+      case "team.info":
+        return slackOk(teamInfo(ctx.ws))
+      case "bots.info":
+        return slackOk(botsInfo(ctx.ws, { bot: args.bot as string | undefined }))
       case "users.conversations":
         return slackOk(
           usersConversations(ctx.ws, auth, {
@@ -381,6 +456,7 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             types: args.types as string | undefined,
             exclude_archived: toBool(args.exclude_archived),
             limit: toNum(args.limit),
+            cursor: args.cursor as string | undefined,
           }),
         )
       case "users.profile.get":
@@ -475,7 +551,7 @@ async function readArgs(req: Request): Promise<Record<string, unknown>> {
   if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
     const form = await req.formData()
     const out: Record<string, unknown> = {}
-    for (const [k, v] of form.entries()) out[k] = typeof v === "string" ? v : v
+    for (const [k, v] of form.entries()) out[k] = typeof v === "string" ? coerceFormField(k, v) : v
     return out
   }
   // Unknown content-type — try JSON, then fall back to querystring
@@ -485,8 +561,29 @@ async function readArgs(req: Request): Promise<Record<string, unknown>> {
   } catch {
     const url = new URL(req.url)
     const out: Record<string, unknown> = {}
-    for (const [k, v] of url.searchParams.entries()) out[k] = v
+    for (const [k, v] of url.searchParams.entries()) out[k] = coerceFormField(k, v)
     return out
+  }
+}
+
+/**
+ * Real Slack accepts `blocks`, `attachments`, `files`, and `metadata` as
+ * JSON-encoded strings under form-urlencoded / multipart bodies. bolt-js
+ * serializes them that way by default. Parse them eagerly so downstream
+ * `Array.isArray` checks work the same on JSON vs form callers.
+ */
+const JSON_FORM_FIELDS = new Set(["blocks", "attachments", "files", "metadata", "authorizations", "options"])
+
+function coerceFormField(key: string, value: string): unknown {
+  if (!JSON_FORM_FIELDS.has(key)) return value
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return value
+  const first = trimmed[0]
+  if (first !== "[" && first !== "{") return value
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
   }
 }
 

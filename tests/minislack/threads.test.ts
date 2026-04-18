@@ -56,7 +56,7 @@ describe("core/messages threads", () => {
     expect(r2.thread_ts).toBe(parent.ts)
   })
 
-  test("posting with an unknown thread_ts throws thread_not_found", () => {
+  test("posting with an unknown thread_ts throws message_not_found", () => {
     const ws = handle.workspace
     const alice = ws.users.get("U00000001")!
     expect(() =>

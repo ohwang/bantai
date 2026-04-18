@@ -168,10 +168,15 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
       return
     }
 
+    // Anchor the session at the thread parent when this is a reply, else at
+    // the triggering message's own ts (the ts the bot's reply will thread
+    // under). This makes "top-level message" and "replies under it" converge
+    // onto the same session key.
+    const anchorTs = event.threadTs ?? event.ts
     const sessionParts = {
       workspace: ctx.workspaceId,
       channelId: event.channel,
-      threadTs: event.threadTs,
+      threadTs: anchorTs,
     }
     const existing = ctx.registry.peek(sessionParts)
 

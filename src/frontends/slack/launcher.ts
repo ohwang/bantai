@@ -629,27 +629,11 @@ async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
       return list.map((m) => m.id)
     },
     cumulativeUsage() {
-      // Merge the current renderer's in-memory counts with the per-session
-      // totals persisted in the store. The renderer tracks THIS process's
-      // turns + tokens + cost; the store tracks the cumulative turn count +
-      // USD across restarts. Token breakdowns don't persist (by design —
-      // they'd bloat the row for marginal observability value), so their
-      // per-session totals are always in-process only.
       const renderer = existing ? ctx.renderers.get(existing) : undefined
-      const live = renderer?.cumulativeUsage() ?? {
-        turns: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        totalCostUsd: 0,
-      }
-      const priorUsage = existing?.priorUsage ?? { turns: 0, totalCostUsd: 0 }
-      return {
-        ...live,
-        turns: live.turns + priorUsage.turns,
-        totalCostUsd: live.totalCostUsd + priorUsage.totalCostUsd,
-      }
+      return mergeCumulativeUsage(
+        renderer?.cumulativeUsage(),
+        existing?.priorUsage,
+      )
     },
     project,
     workspace: sessionParts.workspace,
@@ -704,6 +688,32 @@ function attachBannerOnce(
 // ---------------------------------------------------------------------------
 // SIGINT / SIGTERM handling
 // ---------------------------------------------------------------------------
+
+/**
+ * Merge the live (in-memory) renderer usage with the persisted prior usage
+ * read from the session store. Cumulative turns + totalCostUsd span process
+ * restarts; token breakdowns are in-process only (not persisted, so a
+ * bounce resets them — documented tradeoff).
+ */
+export function mergeCumulativeUsage(
+  live: import("./view/event-renderer").CumulativeUsage | undefined,
+  prior: { turns: number; totalCostUsd: number } | undefined,
+): import("./view/event-renderer").CumulativeUsage {
+  const base = live ?? {
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    totalCostUsd: 0,
+  }
+  const p = prior ?? { turns: 0, totalCostUsd: 0 }
+  return {
+    ...base,
+    turns: base.turns + p.turns,
+    totalCostUsd: base.totalCostUsd + p.totalCostUsd,
+  }
+}
 
 function waitForSignal(): Promise<void> {
   return new Promise<void>((resolve) => {

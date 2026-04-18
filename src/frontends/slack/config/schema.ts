@@ -1,10 +1,6 @@
 /**
  * slack.toml schema — zod validation for the Slack frontend config.
  *
- * Phase S0 shape: workspace connection only (+ minimal defaults). Channel
- * overrides land in S1+; we reserve the keys now so adopters can write the
- * full config from day one and additional runtime knobs degrade gracefully.
- *
  * The file layout is described in plan-slack-integration.md §3.1.
  */
 
@@ -154,7 +150,7 @@ export const McpServerSpecSchema = z.union([
 export type McpServerSpec = z.infer<typeof McpServerSpecSchema>
 
 // ---------------------------------------------------------------------------
-// [[channels]]  — reserved for S1+; validated but unused in S0.
+// [[channels]]  — per-channel overrides.
 // ---------------------------------------------------------------------------
 
 export const ChannelOverrideSchema = z

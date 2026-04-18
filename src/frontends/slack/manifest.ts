@@ -7,8 +7,8 @@
  * is a separate round-trip.
  *
  * The manifest lists the scopes + event subscriptions the launcher actually
- * uses across S0-S8. Keep it in sync with `transport/events.ts` (subscriptions)
- * and the block-kit surfaces in `view/blocks/*.ts` (interactivity).
+ * uses. Keep it in sync with `transport/events.ts` (subscriptions) and the
+ * block-kit surfaces in `view/blocks/*.ts` (interactivity).
  *
  * Format: the manifest spec is documented at
  *   https://api.slack.com/reference/manifests

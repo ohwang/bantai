@@ -1,16 +1,11 @@
 /**
  * Bolt event registration.
  *
- * Phase S0 scope: we subscribe to the Slack events we'll need across the
- * whole lifecycle of the plan and route them all through a single
- * `onInbound` callback as `InboundSlackEvent` values. Downstream layers
- * (inbox → router → view) plug in by replacing `onInbound`.
- *
- * We subscribe to *more* events than S0 strictly requires (only `message`
- * matters for the ack round-trip) so phases S1–S7 don't have to revisit
- * the transport. Subscriptions without handlers are cheap; unhandled
- * events surface as a `log.debug` so drift is visible rather than silent —
- * per the AGENTS.md rule against silently dropping external data.
+ * Subscribes to every Slack event kind the frontend consumes and routes
+ * them through a single `onInbound` callback as `InboundSlackEvent`
+ * values. Unhandled events surface as a `log.debug` so drift is visible
+ * rather than silent — per the AGENTS.md rule against silently dropping
+ * external data.
  */
 
 import type { App } from "@slack/bolt"

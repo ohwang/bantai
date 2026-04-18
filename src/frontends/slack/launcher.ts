@@ -1,18 +1,12 @@
 /**
  * Slack Launcher — boots the Slack frontend server.
  *
- * Phase S1 (current): wires the full round-trip pipeline:
+ * Wires the full round-trip pipeline:
  *
  *   Slack event → inbox (dedup + gate + turn-build) → router (resolver +
  *   session registry) → SessionHost.send → backend emits AgentEvents →
- *   view event-renderer → chat.postMessage.
- *
- * Each inbound text message drives a full agent turn. The bot posts one
- * assistant message per turn (no streaming yet — S2 adds streaming + status
- * reactions).
- *
- * Phase S2+ plug in: streaming (three-tier), reaction state machine, Block
- * Kit cards, approvals, SQLite persistence.
+ *   view event-renderer → chat.postMessage / chat.update / files.upload /
+ *   reactions.add / Block Kit cards.
  */
 
 import type { App } from "@slack/bolt"

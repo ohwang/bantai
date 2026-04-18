@@ -14,9 +14,7 @@
  *     machine on the trigger message.
  *   - error posts rendered inline with a terse `[error|warn] code: message`
  *     reply.
- *
- * Tool-specific cards, plan updates, and thinking breakouts are still S3+
- * — we only react to their events via the reaction state machine at S2.
+ *   - tool cards, plan updates, and thinking breakouts (verbosity ≥ verbose).
  *
  * We feed events through the shared 16ms EventBatcher (same coalescer the
  * TUI uses) so bursts of deltas don't pummel Slack.
@@ -748,8 +746,6 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
           pendingElicitations.delete(event.id)
           break
         default:
-          // Every other event is fed to reactions (above) but produces no
-          // visible body. S3+ tool cards + plan updates hook here.
           log.debug(`slack renderer: consumed ${event.type} for reactions only`)
           break
       }

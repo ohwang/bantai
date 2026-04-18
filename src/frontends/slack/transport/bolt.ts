@@ -16,6 +16,7 @@
  */
 
 import { App, LogLevel } from "@slack/bolt"
+import { retryPolicies } from "@slack/web-api"
 import type { ResolvedSlackConfig } from "../config/schema"
 import { log } from "../../../utils/logger"
 
@@ -49,9 +50,17 @@ export function createBoltApp({ config, logLevel }: CreateBoltAppOpts): App {
     )
   }
 
-  const baseClientOptions = workspace.slackApiUrl
-    ? { slackApiUrl: withApiSuffix(workspace.slackApiUrl) }
-    : {}
+  // S8: make the 429 / rate-limit story explicit rather than relying on
+  // web-api's default (ten retries over ~30 min). The default is already
+  // sensible; we just surface it so future operators see that we KNOW rate
+  // limits exist + retry, and can tweak the policy in one place.
+  const baseClientOptions = {
+    retryConfig: retryPolicies.tenRetriesInAboutThirtyMinutes,
+    rejectRateLimitedCalls: false,
+    ...(workspace.slackApiUrl
+      ? { slackApiUrl: withApiSuffix(workspace.slackApiUrl) }
+      : {}),
+  }
 
   if (workspace.mode === "socket") {
     return new App({

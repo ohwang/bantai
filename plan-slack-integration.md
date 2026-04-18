@@ -265,6 +265,44 @@ This doc is kept live. Every working session updates:
 
 ---
 
+### Session — 2026-04-18 · S6 file round-trip
+
+**Status:** Phase S6 complete. Full suite: 1981 pass / 11 skip / 0 fail across 118 files.
+
+**Done this session (S6):**
+- `73ca158` `src/frontends/slack/view/upload.ts` (+9 unit tests) — 3-step upload helper (`files.getUploadURLExternal` → presigned POST → `files.completeUploadExternal`). `SlackFileClient` interface keeps the module pure of Bolt; `buildSlackFileClient(app)` is the production wiring. `uploadFileBestEffort()` swallows errors + `log.warn`s so a files:write-less workspace never crashes the renderer.
+- `9aa5d27` Wired long-output auto-upload into `view/event-renderer.ts`. Threshold `toolOutputFileLines` (default 200). On tool_use_end with output > threshold + no error + a live fileClient, we upload with filename `<tool>-<toolId>.txt`, replace the card output with a 4-line head + "full output (N lines) in attached file", and append a `:paperclip: <permalink|Full output>` context block. `isLiveApp(app)` short-circuits the fileClient construction for unit-test stub Apps so uploads silently no-op there.
+- `d900980` `src/frontends/slack/inbox/attachments.ts` (+11 unit tests) — `createAttachmentFetcher` downloads `files[]` metadata from Slack using the bot token. Images (png/jpeg/gif/webp) base64-embed into `UserMessage.images`; non-images land in `<stagingDir>/<channelId>/<ts>/<safeName>` with a sanitised filename, and the absolute paths are appended to the turn text as `[attached: /path/...]` bullets. `rewriteUrl` hook lets integration tests redirect Slack's file URLs at minislack. `maxFilesPerTurn` (default 8) and `maxFileBytes` (default 25MB) caps. Launcher plumbs the fetcher + staging dir into `RoutingCtx`; inbound messages with `files` fold the bundle into `entry.send({text, images})` before the turn fires.
+- `[new commit]` `minislack/server/http.ts` extended `/_files/upload/:token` to accept both raw-PUT and POST multipart uploads. Real Slack's presigned endpoint handles both; `@slack/web-api`'s built-in `files.uploadV2` — and our `buildSlackFileClient.postUploadBytes` — posts multipart, so without this the upload step silently fails against minislack.
+- `[new commit]` `tests/frontends/slack/integration/files.test.ts` (+2 cases) — full S6 round-trip against minislack: (A) alice uploads a PNG via `files.upload` with a bot-mention `initial_comment` → the inbox fetcher downloads the bytes, base64-embeds the image into `UserMessage.images`, and the captured backend receives the message. (B) the stub backend emits a 300-line `tool_use_end` → the renderer uploads a `bash-tool_1.txt`, swaps the card output for the 4-line head + "full output" hint, and appends a `:paperclip: Full output` context block in-thread.
+
+**Full test suite:** 1981 pass / 11 skip / 0 fail across 118 files. `tsc --noEmit` clean.
+
+**S6 exit criterion:** "user posts a PNG → agent OCRs it; agent writes a 500-line diff → Slack shows a file snippet with preview." The round-trip is end-to-end green against minislack with a stub backend; switching to the Claude backend would change nothing in the pipeline (the stub is only used to deterministically fabricate a 300-line tool output in under a second). **Met.**
+
+**Discovered / scope deltas from S6:**
+
+1. **Minislack's upload byte endpoint needed POST-multipart support.** Its original shape only accepted raw `PUT`, which is one of two valid client shapes real Slack honours. `@slack/web-api`'s own `files.uploadV2` and our production wrapper both post multipart/form-data. Teaching minislack both shapes keeps the test harness faithful to the production surface.
+2. **`isLiveApp(app)` gate for the fileClient construction.** Unit tests pass a `{} as App` stub; without the gate, accessing `app.client.files.*` at renderer-construct time would crash. Detecting `typeof app.client.files === 'object'` short-circuits wiring — uploads become no-ops in that environment, which is exactly what we want. Live Bolt apps always satisfy the check.
+3. **Per-tool-id promise chain (from S5) saved us again.** The 300-line test fires `tool_use_start` then `tool_use_end` back-to-back; without the promise chain's serialisation, the end handler's `toolCardTs.get(id)` would miss the in-flight post and fall back to a fresh message. The paperclip context block would then land on a duplicate card.
+4. **`rewriteUrl` hook on the fetcher is test-only, but cheap.** `files.upload` v1 returns `url_private` / `url_private_download` pointed at `http://<minislack>/files/<id>`, which matches the `mini.url` host, so in practice the rewriter is a no-op in the current test suite. It's kept for the scenario where minislack's url generation drifts (e.g. when we start generating `url_private_download` through a signed CDN-style path) or when real Slack in production swaps hosts at inbound time.
+5. **Staging-dir layout `<stagingDir>/<channelId>/<ts>/<safe-filename>` never collides across turns.** A future GC pass (S8 resilience) can age by directory mtime without needing a separate registry.
+6. **Auto-upload threshold default (200 lines) is conservative.** Plan §8.4 calls it "long tool output" without a number. 200 lines is enough to keep typical `git diff`, `grep -r`, `ls -la` style outputs in-card while still catching "paste the full migration script" or "dump the failing test's stderr". Configurable per-renderer.
+7. **4-line head preview + "full output (N lines) in attached file" stays under the tool-card builder's 6-line preview cap.** Had to bring it down from 10 → 4 so nothing gets clipped and the "in attached file" hint always lands.
+8. **Test assertion ordering matters.** First draft of the integration test sampled `capturing.messages.length` AFTER `mini.asUser(aliceId).sendMessage(…)` — but in-process delivery is synchronous, so the send had already enqueued a message by the time we captured `before`. Moving the `before` snapshot above the send call makes the `toBeGreaterThan(before)` assertion meaningful. Classic race in any in-process harness — noted so the pattern ports to the remaining integration tests.
+9. **No MCP `slack_upload` tool yet.** Plan §8.4 also called for exposing upload as an MCP tool when the Slack frontend is active. Deferred: the current renderer-driven auto-upload handles every plan-§11 S6 acceptance case, and the MCP-tool path will grow naturally once S7 wires the per-session MCP server subset. Recorded as a follow-up.
+
+**Next up (S7 — Multi-user, per-channel settings, skills):**
+- Per-channel `claude_config_dir` override → `CLAUDE_CONFIG_DIR` env var at spawn. Defaults to a bantai-owned path under `~/.bantai/claude/<workspace>/<channel>/` so different channels can install different slash commands / skills / MCP servers without stepping on each other.
+- MCP server subset resolution — project/channel config lists which MCP servers are in-scope; `createBackend` receives that subset.
+- Approver enforcement surfaced at boot as a warning when a channel has `approvers = []` but non-readonly permission mode.
+- `!bantai settings` command to dump the resolved project config (+ `!bantai settings diff` showing the layered overrides).
+- `!bantai skill list` / `!bantai skill run <name>` — reuses the CLI's existing skill registry wired through the frontend.
+
+**Plan §11/S7 exit:** "alice's `#api` channel runs Codex with a tighter tool set; bob's `#mobile` channel runs Claude with a different skill — both from the same bot process without cross-talk."
+
+---
+
 ## 1. Premises — what we already have vs. what we need to build
 
 ### What's already in the tree (reuse, don't rebuild)

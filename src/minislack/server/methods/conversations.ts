@@ -103,6 +103,69 @@ export function conversationsReplies(ws: Workspace, args: RepliesArgs): RepliesR
 }
 
 // ---------------------------------------------------------------------------
+// conversations.open — open or reopen a DM / mpim
+// ---------------------------------------------------------------------------
+
+export interface OpenArgs {
+  /** Comma-separated list of user ids. One = DM, two+ = mpim. */
+  users?: string
+  /** Existing channel id (D… or M…) to reopen. */
+  channel?: string
+  /** If true, return channel info even on reopen. */
+  return_im?: boolean
+}
+
+export interface OpenResponse {
+  ok: true
+  no_op?: boolean
+  already_open?: boolean
+  channel: Channel
+}
+
+export function conversationsOpen(
+  ws: Workspace,
+  callerUserId: string,
+  args: OpenArgs,
+): OpenResponse {
+  if (args.channel) {
+    const ch = ws.channels.get(args.channel)
+    if (!ch) throw new MinislackError("channel_not_found", args.channel)
+    let already_open = true
+    if (ch.is_im && !ch.is_open) {
+      ch.is_open = true
+      already_open = false
+    } else if (ch.is_mpim && !ch.is_open) {
+      ch.is_open = true
+      already_open = false
+    }
+    return { ok: true, no_op: already_open, already_open, channel: ch }
+  }
+
+  const others = (args.users ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (others.length === 0) {
+    throw new MinislackError("users_list_not_supplied")
+  }
+  for (const uid of others) {
+    if (!ws.users.has(uid)) throw new MinislackError("user_not_found", uid)
+  }
+
+  // Single user (or self) → DM. Multiple → mpim including the caller.
+  if (others.length === 1) {
+    const ch = openDirectMessage(ws, callerUserId, others[0]!)
+    return { ok: true, channel: ch }
+  }
+  const members = Array.from(new Set([callerUserId, ...others]))
+  const ch = createMpim(ws, callerUserId, members)
+  return { ok: true, channel: ch }
+}
+
+// Bring channel helpers in for the new method.
+import { createMpim, openDirectMessage } from "../../core/channels"
+
+// ---------------------------------------------------------------------------
 
 function parseTypeFilter(types: string): Set<string> {
   return new Set(types.split(",").map((t) => t.trim()).filter(Boolean))

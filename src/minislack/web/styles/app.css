@@ -328,6 +328,63 @@ html, body, #root {
 }
 .msg-file-link:hover { background: var(--panel-hover); }
 
+/* DM picker / sidebar DM section ---------------------------------------- */
+.sidebar-dm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sidebar-dm-add {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  font-family: inherit;
+}
+.sidebar-dm-add:hover { color: var(--text); }
+.user-picker {
+  padding: 6px 16px 10px;
+}
+.user-picker input {
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.user-picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.user-picker li button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.user-picker li button:hover { background: var(--panel-hover); }
+.user-picker-handle {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .composer-dragging form {
   border-color: var(--link);
   box-shadow: 0 0 0 2px rgba(29,155,209,0.25);

@@ -68,6 +68,22 @@ export function conversationsHistory(token: string, channel: string, limit = 200
   return callSlack<HistoryResp>("/api/conversations.history", token, { channel, limit })
 }
 
+export async function openConversation(
+  token: string,
+  opts: { users?: string; channel?: string },
+): Promise<Channel> {
+  const out = await callSlack<{ ok: true; channel: Channel }>(
+    "/api/conversations.open",
+    token,
+    opts,
+  )
+  return out.channel
+}
+
+export function closeConversation(token: string, channel: string) {
+  return callSlack<{ ok: true }>("/api/conversations.close", token, { channel })
+}
+
 export interface FilesUploadResp {
   ok: true
   file: SlackFile

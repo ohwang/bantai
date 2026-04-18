@@ -29,6 +29,7 @@ import {
   conversationsHistory,
   conversationsInfo,
   conversationsList,
+  conversationsOpen,
   conversationsReplies,
 } from "./methods/conversations"
 import {
@@ -326,6 +327,44 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             limit: toNum(args.limit),
           }),
         )
+      case "conversations.open": {
+        if (!auth.userId) throw new MinislackError("not_authed")
+        const result = conversationsOpen(ctx.ws, auth.userId, {
+          users: args.users as string | undefined,
+          channel: args.channel as string | undefined,
+          return_im: toBool(args.return_im),
+        })
+        const ch = result.channel
+        if (!result.already_open && (ch.is_im || ch.is_mpim)) {
+          ctx.bus.publish({
+            type: "im_open",
+            event_ts: `${Math.floor(Date.now() / 1000)}.000000`,
+            user: auth.userId,
+            channel: ch.id,
+          })
+        }
+        return slackOk(result)
+      }
+      case "conversations.close": {
+        if (!auth.userId) throw new MinislackError("not_authed")
+        const chId = str(args.channel)
+        const ch = ctx.ws.channels.get(chId)
+        if (!ch) throw new MinislackError("channel_not_found", chId)
+        if (!(ch.is_im || ch.is_mpim)) {
+          throw new MinislackError("method_not_supported_for_channel_type")
+        }
+        const wasOpen = ch.is_open
+        ch.is_open = false
+        if (wasOpen) {
+          ctx.bus.publish({
+            type: "im_close",
+            event_ts: `${Math.floor(Date.now() / 1000)}.000000`,
+            user: auth.userId,
+            channel: ch.id,
+          })
+        }
+        return slackOk({ ok: true, no_op: !wasOpen, already_closed: !wasOpen })
+      }
       case "users.list":
         return slackOk(
           usersList(ctx.ws, {

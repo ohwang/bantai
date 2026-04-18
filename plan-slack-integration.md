@@ -412,7 +412,6 @@ These items from S8/S9 are intentionally deferred rather than scoped down:
 
 - **E2E live-Slack smoke test** (S9): real-workspace credentials in CI. Needs an infrastructure conversation about secret handling + which workspace to point at; out of scope for the frontend work.
 - **Prometheus `/metrics`** (S8): the HTTP receiver path is live; adding `/metrics` is additive and belongs with the web viewer work.
-- **MCP `slack_upload` tool** (S6): exposes file upload as a direct tool the agent can call. Renderer-driven auto-upload already covers every plan-§11 S6 acceptance case; an explicit MCP tool is a polish item for workflows where the agent wants to attach an artefact mid-turn without emitting a long tool output.
 
 ---
 
@@ -460,7 +459,29 @@ These items from S8/S9 are intentionally deferred rather than scoped down:
 1. **`doctor` exits via `process.exit` rather than throwing.** The subcommand has three distinct outcomes (clean / findings / failure) and operators pipe the exit code into CI scripts. Throwing would map every branch to exit 1, which loses the "findings exist but probes ran" signal.
 2. **Token breakdowns don't merge with `priorUsage`.** Only turns + USD are in the persisted row; a restart intentionally resets the token counters for the current process (the documented tradeoff around row size vs. observability value).
 
-**Remaining post-v0 polish:** E2E live-Slack smoke (needs CI workspace credentials), Prometheus `/metrics` (slots with S10 web viewer), MCP `slack_upload` tool (additive — renderer auto-upload already covers S6 exit criterion).
+**Remaining post-v0 polish:** E2E live-Slack smoke (needs CI workspace credentials), Prometheus `/metrics` (slots with S10 web viewer).
+
+---
+
+### Session — 2026-04-19 · polish: `slack_upload` MCP tool
+
+**Status:** post-v0 polish — the last feature-shaped deferred item ships. Full slack suite: 339 pass / 0 fail across 39 files. Typecheck clean.
+
+**Done this session:**
+
+- `+` `src/frontends/slack/mcp/slack-upload.ts` + `tests/frontends/slack/mcp/slack-upload.test.ts` (7 cases). `createSlackUploadMcpServer({ binding, fileClient, cwd, maxBytes?, readFileImpl?, statImpl? })` returns an `McpSdkServerConfigWithInstance` that exposes a single `slack_upload(path, title?, comment?)` tool. The handler resolves `path` against the session's cwd, rejects escapes (unless `cwd: null`), stat-checks against a 20 MiB default cap, calls `uploadFile` (view/upload.ts) with the session's channel + thread binding, and returns a permalink line on success / an `isError: true` content item on failure.
+- `...` `src/frontends/slack/launcher.ts` — launcher instantiates the production `SlackFileClient` once at boot, and exposes a `slackUploadMcpFor(channel, threadTs, cwd)` factory through the routing context. New `buildSessionMcpOverlay` helper composes the per-session MCP map (the channel's user-configured MCP servers PLUS `bantai-slack-upload`) and hands it to `registry.getOrCreate` as the sessionConfigOverlay. Each session's `SessionConfig.mcpServers` now includes the upload tool before the backend ever starts.
+
+**Full slack test suite:** 339 pass / 0 fail across 39 files. `tsc --noEmit` clean.
+
+**Decisions:**
+
+1. **Per-session MCP instance, not per-process.** The tool handler needs the (channel, threadTs) binding baked in so the backend doesn't have to pass it on every call. Constructing one MCP server per session is ~zero-cost (no process, no socket — `createSdkMcpServer` is in-process via the SDK) and keeps the contract simple.
+2. **Cwd containment default-on.** Agents already have Read access to the filesystem; restricting `slack_upload` to the session cwd doesn't add a new safety property but it DOES prevent a confused/buggy agent from accidentally dropping `/etc/shadow` into a channel. Operators who want the rule lifted pass `cwd: null` when building the server (future config knob could expose this; not wired yet because no operator has asked).
+3. **Stat-before-read byte cap.** Reading a multi-gig file into memory to then reject it would be wasteful + crash-prone. We stat first; the default 20 MiB cap matches Slack's own hard limit at time of writing.
+4. **Test helper reaches into `_registeredTools`.** `createSdkMcpServer` doesn't expose a public tool-dispatcher API, so the unit tests invoke the handler via the SDK's internal registry. Documented in the test file. If the SDK renames the internal, the tests break — that's a worthwhile signal; the production path uses the SDK's transport and would break too.
+
+**Remaining post-v0 polish:** E2E live-Slack smoke (needs CI workspace credentials), Prometheus `/metrics` (slots with S10 web viewer). Both items are infra-blocked or slotted against a later phase — no more feature work remains within the S0–S9 plan scope.
 
 ---
 

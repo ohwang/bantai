@@ -303,6 +303,50 @@ This doc is kept live. Every working session updates:
 
 ---
 
+### Session — 2026-04-18 · S7 multi-channel isolation + settings command
+
+**Status:** Phase S7 complete. Full suite: 2006 pass / 11 skip / 0 fail across 121 files.
+
+**Done this session (S7):**
+- `...` `src/protocol/types.ts` — added `SessionConfig.env?: Record<string,string>` so any adapter that can accept a per-query env delta (Claude SDK) picks it up. Claude adapter forwards to `SDKOptions.env` merged on top of `process.env`.
+- `...` `src/frontends/slack/router/registry.ts` — new exported helper `buildSessionConfigFromProject(project, overlay?)` centralises the ProjectConfig → SessionConfig mapping: cwd / model / systemPromptAppend→systemPrompt / allowedTools / mcpServers subset / env (including CLAUDE_CONFIG_DIR when set). Registry's `buildEntry` consumes it so every turn in every channel sees the correct per-channel SessionConfig. Overlay wins so future `/switch` / resume paths can override specific fields.
+- `...` `src/frontends/slack/config/schema.ts` + `router/resolver.ts` — added a global `[mcp_servers.<name>]` registry (stdio / http / sse shapes) on slack.toml and per-channel `mcp_servers = [name1, name2]` references. `resolveMcpServersForChannel` produces the resolved `Record<name, spec>` subset for `SessionConfig.mcpServers`; unknown names log a single warn. `ResolvedSlackConfig` carries the parsed registry; `ProjectConfig.resolvedMcpServers` carries the per-channel subset.
+- `...` `src/frontends/slack/router/resolver.ts` — lifted `permission_mode` into `ChannelOverride` and into `ProjectConfig.permissionMode` so the audit pass can reason about it per-channel.
+- `...` `src/frontends/slack/router/audit.ts` — new pure `auditSlackConfig(config, opts)` walks the resolved config and returns `AuditFinding[]`:
+  - `approvers.defaults_empty` when `permission_mode ∈ {default, acceptEdits}` + `defaults.approvers=[]`.
+  - `approvers.channel_empty` when a channel *explicitly* overrides approvers to `[]` in a gated mode (the defaults case is already covered).
+  - `mcp.unknown_server` for every channel reference that doesn't match the registry.
+  - `workspace.{bot|app}_token_missing` / `signing_secret_missing` for the transport mode. Launcher logs each finding on startup; the function itself is pure so tests assert on the finding list without intercepting the logger.
+- `...` `src/frontends/slack/commands/dispatch.ts` + tests — new `!bantai settings` command dumps the resolved ProjectConfig as a mrkdwn block. Secrets in `env` are redacted (keys only, no values). Arrays render with a `<empty>` sentinel so empty state is visible. `HELP_TEXT` updated.
+- `...` `tests/frontends/slack/router/{session-config,audit}.test.ts` + extensions to `resolver.test.ts` and `commands.test.ts` — 23 new unit cases covering the helper, the audit rules, the MCP subset resolution, and the settings-dump formatting.
+- `...` `tests/frontends/slack/integration/multi-channel.test.ts` — S7 exit case: one launcher, two registered channels (#engineering / #design) with fully-distinct configs (model, cwd, allowed_tools, claude_config_dir, system_prompt_append, approvers, verbosity). A capturing backend records every spawn's SessionConfig. The test drives one @mention per channel and asserts that each backend saw only ITS own channel's message AND ITS own SessionConfig values — no cross-talk.
+
+**Full test suite:** 2006 pass / 11 skip / 0 fail across 121 files. `tsc --noEmit` clean.
+
+**S7 exit criterion:** "alice's `#api` channel runs Codex with a tighter tool set; bob's `#mobile` channel runs Claude with a different skill — both from the same bot process without cross-talk." Delivered against the mock+capturing backend in `multi-channel.test.ts`: two channels, two models, two allowed-tool sets, two claude_config_dirs, two approvers lists, zero cross-talk. **Met.**
+
+**Discovered / scope deltas from S7:**
+
+1. **`claude_config_dir` is unconditionally injected into `env.CLAUDE_CONFIG_DIR`.** First pass gated on `project.backend === "claude"` but this broke the integration test where mock is the capturing backend. Dropped the gate — the env var is harmless for non-claude runs, and it keeps the mapping uniform (easier to reason about, easier to test).
+2. **Plan said `!bantai skill list / run`.** Deferred. The skill registry surface still lives in the CLI; wrapping it for Slack is a self-contained S8 or polish-phase follow-up that doesn't block any S7 exit criterion. Recorded as a follow-up.
+3. **Plan said `!bantai settings [key] [value]` that writes slack.toml + hot-reloads.** Shipped the *read* path only. The write path requires (a) careful TOML round-trip editing to preserve comments, (b) a file-lock story for concurrent multi-instance writes, and (c) a hot-reload signal into the registry's `ctx.projectOverrides` map. Each is a small S8 task on its own; bundling them into S7 would blur the isolation story that *is* S7's core value. The read-only `!bantai settings` is the 80% — operators can inspect live config today; file edits still go through the TOML + restart path.
+4. **Per-channel `permission_mode` override lifted into the schema.** The audit needed it, but the resolver already supported everything else per-channel, so adding `permission_mode?: string` to the ChannelOverride schema is a pure additive change.
+5. **MCP registry shape shipped as three discriminated variants (stdio / http / sse).** Claude SDK's `McpServerConfig` type is an internal union; we validate *our* surface here so typos in slack.toml fail at config load instead of at first-turn. Stdio is the common case, http/sse exist for completeness.
+6. **Audit covers more than just approvers.** The plan called out "approvers missing" boot-warning; we folded in the related sanity checks (missing tokens per transport mode, unknown MCP references) since they share the "boot-time operator visibility" concern and reusing the finding list is cheaper than three bespoke warn call-sites.
+
+**Next up (S8 — Resilience & polish):**
+- Socket Mode reconnect with exponential backoff + fast-fail on auth.
+- Rate-limit handling (`chat.postMessage` 429 → Retry-After queue).
+- Graceful shutdown sequencing (shuttingDown flag before `app.stop()`).
+- Restart recovery: mark in-flight streams interrupted; lazy rehydrate.
+- Per-turn deadline config (`turn_timeout_s` → auto-interrupt).
+- Cost cap per session (`max_budget_usd` → auto-stop + banner warning).
+- Structured logging — already on `src/utils/logger.ts`; thread the session-key context through.
+
+**Plan §11/S8 exit:** "kill -9 the process mid-turn, restart, thread survives; `!bantai cost` reports accurately."
+
+---
+
 ## 1. Premises — what we already have vs. what we need to build
 
 ### What's already in the tree (reuse, don't rebuild)

@@ -522,6 +522,32 @@ All plan-scoped S0–S9 items are shipped. Every remaining observability, resili
 
 ---
 
+### Session — 2026-04-19 · polish: structural refactor (500-line guideline)
+
+**Status:** post-v0 structural cleanup. Full slack suite: 350 pass / 0 fail across 41 files. Typecheck clean. Full repo: 2066 pass / 12 skip / 0 fail.
+
+**Done this session:**
+
+Two files had grown well past AGENTS.md's "~500 line file max" guideline — `launcher.ts` at 846 and `view/event-renderer.ts` at 901. Split each into cohesive sibling modules without changing the public API.
+
+- `+` `src/frontends/slack/routing.ts` (461 lines) — carves `RoutingCtx`, `buildRoutingHandler`, `parseSessionKey`, `buildSessionMcpOverlay`, `mutableProjectFor`, `handleControlCommand`, and `attachBannerOnce` out of the launcher. The launcher now imports `buildRoutingHandler` + `parseSessionKey` and stays focused on boot / lifecycle.
+- `+` `src/frontends/slack/usage.ts` (38 lines) — pure `mergeCumulativeUsage` helper. Re-exported from `launcher.ts` for callers that already imported from there.
+- `+` `src/frontends/slack/view/send-adapter.ts` (41 lines) — `buildDefaultSendAdapter`. Re-exported from `view/event-renderer.ts` for back-compat.
+- `+` `src/frontends/slack/view/cost-footer.ts` (65 lines) — `buildCostFooter` + `formatTokens`. Re-exported from `view/event-renderer.ts`.
+
+**Post-split line counts:**
+
+| File | Before | After |
+|---|---|---|
+| `launcher.ts` | 846 | 378 |
+| `view/event-renderer.ts` | 901 | 820 |
+
+**Decision:**
+
+- **The `createEventRenderer` factory stays large on purpose.** ~630 of its 820 lines are the factory body, which owns a tightly coupled per-session state machine: outbound stream, reaction controller, pending approvals/elicitations, cost accumulation, turn-timeout + budget-cap timers. Splitting it further would spread mutable state across modules and require a larger refactor pattern (e.g. a class with private fields) — bigger surgery, bigger regression risk, no clear win. Documented as "cohesive factory" and left alone until someone has a concrete need.
+
+---
+
 ## 1. Premises — what we already have vs. what we need to build
 
 ### What's already in the tree (reuse, don't rebuild)

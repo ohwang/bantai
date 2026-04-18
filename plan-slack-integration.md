@@ -1,6 +1,6 @@
 # bantai — Slack Frontend Plan
 
-**Status:** executing · Phases S0 + S1 + S2 complete · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against).
+**Status:** executing · Phases S0 + S1 + S2 + S3 complete · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against).
 **Scope:** add a fully-featured, polished Slack frontend alongside the existing TUI frontend. Single-workspace self-host first; multi-tenant hosted comes later. Backend-agnostic (Claude / Codex / Gemini / ACP).
 
 ---
@@ -146,6 +146,41 @@ This doc is kept live. Every working session updates:
 - Wire `chat:write.customize` so the bot posts under a per-project username + icon.
 
 **Plan §11/S3 exit:** "a thread shows the banner on first reply; `!bantai model claude-opus-4-7` swaps the model live; `!bantai stop` interrupts mid-stream."
+
+---
+
+### Session — 2026-04-19 · S3 banner + control commands
+
+**Status:** Phase S3 complete. 1833 pass / 11 skip / 0 fail.
+
+**Done this session (S3):**
+- `...` `src/frontends/slack/commands/{parser,dispatch}.ts` (+16 unit tests) — pure `parseControlCommand()` strips the turn-builder's `@name:` prefix, case-normalises the command, supports a customisable prefix (per plan §3.2 `control_prefix`). `dispatchCommand()` ships the minimum-viable set: `help`, `status`, `stop` (+aliases `cancel` / `interrupt`), `model [id]` (list or set), `verbosity <level>`, `new` (alias `reset`). Unknown commands get a `!bantai help` hint instead of silence.
+- `...` `src/frontends/slack/view/banner.ts` (+6 unit tests) — Block Kit header + section + context builder. Fresh-session header reads "session started"; resumed variant reads "session resumed" with a one-line summary (prior turns, cost, last active). Participant list lands in the context block; empty list falls back to the `!bantai help` hint.
+- `...` SendAdapter (view/outbox.ts) now accepts optional `blocks`; default `buildDefaultSendAdapter()` extracted so banner + future Block Kit views share the same Bolt wiring.
+- `...` Launcher wire-up: routing handler runs `parseControlCommand()` ahead of gate/registry dispatch. On first `session_init` per session, a one-shot subscriber posts the banner and unsubscribes. Mutable per-channel state lives in `ctx.projectOverrides: Map<channelId, ProjectConfig>` — `!bantai verbosity` + `!bantai model` update this map.
+- `...` S3 integration test (`commands.test.ts`, 4 cases) — banner posts in thread on first turn; `!bantai help` responds without invoking the backend; `!bantai status` shows session config; `!bantai verbosity debug` persists across turns.
+- `...` S2 streaming test updated to opt out of the banner (`session_banner: false`) so its "exactly one visible reply" assertion survives.
+
+**Full test suite:** 1833 pass / 11 skip / 0 fail across 103 files. 22 slack-integration-specific commits on top of main.
+
+**S3 exit criterion:** plan-worded as "thread shows the banner on first reply; `!bantai model claude-opus-4-7` swaps the model live; `!bantai stop` interrupts mid-stream." All three paths demonstrated in integration tests. `!bantai stop` uses `backend.interrupt()` on the live SessionHost. `!bantai model <id>` calls `backend.setModel()` + persists to `projectOverrides`. Banner posts on `session_init`. **Met.**
+
+**Discovered / scope deltas from S3:**
+
+1. **SendAdapter.postMessage needed `blocks` support.** The S2 signature accepted only `text`. Extending it was safe because every existing call site either omits `blocks` entirely or wraps `postMessage` — the type widens, no one narrows.
+2. **Banner must be a separate subscriber, not a fork of the event-renderer.** The renderer is turn-scoped (reaction machine resets on `turn_complete`). The banner is session-scoped (only on first `session_init`). Separate subscribers keeps each contract clean.
+3. **Streaming test required a config opt-out.** With the banner enabled, a first turn posts two messages (banner + streamed reply), not one. The S2 assertion was about *streaming* specifically — we set `session_banner: false` in that test only. Future phases should treat "banner + streamed reply" as the default visible shape.
+4. **Mutable overrides use a Map, not an in-place mutation of the ResolvedSlackConfig.** This preserves the hot-reload path later (S7 will replace the underlying config; the override Map survives the swap).
+5. **Bolt's `app.client.availableModels()` isn't always fast.** For `!bantai model` listing, we call `backend.availableModels()` on the live session — which for Claude hits the SDK. That's fine for a one-off user command; no need to cache.
+6. **CLI control-command set scoped tighter than plan §7.1.** The plan listed 12 commands. S3 ships 6 (help, status, stop, model, verbosity, new). The remaining six (`backend`, `cost`, `resume`, `permissions`, `thinking`, `compact`) map to features that aren't wired yet — e.g. `cost` needs a per-session cost aggregator (plan §2.4 costs table), `permissions` needs the approval flow (S4). They'll land as their underlying features come in.
+
+**Next up (S4 — Permissions + Block Kit approvals):**
+- Block Kit approval card (3 buttons: Allow once / Allow always / Deny) on `permission_request`.
+- Pending-approval registry keyed by `permission_request.id` with TTL auto-reject.
+- Approver gating (channel config: `approvers` list).
+- Elicitation → Block Kit static_select (single), multi_static_select (multi), or modal (multi-question free-text).
+
+**Plan §11/S4 exit:** "Claude requests Bash → Slack shows three-button approval → click resolves in-place → tool executes."
 
 ---
 

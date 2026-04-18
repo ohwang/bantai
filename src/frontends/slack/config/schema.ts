@@ -88,6 +88,12 @@ export const DefaultsSchema = z
     session_banner: z.boolean().default(true),
     approvers: z.array(z.string()).default([]),
     auto_join_threads: z.boolean().default(true),
+    /**
+     * Off by default per plan §6. When true, a cost footer is posted after
+     * every turn_complete; verbosity ≥ normal renders a one-liner, verbose
+     * renders per-category token breakdowns.
+     */
+    show_cost: z.boolean().default(false),
   })
   .strict()
 export type DefaultsConfig = z.infer<typeof DefaultsSchema>

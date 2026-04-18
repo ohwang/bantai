@@ -23,11 +23,12 @@
  */
 
 import type { App } from "@slack/bolt"
-import type { ConversationEvent } from "../../../protocol/types"
+import type { ConversationEvent, TokenUsage } from "../../../protocol/types"
 import { EventBatcher } from "../../../utils/event-batcher"
 import { log } from "../../../utils/logger"
 import type { ApprovalHook } from "../approvals/coordinator"
 import type { ElicitationHook } from "../elicitations/coordinator"
+import type { VerbosityLevel } from "../config/schema"
 import {
   createOutboundStream,
   type OutboundStream,
@@ -38,6 +39,13 @@ import {
   type ReactionAdapter,
   type StatusReactionController,
 } from "./reactions"
+import {
+  buildConciseToolSummary,
+  buildToolCompletedCard,
+  buildToolRunningCard,
+} from "./blocks/tool-card"
+import { buildPlanBlocks } from "./blocks/plan"
+import { buildThinkingBlocks } from "./blocks/thinking"
 
 export interface RendererBinding {
   /** Channel id to post replies in. */
@@ -89,6 +97,18 @@ export interface CreateRendererOpts {
    * `backend.cancelElicitation`.
    */
   elicitations?: ElicitationHook
+  /**
+   * Verbosity level for tool/plan/thinking/cost surface. Defaults to
+   * "normal". Reading the channel's resolved project config is the
+   * launcher's job; the renderer takes the final value.
+   */
+  verbosity?: VerbosityLevel
+  /**
+   * Post a cost footer on every turn_complete. Off by default per plan §6
+   * (verbosity gating still applies — at `silent` / `concise` no footer
+   * is emitted regardless).
+   */
+  showCost?: boolean
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
@@ -116,6 +136,11 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
       },
     }
 
+  const verbosity: VerbosityLevel = opts.verbosity ?? "normal"
+  const annotationsEnabled =
+    verbosity !== "silent" && verbosity !== "concise"
+  const showCost = opts.showCost ?? false
+
   let triggerTs: string | undefined = binding.triggerTs
   let stream: OutboundStream | undefined
   let reactions: StatusReactionController | undefined
@@ -126,6 +151,31 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   const pendingApprovals = new Set<string>()
   /** elicitation_request ids outstanding. Auto-cancelled on interrupt/destroy. */
   const pendingElicitations = new Set<string>()
+
+  // Per-turn tool card state (reset on turn_start).
+  const toolCardTs = new Map<string, string>()
+  const toolStartTime = new Map<string, number>()
+  const toolInputCache = new Map<string, unknown>()
+  const toolNameById = new Map<string, string>()
+  /**
+   * Per-tool-id promise chain so tool_use_end always runs AFTER its
+   * tool_use_start's postMessage has resolved (otherwise the running card
+   * ts isn't available yet and the end handler falls back to a fresh post).
+   */
+  const toolChain = new Map<string, Promise<void>>()
+  /** Tools seen this turn (for the concise aggregator posted at turn_complete). */
+  let toolHistory: string[] = []
+  // Per-turn thinking state.
+  let thinkingText = ""
+  let thinkingMessageTs: string | undefined
+  let lastThinkingPostAt = 0
+  // Session-scoped plan message ts — edited in place on each plan_update.
+  let planMessageTs: string | undefined
+  // Latest TokenUsage seen in this turn (for cost footer).
+  let turnUsage: TokenUsage | undefined
+  let lastInputTokens = 0
+  let lastOutputTokens = 0
+  let lastCostUsd = 0
 
   function ensureStream(): OutboundStream {
     if (!stream) {
@@ -191,6 +241,231 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     finalText = undefined
     if (s) await s.stop(final)
     if (r) await r.terminate(terminal)
+    if (terminal === "done") {
+      await postPerTurnAnnotations()
+    }
+    // Reset per-turn state regardless of terminal kind.
+    resetTurnState()
+  }
+
+  function resetTurnState(): void {
+    toolCardTs.clear()
+    toolStartTime.clear()
+    toolInputCache.clear()
+    toolNameById.clear()
+    toolChain.clear()
+    toolHistory = []
+    thinkingText = ""
+    thinkingMessageTs = undefined
+    lastThinkingPostAt = 0
+    turnUsage = undefined
+    lastInputTokens = 0
+    lastOutputTokens = 0
+    lastCostUsd = 0
+  }
+
+  async function postPerTurnAnnotations(): Promise<void> {
+    // Drain the tool chain so every tool card's post/update has settled
+    // before we emit annotations that the caller will expect to land last.
+    const chains = Array.from(toolChain.values())
+    if (chains.length > 0) {
+      await Promise.all(chains).catch(() => undefined)
+    }
+
+    // Concise: one summary line of the tool history.
+    if (verbosity === "concise" && toolHistory.length > 0) {
+      const summary = buildConciseToolSummary(toolHistory)
+      if (summary) {
+        try {
+          await sendAdapter.postMessage({
+            channel: binding.channel,
+            threadTs: binding.threadTs,
+            text: summary.text,
+            blocks: summary.blocks,
+          })
+        } catch (err) {
+          log.error(`slack renderer: concise summary post failed: ${String(err)}`)
+        }
+      }
+    }
+    // Cost footer: opt-in via showCost. Verbosity gates the detail level.
+    if (
+      showCost &&
+      (verbosity === "normal" || verbosity === "verbose" || verbosity === "debug")
+    ) {
+      const footer = buildCostFooter({
+        verbosity,
+        usage: turnUsage,
+        fallback: {
+          inputTokens: lastInputTokens,
+          outputTokens: lastOutputTokens,
+          totalCostUsd: lastCostUsd,
+        },
+      })
+      if (footer) {
+        try {
+          await sendAdapter.postMessage({
+            channel: binding.channel,
+            threadTs: binding.threadTs,
+            text: footer.text,
+            blocks: footer.blocks,
+          })
+        } catch (err) {
+          log.error(`slack renderer: cost footer post failed: ${String(err)}`)
+        }
+      }
+    }
+  }
+
+  function handleToolStart(event: {
+    id: string
+    tool: string
+    input: unknown
+  }): void {
+    toolHistory.push(event.tool)
+    toolInputCache.set(event.id, event.input)
+    toolNameById.set(event.id, event.tool)
+    toolStartTime.set(event.id, Date.now())
+    if (!annotationsEnabled) return
+    const card = buildToolRunningCard({
+      id: event.id,
+      tool: event.tool,
+      input: event.input,
+      verbosity,
+    })
+    if (!card) return
+    const prior = toolChain.get(event.id) ?? Promise.resolve()
+    const next = prior
+      .then(async () => {
+        try {
+          const res = await sendAdapter.postMessage({
+            channel: binding.channel,
+            threadTs: binding.threadTs,
+            text: card.text,
+            blocks: card.blocks,
+          })
+          toolCardTs.set(event.id, res.ts)
+        } catch (err) {
+          log.error(`slack renderer: tool card post failed for ${event.id}: ${String(err)}`)
+        }
+      })
+      .catch(() => undefined)
+    toolChain.set(event.id, next)
+  }
+
+  function handleToolEnd(event: {
+    id: string
+    output: string
+    error?: string
+  }): void {
+    if (!annotationsEnabled) return
+    const tool = extractToolName(event.id)
+    const input = toolInputCache.get(event.id)
+    const started = toolStartTime.get(event.id)
+    const elapsedMs = started !== undefined ? Date.now() - started : undefined
+    const card = buildToolCompletedCard({
+      id: event.id,
+      tool,
+      input,
+      output: event.output,
+      ...(event.error !== undefined ? { error: event.error } : {}),
+      ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+      verbosity,
+    })
+    if (!card) return
+    const prior = toolChain.get(event.id) ?? Promise.resolve()
+    const next = prior
+      .then(async () => {
+        const ts = toolCardTs.get(event.id)
+        try {
+          if (ts) {
+            await sendAdapter.updateMessage({
+              channel: binding.channel,
+              ts,
+              text: card.text,
+              blocks: card.blocks,
+            })
+          } else {
+            // No running card landed (post failed, or start event was dropped) —
+            // fall back to a fresh post so the completion is still visible.
+            const res = await sendAdapter.postMessage({
+              channel: binding.channel,
+              threadTs: binding.threadTs,
+              text: card.text,
+              blocks: card.blocks,
+            })
+            toolCardTs.set(event.id, res.ts)
+          }
+        } catch (err) {
+          log.error(`slack renderer: tool card update failed for ${event.id}: ${String(err)}`)
+        }
+      })
+      .catch(() => undefined)
+    toolChain.set(event.id, next)
+  }
+
+  /** Recover the tool name from the start event — tool_use_end doesn't carry it. */
+  function extractToolName(toolUseId: string): string {
+    return toolNameById.get(toolUseId) ?? "Tool"
+  }
+
+  async function handleThinkingDelta(event: { text: string }): Promise<void> {
+    if (verbosity !== "verbose" && verbosity !== "debug") return
+    thinkingText += event.text
+    // Throttle at ~250ms to avoid chat.update storms during fast streams.
+    const now = Date.now()
+    if (thinkingMessageTs && now - lastThinkingPostAt < 250) return
+    const card = buildThinkingBlocks({ text: thinkingText, verbosity })
+    if (!card) return
+    try {
+      if (thinkingMessageTs) {
+        await sendAdapter.updateMessage({
+          channel: binding.channel,
+          ts: thinkingMessageTs,
+          text: card.text,
+          blocks: card.blocks,
+        })
+      } else {
+        const res = await sendAdapter.postMessage({
+          channel: binding.channel,
+          threadTs: binding.threadTs,
+          text: card.text,
+          blocks: card.blocks,
+        })
+        thinkingMessageTs = res.ts
+      }
+      lastThinkingPostAt = now
+    } catch (err) {
+      log.error(`slack renderer: thinking post/update failed: ${String(err)}`)
+    }
+  }
+
+  async function handlePlanUpdate(entries: readonly unknown[]): Promise<void> {
+    if (verbosity === "silent") return
+    const rendered = buildPlanBlocks({
+      entries: entries as Parameters<typeof buildPlanBlocks>[0]["entries"],
+    })
+    if (!rendered) return
+    try {
+      if (planMessageTs) {
+        await sendAdapter.updateMessage({
+          channel: binding.channel,
+          ts: planMessageTs,
+          text: rendered.text,
+          blocks: rendered.blocks,
+        })
+      } else {
+        const res = await sendAdapter.postMessage({
+          channel: binding.channel,
+          threadTs: binding.threadTs,
+          text: rendered.text,
+          blocks: rendered.blocks,
+        })
+        planMessageTs = res.ts
+      }
+    } catch (err) {
+      log.error(`slack renderer: plan post/update failed: ${String(err)}`)
+    }
   }
 
   function applyEvents(events: ConversationEvent[]): void {
@@ -202,21 +477,40 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
         case "turn_start":
           inTurn = true
           finalText = undefined
+          resetTurnState()
           break
         case "text_delta":
-          ensureStream().append(event.text)
+          if (verbosity !== "silent") ensureStream().append(event.text)
           break
         case "text_complete":
           // Capture the canonical text for stop(finalText) to post.
           finalText = event.text
           // Touch the stream so the draft post happens for tool-only turns
           // that only speak at the very end.
-          ensureStream().append("")
+          if (verbosity !== "silent") ensureStream().append("")
           break
         case "turn_complete":
+          if (event.usage) turnUsage = event.usage
           void endTurn("done").catch((err) =>
             log.error(`slack renderer: endTurn threw: ${String(err)}`),
           )
+          break
+        case "tool_use_start":
+          handleToolStart(event)
+          break
+        case "tool_use_end":
+          handleToolEnd(event)
+          break
+        case "thinking_delta":
+          void handleThinkingDelta(event)
+          break
+        case "plan_update":
+          void handlePlanUpdate(event.entries)
+          break
+        case "cost_update":
+          lastInputTokens = event.inputTokens
+          lastOutputTokens = event.outputTokens
+          if (event.cost !== undefined) lastCostUsd = event.cost
           break
         case "interrupt":
           void endTurn("interrupted").catch((err) =>
@@ -323,6 +617,61 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
       }
     },
   }
+}
+
+/**
+ * Build a one- or multi-line cost footer from TokenUsage + fallback data.
+ *
+ * At `normal` verbosity we emit a terse one-liner — one context block with
+ * tokens + (approximate) cost. At `verbose` / `debug` we split out input
+ * vs output and cache tokens when available. Returns null when neither
+ * `usage` nor the cost-update fallback has anything meaningful to say,
+ * so the renderer can skip the post entirely.
+ */
+export function buildCostFooter(args: {
+  verbosity: VerbosityLevel
+  usage?: TokenUsage
+  fallback?: { inputTokens: number; outputTokens: number; totalCostUsd: number }
+}): { text: string; blocks: Array<{ type: string; elements: Array<{ type: string; text: string }> }> } | null {
+  const usage = args.usage
+  const fb = args.fallback
+  const inputTokens = usage?.inputTokens ?? fb?.inputTokens ?? 0
+  const outputTokens = usage?.outputTokens ?? fb?.outputTokens ?? 0
+  const cacheReadTokens = usage?.cacheReadTokens ?? 0
+  const cacheWriteTokens = usage?.cacheWriteTokens ?? 0
+  const totalCostUsd = usage?.totalCostUsd ?? fb?.totalCostUsd ?? 0
+
+  const total = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens
+  if (total === 0 && totalCostUsd === 0) return null
+
+  const compact = `${formatTokens(total)} tok · $${totalCostUsd.toFixed(4)}`
+  if (args.verbosity === "normal") {
+    return {
+      text: `cost: ${compact}`,
+      blocks: [
+        { type: "context", elements: [{ type: "mrkdwn", text: `:moneybag: ${compact}` }] },
+      ],
+    }
+  }
+
+  // verbose / debug — include per-category breakdown when non-zero.
+  const parts: string[] = []
+  if (inputTokens > 0) parts.push(`in ${formatTokens(inputTokens)}`)
+  if (outputTokens > 0) parts.push(`out ${formatTokens(outputTokens)}`)
+  if (cacheReadTokens > 0) parts.push(`cache-r ${formatTokens(cacheReadTokens)}`)
+  if (cacheWriteTokens > 0) parts.push(`cache-w ${formatTokens(cacheWriteTokens)}`)
+  const breakdown = parts.length > 0 ? ` (${parts.join(", ")})` : ""
+  const text = `:moneybag: ${compact}${breakdown}`
+  return {
+    text: `cost: ${compact}${breakdown}`,
+    blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }],
+  }
+}
+
+function formatTokens(n: number): string {
+  if (n < 1_000) return String(n)
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}K`
+  return `${(n / 1_000_000).toFixed(2)}M`
 }
 
 /**

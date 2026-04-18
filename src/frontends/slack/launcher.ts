@@ -379,6 +379,8 @@ function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Pro
           threadTs: turn.parentTs,
           triggerTs: turn.triggerTs,
         },
+        verbosity: project.verbosity,
+        showCost: project.showCost,
         approvals: ctx.approvals.bindSession({
           sessionKey: entry.key,
           approvers: project.approvers,

@@ -14,6 +14,7 @@ function project(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     triggerName: "bantai",
     controlPrefix: "!bantai",
     sessionBanner: true,
+    showCost: false,
     autoJoinThreads: true,
     env: {},
     ...overrides,

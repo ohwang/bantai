@@ -51,6 +51,8 @@ export interface ProjectConfig {
   controlPrefix: string
   /** Show the formal session banner on new sessions? */
   sessionBanner: boolean
+  /** Post a cost footer after every turn_complete (off by default). */
+  showCost: boolean
   /** Should the bot auto-attach to threads it's posted in without re-mention? */
   autoJoinThreads: boolean
   /** Extra env vars to pass to the backend process. Resolved from SecretRefs. */
@@ -108,6 +110,7 @@ export function resolveProjectForChannel(
     triggerName: defaults.trigger_name,
     controlPrefix: defaults.control_prefix,
     sessionBanner: defaults.session_banner,
+    showCost: defaults.show_cost,
     autoJoinThreads: defaults.auto_join_threads,
     env: resolveEnvRefs(override?.env, env),
   }

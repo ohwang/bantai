@@ -96,9 +96,13 @@ describe("slack frontend S2 — streaming + reactions", () => {
   it("produces a single streaming message (not a chain of posts)", async () => {
     const parent = await mini
       .asUser(aliceId)
-      .sendMessage(generalId, `<@${botUserId}> can you read the file please`)
+      // Use a prompt that does NOT trigger the mock's tool simulation —
+      // `read` / `file` / `bash` / `ask` / `question` would each surface
+      // a separate Block Kit card (tool / approval / elicitation). We're
+      // asserting specifically about the streaming-text message here.
+      .sendMessage(generalId, `<@${botUserId}> just say hello`)
 
-    // Wait until the mock completes the turn (~2s worth of deltas + read sim).
+    // Wait until the mock completes the turn (~2s worth of deltas).
     await waitFor(
       () => replyCountIn(mini, generalId, parent.ts) >= 1,
       { timeoutMs: 10_000, message: "expected at least one reply" },

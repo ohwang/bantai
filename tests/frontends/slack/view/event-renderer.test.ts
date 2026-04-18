@@ -80,7 +80,7 @@ describe("event-renderer — streaming", () => {
     expect(lastText).toBe("Hello, world!")
   })
 
-  it("no post when the turn emits no text (tool-only turn)", async () => {
+  it("text stream does not post when the turn emits no text (tool-only turn)", async () => {
     const h = harness("t1")
     h.push([
       { type: "turn_start" },
@@ -89,7 +89,10 @@ describe("event-renderer — streaming", () => {
       { type: "turn_complete" },
     ])
     await drain()
-    expect(h.sends.length).toBe(0)
+    // Nothing that looks like streamed assistant text — tool cards have a
+    // "Tool — done/running" text fallback, never "...".
+    const streamed = h.sends.filter((s) => s.text === "..." || s.text === "…")
+    expect(streamed.length).toBe(0)
   })
 })
 

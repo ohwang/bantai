@@ -7,6 +7,9 @@
  *   session registry) → SessionHost.send → backend emits AgentEvents →
  *   view event-renderer → chat.postMessage / chat.update / files.upload /
  *   reactions.add / Block Kit cards.
+ *
+ * The per-event dispatch + routing helpers live in `./routing.ts` to
+ * keep this file focused on boot / lifecycle.
  */
 
 import type { App } from "@slack/bolt"
@@ -15,35 +18,19 @@ import { log } from "../../utils/logger"
 import { loadSlackConfig } from "./config/loader"
 import type { ResolvedSlackConfig } from "./config/schema"
 import { createBoltApp, runBootDiagnostics, verifyAuth } from "./transport/bolt"
-import { registerEvents, type InboundSlackEvent } from "./transport/events"
+import { registerEvents } from "./transport/events"
 import {
   createSessionRegistry,
-  type SessionEntry,
   type SessionRegistry,
   type BuildHostOpts,
   type HostPair,
 } from "./router/registry"
-import { resolveProjectForChannel } from "./router/resolver"
 import { auditSlackConfig } from "./router/audit"
 import { createDedupCache } from "./inbox/dedup"
-import { decideGate } from "./inbox/gate"
-import { buildInboundTurn } from "./inbox/turn-builder"
-import { buildDefaultSendAdapter, createEventRenderer, type EventRenderer } from "./view/event-renderer"
-import { postSessionBanner } from "./view/banner"
 import { createUserCache, type UserCache } from "./view/user-cache"
-import { parseControlCommand } from "./commands/parser"
-import { dispatchCommand, type CommandContext } from "./commands/dispatch"
-import type { VerbosityLevel } from "./config/schema"
-import type { ConversationEvent } from "../../protocol/types"
-import type { ProjectConfig } from "./router/resolver"
-import {
-  createApprovalCoordinator,
-  type ApprovalCoordinator,
-} from "./approvals/coordinator"
-import {
-  createElicitationCoordinator,
-  type ElicitationCoordinator,
-} from "./elicitations/coordinator"
+import { buildDefaultSendAdapter } from "./view/event-renderer"
+import { createApprovalCoordinator } from "./approvals/coordinator"
+import { createElicitationCoordinator } from "./elicitations/coordinator"
 import {
   createAttachmentFetcher,
   type AttachmentFetcher,
@@ -60,9 +47,12 @@ import {
   createSessionStore,
   type SessionStore,
 } from "./store/sessions"
+import { buildRoutingHandler, parseSessionKey } from "./routing"
 import { homedir } from "node:os"
 import { join as pathJoin, dirname } from "node:path"
 import { mkdirSync } from "node:fs"
+
+export { mergeCumulativeUsage } from "./usage"
 
 export interface LaunchSlackOpts extends CLIFlags {
   /** Explicit slack.toml path — takes precedence over config search. */
@@ -333,63 +323,9 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
 }
 
 // ---------------------------------------------------------------------------
-// S1 inbound handler — the round-trip pipeline
+// Launcher-local helpers
 // ---------------------------------------------------------------------------
 
-interface RoutingCtx {
-  app: App
-  config: ResolvedSlackConfig
-  registry: SessionRegistry
-  dedup: ReturnType<typeof createDedupCache>
-  userCache: UserCache
-  botUserId: string
-  workspaceId: string
-  launchCwd: string
-  /** Cross-session approval coordinator (registry + block-actions handler). */
-  approvals: ApprovalCoordinator
-  /** Cross-session elicitation coordinator (card → modal → view_submission). */
-  elicitations: ElicitationCoordinator
-  /** Fetches inbound file attachments into images / staging files. */
-  attachments: AttachmentFetcher
-  /**
-   * One event-renderer per live session. We keep a map (not just a set) so
-   * the handler can update the per-turn triggerTs when a new mention lands
-   * in the same thread.
-   */
-  renderers: WeakMap<SessionEntry, EventRenderer>
-  /**
-   * Mutable per-channel project view — populated on first resolve, updated
-   * by `!bantai verbosity` / `!bantai model` etc. without touching the
-   * underlying immutable ResolvedSlackConfig.
-   */
-  projectOverrides: Map<string, ProjectConfig>
-  /** Sessions for which we've already posted the banner. */
-  bannerPosted: WeakSet<SessionEntry>
-  /**
-   * Set to true once `handle.stop()` begins. Inbound events arriving after
-   * this briefly ack with a "bot is shutting down" ephemeral and drop on
-   * the floor — rather than spinning up a fresh session that will die
-   * mid-turn when `registry.closeAll()` runs moments later.
-   */
-  shuttingDown: { value: boolean }
-  /**
-   * Build a per-session `slack_upload` MCP server config. The launcher
-   * constructs one for every new SessionHost so the tool handler closes
-   * over the correct (channel, threadTs, cwd) binding.
-   */
-  slackUploadMcpFor: (
-    channel: string,
-    threadTs: string,
-    cwd: string,
-  ) => McpSdkServerConfigWithInstance
-}
-
-/**
- * When the launcher is pointed at a non-Slack API URL (minislack in tests,
- * a mirror in air-gapped deploys), the file URLs on message events still
- * carry `https://slack.com/...`. Rewrite them onto the configured host so
- * the attachment fetcher can reach the bytes.
- */
 /**
  * Resolve the config's `storePath` into a live `SessionStore`. Empty path
  * → no-op store (persistence disabled). Non-empty path → bun:sqlite, with
@@ -418,419 +354,15 @@ function openSessionStore(path: string): SessionStore {
   }
 }
 
+/**
+ * When the launcher is pointed at a non-Slack API URL (minislack in tests,
+ * a mirror in air-gapped deploys), the file URLs on message events still
+ * carry `https://slack.com/...`. Rewrite them onto the configured host so
+ * the attachment fetcher can reach the bytes.
+ */
 function rewriterForSlackApiUrl(slackApiUrl: string): (url: string) => string {
   const base = slackApiUrl.replace(/\/$/, "")
   return (u) => u.replace(/^https?:\/\/[^/]+/, base)
-}
-
-/**
- * Parse a session key of the form `slack:<workspace>:<channel>:<threadTs|main>`
- * back into the parts the registry expects. Returns undefined when the
- * key doesn't match the expected shape — approval clicks arriving for a
- * dead session then log + no-op rather than crashing.
- */
-function parseSessionKey(
-  key: string,
-): { workspace: string; channelId: string; threadTs?: string } | undefined {
-  const parts = key.split(":")
-  if (parts.length !== 4) return undefined
-  if (parts[0] !== "slack") return undefined
-  const [, workspace, channelId, thread] = parts as [string, string, string, string]
-  return {
-    workspace,
-    channelId,
-    ...(thread === "main" ? {} : { threadTs: thread }),
-  }
-}
-
-function buildRoutingHandler(ctx: RoutingCtx): (event: InboundSlackEvent) => Promise<void> {
-  return async (event) => {
-    if (ctx.shuttingDown.value) {
-      // Best-effort: only message/app_mention events have a channel we can
-      // ephemerally reply on. Approvals/elicitations quietly drop since
-      // their coordinators have already been closed by `stop()`.
-      if (event.kind === "message" || event.kind === "app_mention") {
-        try {
-          await ctx.app.client.chat.postEphemeral({
-            channel: event.channel,
-            user: event.user,
-            text: ":zzz: bantai is shutting down — please retry in a moment",
-          })
-        } catch (err) {
-          log.debug(`slack: shutdown ephemeral post failed: ${String(err)}`)
-        }
-      }
-      return
-    }
-    if (event.kind === "block_action") {
-      const approvalRes = await ctx.approvals.handleBlockAction({
-        actionId: event.actionId,
-        userId: event.user,
-        channel: event.channel,
-      })
-      if (approvalRes.kind === "unauthorized") {
-        // Best-effort ephemeral note so the clicker sees why nothing happened.
-        try {
-          if (event.channel) {
-            await ctx.app.client.chat.postEphemeral({
-              channel: event.channel,
-              user: event.user,
-              text: `You are not on the approver list for this action.`,
-            })
-          }
-        } catch (err) {
-          log.debug(`slack: chat.postEphemeral failed: ${String(err)}`)
-        }
-        return
-      }
-      if (approvalRes.kind === "malformed") {
-        // Fall through to the elicitation coordinator.
-        const elicRes = await ctx.elicitations.handleBlockAction({
-          actionId: event.actionId,
-          userId: event.user,
-          triggerId: event.triggerId,
-          channel: event.channel,
-        })
-        if (elicRes.kind === "malformed") {
-          log.debug(`slack: unrecognised block_action ignored: ${event.actionId}`)
-        }
-      }
-      return
-    }
-    if (event.kind === "view_submission") {
-      const res = await ctx.elicitations.handleViewSubmission({
-        callbackId: event.callbackId,
-        userId: event.user,
-        values: event.values,
-      })
-      if (res.kind === "malformed") {
-        log.debug(`slack: unrecognised view_submission ignored: ${event.callbackId}`)
-      }
-      return
-    }
-    if (event.kind !== "message" && event.kind !== "app_mention") {
-      // Other event kinds are routed by later phases (reactions, file_shared).
-      return
-    }
-    // Dedup by channel:ts. Both message and app_mention carry both.
-    const key = `${event.channel}:${event.ts}`
-    if (!ctx.dedup.markFresh(key)) {
-      log.debug(`slack: duplicate ${event.kind} ${key}, ignoring`)
-      return
-    }
-
-    // Anchor the session at the thread parent when this is a reply, else at
-    // the triggering message's own ts (the ts the bot's reply will thread
-    // under). This makes "top-level message" and "replies under it" converge
-    // onto the same session key.
-    const anchorTs = event.threadTs ?? event.ts
-    const sessionParts = {
-      workspace: ctx.workspaceId,
-      channelId: event.channel,
-      threadTs: anchorTs,
-    }
-    const existing = ctx.registry.peek(sessionParts)
-
-    const project = mutableProjectFor(ctx, event.channel)
-
-    const decision = decideGate({
-      channel: event.channel,
-      text: event.text,
-      threadTs: event.threadTs,
-      botUserId: ctx.botUserId,
-      requireMention: project.requireMention,
-      autoJoinThreads: project.autoJoinThreads,
-      threadHasActiveSession: !!existing,
-    })
-    if (!decision.accept) {
-      log.debug(`slack: gate rejected ${event.kind} ${key} (${decision.reason})`)
-      return
-    }
-
-    const displayName = await ctx.userCache.displayName(event.user)
-    const turn = buildInboundTurn({
-      text: event.text,
-      channel: event.channel,
-      ts: event.ts,
-      threadTs: event.threadTs,
-      userId: event.user,
-      userDisplayName: displayName,
-      botUserId: ctx.botUserId,
-    })
-
-    // Is this a control command invocation? If so, dispatch + return
-    // without opening / running a backend turn.
-    const cmd = parseControlCommand(turn.text, { prefix: project.controlPrefix })
-    if (cmd) {
-      await handleControlCommand({
-        ctx,
-        cmd,
-        project,
-        channel: event.channel,
-        threadTs: turn.parentTs,
-        sessionParts,
-      })
-      return
-    }
-
-    // Lazy-create the SessionHost on first turn; subsequent turns reuse it.
-    const entry = ctx.registry.getOrCreate(
-      sessionParts,
-      project,
-      turn.parentTs,
-      buildSessionMcpOverlay({
-        project,
-        channel: turn.channel,
-        threadTs: turn.parentTs,
-        slackUploadMcp: ctx.slackUploadMcpFor,
-      }),
-    )
-
-    let renderer = ctx.renderers.get(entry)
-    if (!renderer) {
-      renderer = createEventRenderer({
-        app: ctx.app,
-        binding: {
-          channel: turn.channel,
-          threadTs: turn.parentTs,
-          triggerTs: turn.triggerTs,
-        },
-        verbosity: project.verbosity,
-        showCost: project.showCost,
-        turnTimeoutS: project.turnTimeoutS,
-        onTurnTimeout: () => {
-          // Driver the backend to actually stop producing events — the
-          // renderer's :hourglass: post is decorative; the interrupt is
-          // load-bearing.
-          entry.host.backend.interrupt()
-        },
-        maxBudgetUsd: project.maxBudgetUsd,
-        onBudgetExceeded: () => {
-          entry.host.backend.interrupt()
-        },
-        approvals: ctx.approvals.bindSession({
-          sessionKey: entry.key,
-          approvers: project.approvers,
-        }),
-        elicitations: ctx.elicitations.bindSession({
-          sessionKey: entry.key,
-        }),
-      })
-      ctx.renderers.set(entry, renderer)
-      entry.subscribe(renderer.onEvent)
-      // Post the session banner on the first session_init we see from
-      // this entry. The one-shot subscriber is detached the first time it
-      // fires so subsequent turns don't re-post a banner.
-      if (project.sessionBanner) {
-        attachBannerOnce(ctx, entry, project, turn.channel, turn.parentTs)
-      }
-    } else {
-      renderer.setTriggerTs(turn.triggerTs)
-    }
-
-    // Ingest any attached files on the inbound message. Images land in
-    // UserMessage.images; everything else is written to a channel-scoped
-    // staging dir and cited by absolute path in the text.
-    const incomingFiles = "files" in event ? event.files : undefined
-    if (incomingFiles && incomingFiles.length > 0) {
-      try {
-        const ingested = await ctx.attachments.fetch(incomingFiles, {
-          channelId: event.channel,
-          ts: event.ts,
-        })
-        entry.send({
-          text: turn.text + ingested.textHint,
-          ...(ingested.images.length > 0 ? { images: ingested.images } : {}),
-        })
-        return
-      } catch (err) {
-        log.error(`slack: attachment ingest failed: ${String(err)}. Proceeding without files.`)
-      }
-    }
-
-    entry.send({ text: turn.text })
-  }
-}
-
-/**
- * Build the sessionConfigOverlay that injects the per-session `slack_upload`
- * MCP server. Merges with `project.resolvedMcpServers` so a channel's
- * user-configured MCP set remains active alongside the upload tool.
- *
- * Note: returning `undefined` when we have nothing to overlay keeps
- * `SessionConfig.mcpServers` free to fall back to the backend's defaults
- * (rather than being force-set to an empty map).
- */
-function buildSessionMcpOverlay(args: {
-  project: ProjectConfig
-  channel: string
-  threadTs: string
-  slackUploadMcp: (
-    channel: string,
-    threadTs: string,
-    cwd: string,
-  ) => McpSdkServerConfigWithInstance
-}): Partial<import("../../protocol/types").SessionConfig> | undefined {
-  const upload = args.slackUploadMcp(
-    args.channel,
-    args.threadTs,
-    args.project.projectDir,
-  )
-  const base = args.project.resolvedMcpServers ?? {}
-  return {
-    mcpServers: {
-      ...base,
-      "bantai-slack-upload": upload,
-    },
-  }
-}
-
-/**
- * Resolve the project config for the channel, returning a MUTABLE snapshot
- * (so `!bantai verbosity <l>` can update the in-memory view). The SlackConfig
- * itself stays immutable in this launcher; mutations travel via
- * `ctx.projectOverrides.set(channelId, nextConfig)`.
- */
-function mutableProjectFor(ctx: RoutingCtx, channelId: string): ProjectConfig {
-  const cached = ctx.projectOverrides.get(channelId)
-  if (cached) return cached
-  const fresh = resolveProjectForChannel(ctx.config, channelId, {
-    launchCwd: ctx.launchCwd,
-  })
-  ctx.projectOverrides.set(channelId, fresh)
-  return fresh
-}
-
-interface CommandRouteArgs {
-  ctx: RoutingCtx
-  cmd: { cmd: string; args: string }
-  project: ProjectConfig
-  channel: string
-  threadTs: string
-  sessionParts: {
-    workspace: string
-    channelId: string
-    threadTs: string
-  }
-}
-
-async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
-  const { ctx, cmd, project, channel, threadTs, sessionParts } = args
-  const adapter = buildDefaultSendAdapter(ctx.app)
-  const existing = ctx.registry.peek(sessionParts)
-
-  const commandCtx: CommandContext = {
-    async sendReply(text) {
-      try {
-        await adapter.postMessage({ channel, threadTs, text })
-      } catch (err) {
-        log.error(`slack commands: sendReply failed: ${String(err)}`)
-      }
-    },
-    interrupt() {
-      existing?.host.backend.interrupt()
-    },
-    async setModel(model) {
-      if (existing) await existing.host.backend.setModel(model)
-      // Persist for future turns in this channel.
-      ctx.projectOverrides.set(project.channelId, { ...project, model })
-    },
-    async resetSession() {
-      existing?.reset()
-    },
-    setVerbosity(level: VerbosityLevel) {
-      ctx.projectOverrides.set(project.channelId, { ...project, verbosity: level })
-    },
-    async availableModels() {
-      if (!existing) return []
-      const list = await existing.host.backend.availableModels()
-      return list.map((m) => m.id)
-    },
-    cumulativeUsage() {
-      const renderer = existing ? ctx.renderers.get(existing) : undefined
-      return mergeCumulativeUsage(
-        renderer?.cumulativeUsage(),
-        existing?.priorUsage,
-      )
-    },
-    project,
-    workspace: sessionParts.workspace,
-    channel,
-    threadTs,
-  }
-  await dispatchCommand(cmd, commandCtx)
-}
-
-/**
- * Subscribe one banner-poster. The subscriber captures the first
- * `session_init` event's sessionId and posts the banner, then unsubscribes
- * itself. Guarded by a WeakSet so we never post two banners for the same
- * session.
- */
-function attachBannerOnce(
-  ctx: RoutingCtx,
-  entry: SessionEntry,
-  project: ProjectConfig,
-  channel: string,
-  threadTs: string,
-): void {
-  if (ctx.bannerPosted.has(entry)) return
-  const adapter = buildDefaultSendAdapter(ctx.app)
-  let unsub: (() => void) | null = null
-  const subscriber = (event: ConversationEvent): void => {
-    if (event.type !== "session_init") return
-    ctx.bannerPosted.add(entry)
-    unsub?.()
-    unsub = null
-    postSessionBanner({
-      adapter,
-      channel,
-      threadTs,
-      inputs: {
-        project,
-        sessionId: event.sessionId,
-        ...(entry.resumed
-          ? {
-              resumed: {
-                priorTurns: entry.priorUsage.turns,
-                priorCostUsd: entry.priorUsage.totalCostUsd,
-              },
-            }
-          : {}),
-      },
-    }).catch((err) => log.error(`slack banner: ${String(err)}`))
-  }
-  unsub = entry.subscribe(subscriber)
-}
-
-// ---------------------------------------------------------------------------
-// SIGINT / SIGTERM handling
-// ---------------------------------------------------------------------------
-
-/**
- * Merge the live (in-memory) renderer usage with the persisted prior usage
- * read from the session store. Cumulative turns + totalCostUsd span process
- * restarts; token breakdowns are in-process only (not persisted, so a
- * bounce resets them — documented tradeoff).
- */
-export function mergeCumulativeUsage(
-  live: import("./view/event-renderer").CumulativeUsage | undefined,
-  prior: { turns: number; totalCostUsd: number } | undefined,
-): import("./view/event-renderer").CumulativeUsage {
-  const base = live ?? {
-    turns: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    totalCostUsd: 0,
-  }
-  const p = prior ?? { turns: 0, totalCostUsd: 0 }
-  return {
-    ...base,
-    turns: base.turns + p.turns,
-    totalCostUsd: base.totalCostUsd + p.totalCostUsd,
-  }
 }
 
 function waitForSignal(): Promise<void> {

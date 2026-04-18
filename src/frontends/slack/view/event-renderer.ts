@@ -49,6 +49,13 @@ import {
   uploadFileBestEffort,
   type SlackFileClient,
 } from "./upload"
+import { buildDefaultSendAdapter } from "./send-adapter"
+import { buildCostFooter } from "./cost-footer"
+
+// Re-exports so existing imports of `event-renderer` keep working after
+// the send-adapter + cost-footer extractions.
+export { buildDefaultSendAdapter } from "./send-adapter"
+export { buildCostFooter } from "./cost-footer"
 
 export interface RendererBinding {
   /** Channel id to post replies in. */
@@ -801,55 +808,6 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
 }
 
 /**
- * Build a one- or multi-line cost footer from TokenUsage + fallback data.
- *
- * At `normal` verbosity we emit a terse one-liner — one context block with
- * tokens + (approximate) cost. At `verbose` / `debug` we split out input
- * vs output and cache tokens when available. Returns null when neither
- * `usage` nor the cost-update fallback has anything meaningful to say,
- * so the renderer can skip the post entirely.
- */
-export function buildCostFooter(args: {
-  verbosity: VerbosityLevel
-  usage?: TokenUsage
-  fallback?: { inputTokens: number; outputTokens: number; totalCostUsd: number }
-}): { text: string; blocks: Array<{ type: string; elements: Array<{ type: string; text: string }> }> } | null {
-  const usage = args.usage
-  const fb = args.fallback
-  const inputTokens = usage?.inputTokens ?? fb?.inputTokens ?? 0
-  const outputTokens = usage?.outputTokens ?? fb?.outputTokens ?? 0
-  const cacheReadTokens = usage?.cacheReadTokens ?? 0
-  const cacheWriteTokens = usage?.cacheWriteTokens ?? 0
-  const totalCostUsd = usage?.totalCostUsd ?? fb?.totalCostUsd ?? 0
-
-  const total = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens
-  if (total === 0 && totalCostUsd === 0) return null
-
-  const compact = `${formatTokens(total)} tok · $${totalCostUsd.toFixed(4)}`
-  if (args.verbosity === "normal") {
-    return {
-      text: `cost: ${compact}`,
-      blocks: [
-        { type: "context", elements: [{ type: "mrkdwn", text: `:moneybag: ${compact}` }] },
-      ],
-    }
-  }
-
-  // verbose / debug — include per-category breakdown when non-zero.
-  const parts: string[] = []
-  if (inputTokens > 0) parts.push(`in ${formatTokens(inputTokens)}`)
-  if (outputTokens > 0) parts.push(`out ${formatTokens(outputTokens)}`)
-  if (cacheReadTokens > 0) parts.push(`cache-r ${formatTokens(cacheReadTokens)}`)
-  if (cacheWriteTokens > 0) parts.push(`cache-w ${formatTokens(cacheWriteTokens)}`)
-  const breakdown = parts.length > 0 ? ` (${parts.join(", ")})` : ""
-  const text = `:moneybag: ${compact}${breakdown}`
-  return {
-    text: `cost: ${compact}${breakdown}`,
-    blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }],
-  }
-}
-
-/**
  * True when `app` has a live Bolt client we can use for file uploads.
  * Unit tests pass a `{} as App` stub — we detect the absence of the
  * client and skip wiring the file surface so uploads silently no-op.
@@ -859,43 +817,4 @@ function isLiveApp(app: App): boolean {
   if (!client || typeof client !== "object") return false
   const files = (client as { files?: unknown }).files
   return typeof files === "object" && files !== null
-}
-
-function formatTokens(n: number): string {
-  if (n < 1_000) return String(n)
-  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}K`
-  return `${(n / 1_000_000).toFixed(2)}M`
-}
-
-/**
- * Build the production SendAdapter from a live Bolt App. Exported so the
- * banner / future Block Kit views can construct the same adapter without
- * duplicating the wiring.
- */
-export function buildDefaultSendAdapter(app: App): SendAdapter {
-  return {
-    async postMessage(args) {
-      const res = await app.client.chat.postMessage({
-        channel: args.channel,
-        text: args.text,
-        ...(args.threadTs ? { thread_ts: args.threadTs } : {}),
-        ...(args.blocks ? { blocks: args.blocks as never } : {}),
-      })
-      if (!res.ok || !res.ts || !res.channel) {
-        throw new Error(`chat.postMessage failed: ${res.error ?? "unknown"}`)
-      }
-      return { ts: String(res.ts), channel: String(res.channel) }
-    },
-    async updateMessage(args) {
-      const res = await app.client.chat.update({
-        channel: args.channel,
-        ts: args.ts,
-        text: args.text,
-        ...(args.blocks ? { blocks: args.blocks as never } : {}),
-      })
-      if (!res.ok) {
-        throw new Error(`chat.update failed: ${res.error ?? "unknown"}`)
-      }
-    },
-  }
 }

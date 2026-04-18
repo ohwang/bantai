@@ -411,7 +411,6 @@ This doc is kept live. Every working session updates:
 These items from S8/S9 are intentionally deferred rather than scoped down:
 
 - **E2E live-Slack smoke test** (S9): real-workspace credentials in CI. Needs an infrastructure conversation about secret handling + which workspace to point at; out of scope for the frontend work.
-- **`bantai slack doctor` subcommand** (S9 polish): a `slack` subcommand that spins up Bolt just long enough to run `verifyAuth` + `runBootDiagnostics` + print a summary, then exits. Additive; operators already get the same info on every launch.
 - **Prometheus `/metrics`** (S8): the HTTP receiver path is live; adding `/metrics` is additive and belongs with the web viewer work.
 - **MCP `slack_upload` tool** (S6): exposes file upload as a direct tool the agent can call. Renderer-driven auto-upload already covers every plan-§11 S6 acceptance case; an explicit MCP tool is a polish item for workflows where the agent wants to attach an artefact mid-turn without emitting a long tool output.
 
@@ -441,6 +440,27 @@ These items from S8/S9 are intentionally deferred rather than scoped down:
 5. **Tilde-expansion in `resolveStorePath` (not at write time).** We expand `~` into `$HOME` at config-resolve time so the resolved path is a plain string everywhere downstream. This matches how the loader already handles other paths.
 
 **Plan §11/S8 exit criterion revisit:** "kill -9 the process mid-turn, restart, thread survives; `!bantai cost` reports accurately." **Both sub-criteria now met.** The persistence integration test is the direct exercise of the first; `!bantai cost` has read from the store on boot since the wiring commit above.
+
+---
+
+### Session — 2026-04-19 · polish: `bantai slack doctor` + usage-merge extraction
+
+**Status:** post-v0 polish. Full slack suite: 332 pass / 0 fail across 38 files. Typecheck clean.
+
+**Done this session:**
+
+- `+` `src/frontends/slack/doctor.ts` (125 lines) + `tests/frontends/slack/doctor.test.ts` (6 cases) — `runSlackDoctor({ configPath?, cwd?, slackApiUrlOverride?, createApp?, loadConfig? })`. Spins up Bolt just long enough to run `auth.test` + the same scope probes the launcher uses on boot, returns a `SlackDoctorReport { source, mode, persistenceEnabled, auth, findings }`. `formatSlackDoctorReport` renders it as aligned plain text. Injectable `createApp` / `loadConfig` hooks keep the unit tests deterministic without a live workspace.
+- `...` `src/cli/program.ts` — new `bantai slack doctor [--slack-config <path>] [--slack-api-url <url>]` subcommand. Exit code: 0 on clean probes, 1 on findings, 2 on loader / connect failure. Complements the launcher's always-on `runBootDiagnostics` warn lines by offering a dry-run option for operators who want to verify before accepting traffic.
+- `...` `src/frontends/slack/launcher.ts` + `tests/frontends/slack/launcher.test.ts` — factored the `!bantai cost` cumulative-usage merge out of the launcher's command-context closure into an exported pure `mergeCumulativeUsage(live?, prior?)`. 4 unit cases cover both-absent, live-only, merge, and prior-only (post-restart-pre-first-turn). Simplifies the launcher's `cumulativeUsage` closure to a one-line delegation.
+
+**Full slack test suite:** 332 pass / 0 fail across 38 files. `tsc --noEmit` clean.
+
+**Decisions:**
+
+1. **`doctor` exits via `process.exit` rather than throwing.** The subcommand has three distinct outcomes (clean / findings / failure) and operators pipe the exit code into CI scripts. Throwing would map every branch to exit 1, which loses the "findings exist but probes ran" signal.
+2. **Token breakdowns don't merge with `priorUsage`.** Only turns + USD are in the persisted row; a restart intentionally resets the token counters for the current process (the documented tradeoff around row size vs. observability value).
+
+**Remaining post-v0 polish:** E2E live-Slack smoke (needs CI workspace credentials), Prometheus `/metrics` (slots with S10 web viewer), MCP `slack_upload` tool (additive — renderer auto-upload already covers S6 exit criterion).
 
 ---
 

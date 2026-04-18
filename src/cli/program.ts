@@ -142,6 +142,34 @@ export async function runCli(argv: string[]): Promise<void> {
       slackApiUrlOverride: opts.slackApiUrl as string | undefined,
     })
   })
+  slackCmd
+    .command("init-manifest")
+    .description("Print a Slack app manifest for bantai (paste into api.slack.com)")
+    .option("--format <json|yaml>", "Output format (default: yaml)", "yaml")
+    .option("--name <name>", "App display name", "bantai")
+    .option("--http", "Emit an HTTP-mode manifest (default: socket mode)")
+    .option("--request-url <url>", "Events API request URL (HTTP mode)")
+    .action(async (subOpts: {
+      format: string
+      name: string
+      http?: boolean
+      requestUrl?: string
+    }) => {
+      const { buildManifest, manifestToJson, manifestToYaml } = await import(
+        "../frontends/slack/manifest"
+      )
+      const manifest = buildManifest({
+        displayName: subOpts.name,
+        socketMode: !subOpts.http,
+        ...(subOpts.requestUrl ? { requestUrl: subOpts.requestUrl } : {}),
+      })
+      const out =
+        subOpts.format === "json"
+          ? manifestToJson(manifest)
+          : manifestToYaml(manifest)
+      // eslint-disable-next-line no-console
+      console.log(out)
+    })
   program.addCommand(slackCmd)
 
   // -----------------------------------------------------------------------

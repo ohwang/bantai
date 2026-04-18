@@ -34,6 +34,8 @@ import { createBackend } from "../../../subagents/backend-factory"
 import { createSessionHost } from "../../../session/host"
 import { log } from "../../../utils/logger"
 import type { ProjectConfig } from "./resolver"
+import type { SessionStore } from "../store/sessions"
+import { createNoopSessionStore } from "../store/sessions"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,12 +64,32 @@ export interface SessionEntry {
     /** The ts that became the thread anchor for this session's replies. */
     parentTs: string
   }
+  /**
+   * True when this session was rehydrated from the persistent store (i.e.
+   * the launcher survived a prior process death or was restarted). The
+   * view layer uses this to post a "session resumed after restart" banner
+   * instead of the default "session started" one.
+   */
+  resumed: boolean
+  /** Pre-restart cumulative cost + turns, read from the store. Zeros for fresh sessions. */
+  priorUsage: { turns: number; totalCostUsd: number }
   /** Push an inbound user turn into the backend. Safe to call any time. */
   send(message: UserMessage): void
   /** Add a view-layer subscriber that will receive every AgentEvent. */
   subscribe(fn: EventSubscriber): () => void
-  /** Close the host and stop the event pump. Idempotent. */
+  /**
+   * Close the host + evict from memory. Idempotent. Does NOT touch the
+   * persistent store — an idle-evicted session stays resumable; the next
+   * inbound message will rehydrate it through the same store lookup that
+   * runs on a cold start.
+   */
   close(): void
+  /**
+   * Tear the session down AND forget it in the persistent store. Called
+   * on explicit user action (`!bantai new`), not on idle eviction. After
+   * reset(), any subsequent inbound message in this thread starts fresh.
+   */
+  reset(): void
 }
 
 export interface CreateRegistryOpts {
@@ -76,6 +98,14 @@ export interface CreateRegistryOpts {
   idleTimeoutMs?: number
   /** For tests — override the host-factory. */
   buildHost?: (opts: BuildHostOpts) => HostPair
+  /**
+   * Persistent session store for crash recovery (plan §S8). On `getOrCreate`
+   * for a new in-memory entry, the registry consults the store for a
+   * previously-persisted backend session id and forwards it to the new
+   * SessionConfig as `resume`. When omitted we substitute a no-op store so
+   * the rest of the registry code path stays uniform.
+   */
+  store?: SessionStore
 }
 
 export interface BuildHostOpts {
@@ -122,6 +152,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
   const entries = new Map<string, SessionEntry>()
   const idleMs = opts.idleTimeoutMs ?? 10 * 60 * 1000
   const buildHost = opts.buildHost ?? defaultBuildHost
+  const store: SessionStore = opts.store ?? createNoopSessionStore()
 
   function touchIdle(entry: SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> }) {
     if (entry._idleTimer) clearTimeout(entry._idleTimer)
@@ -139,10 +170,36 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
     key: string,
     project: ProjectConfig,
     parentTs: string,
+    parts: SessionKeyParts,
     sessionConfigOverlay: Partial<SessionConfig> | undefined,
   ): SessionEntry {
-    const sessionConfig: SessionConfig = buildSessionConfigFromProject(project, sessionConfigOverlay)
+    // Consult the persistent store before constructing the backend. If a
+    // prior run persisted a backend session id for this key, pass it via
+    // `resume` so the backend rehydrates instead of starting fresh.
+    const persisted = store.get(key)
+    const resumed = !!(persisted && persisted.backendSessionId)
+    const priorUsage = persisted
+      ? { turns: persisted.turns, totalCostUsd: persisted.totalCostUsd }
+      : { turns: 0, totalCostUsd: 0 }
+    const mergedOverlay: Partial<SessionConfig> = {
+      ...(persisted?.backendSessionId
+        ? { resume: persisted.backendSessionId }
+        : {}),
+      ...(sessionConfigOverlay ?? {}),
+    }
+    const sessionConfig: SessionConfig = buildSessionConfigFromProject(project, mergedOverlay)
     const { host, backend } = buildHost({ project, sessionConfig })
+
+    // Persist (or re-assert) the row NOW so a crash before the first turn
+    // still leaves a resumable record. setBackendSessionId() + recordTurn()
+    // below mutate the same row as more data arrives.
+    store.upsert({
+      key,
+      workspace: parts.workspace,
+      channelId: parts.channelId,
+      threadTs: parts.threadTs ?? "main",
+      backendId: project.backend,
+    })
 
     const subscribers = new Set<EventSubscriber>()
     let started = false
@@ -155,6 +212,19 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
         try {
           for await (const event of gen) {
             if (closed) break
+            // Persist the backend session id the first time it lands so a
+            // post-crash restart can resume; accumulate cost + turn count
+            // on turn_complete so `!bantai cost` survives restarts.
+            try {
+              if (event.type === "session_init" && event.sessionId) {
+                store.setBackendSessionId(key, event.sessionId)
+              } else if (event.type === "turn_complete") {
+                const addUsd = event.usage?.totalCostUsd ?? 0
+                store.recordTurn(key, addUsd)
+              }
+            } catch (err) {
+              log.warn(`slack: session store update failed for ${key}: ${String(err)}`)
+            }
             // Fan out to subscribers. We snapshot the set so a subscriber
             // that unsubscribes mid-fan-out doesn't skew the iteration.
             for (const sub of Array.from(subscribers)) {
@@ -181,6 +251,8 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
       host,
       project,
       routing: { channel: project.channelId, parentTs },
+      resumed,
+      priorUsage,
       send(message) {
         if (closed) {
           log.warn(`slack: dropped message to closed session ${key}`)
@@ -188,6 +260,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
         }
         if (!started) pump()
         backend.sendMessage(message)
+        store.touch(key)
         touchIdle(entry)
       },
       subscribe(fn) {
@@ -207,6 +280,14 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
         }
         entries.delete(key)
       },
+      reset() {
+        try {
+          store.delete(key)
+        } catch (err) {
+          log.warn(`slack: session store delete failed for ${key}: ${String(err)}`)
+        }
+        entry.close()
+      },
     }
     return entry
   }
@@ -219,10 +300,12 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
         touchIdle(existing as SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> })
         return existing
       }
-      const entry = buildEntry(key, project, parentTs, sessionConfigOverlay)
+      const entry = buildEntry(key, project, parentTs, parts, sessionConfigOverlay)
       entries.set(key, entry)
       touchIdle(entry as SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> })
-      log.info(`slack: opened session ${key} (backend=${project.backend}, cwd=${project.projectDir})`)
+      log.info(
+        `slack: opened session ${key} (backend=${project.backend}, cwd=${project.projectDir}${entry.resumed ? ", resumed" : ""})`,
+      )
       return entry
     },
     peek(parts) {

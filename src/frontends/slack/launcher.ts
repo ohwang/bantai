@@ -54,8 +54,14 @@ import {
   createAttachmentFetcher,
   type AttachmentFetcher,
 } from "./inbox/attachments"
+import {
+  createNoopSessionStore,
+  createSessionStore,
+  type SessionStore,
+} from "./store/sessions"
 import { homedir } from "node:os"
-import { join as pathJoin } from "node:path"
+import { join as pathJoin, dirname } from "node:path"
+import { mkdirSync } from "node:fs"
 
 export interface LaunchSlackOpts extends CLIFlags {
   /** Explicit slack.toml path — takes precedence over config search. */
@@ -137,8 +143,13 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   const launchCwd = opts.config.cwd ?? process.cwd()
   const workspaceId = auth.teamId ?? "unknown"
 
+  // Open the persistent session store (S8 crash recovery). Empty path
+  // keeps the store out of the picture — useful for tests + for operators
+  // who explicitly opt out of persistence.
+  const store = openSessionStore(config.storePath)
   const registry = createSessionRegistry({
     workspace: workspaceId,
+    store,
     ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
   })
   const dedup = createDedupCache()
@@ -242,6 +253,11 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       elicitations.closeAll()
       registry.closeAll()
       await app.stop()
+      try {
+        store.close()
+      } catch (err) {
+        log.debug(`slack: store.close threw: ${String(err)}`)
+      }
     },
   }
 
@@ -301,6 +317,34 @@ interface RoutingCtx {
  * carry `https://slack.com/...`. Rewrite them onto the configured host so
  * the attachment fetcher can reach the bytes.
  */
+/**
+ * Resolve the config's `storePath` into a live `SessionStore`. Empty path
+ * → no-op store (persistence disabled). Non-empty path → bun:sqlite, with
+ * the parent directory auto-created if needed. Any construction error
+ * falls back to the no-op store + log.warn so a broken path never blocks
+ * the launcher.
+ */
+function openSessionStore(path: string): SessionStore {
+  if (!path) {
+    log.info("slack: session persistence disabled (empty store_path)")
+    return createNoopSessionStore()
+  }
+  try {
+    if (path !== ":memory:") {
+      const dir = dirname(path)
+      if (dir && dir !== ".") mkdirSync(dir, { recursive: true })
+    }
+    const store = createSessionStore({ path })
+    log.info(`slack: session persistence enabled at ${path}`)
+    return store
+  } catch (err) {
+    log.warn(
+      `slack: failed to open session store at ${path}: ${String(err)} — persistence disabled for this run`,
+    )
+    return createNoopSessionStore()
+  }
+}
+
 function rewriterForSlackApiUrl(slackApiUrl: string): (url: string) => string {
   const base = slackApiUrl.replace(/\/$/, "")
   return (u) => u.replace(/^https?:\/\/[^/]+/, base)
@@ -580,7 +624,7 @@ async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
       ctx.projectOverrides.set(project.channelId, { ...project, model })
     },
     async resetSession() {
-      existing?.close()
+      existing?.reset()
     },
     setVerbosity(level: VerbosityLevel) {
       ctx.projectOverrides.set(project.channelId, { ...project, verbosity: level })
@@ -591,18 +635,27 @@ async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
       return list.map((m) => m.id)
     },
     cumulativeUsage() {
+      // Merge the current renderer's in-memory counts with the per-session
+      // totals persisted in the store. The renderer tracks THIS process's
+      // turns + tokens + cost; the store tracks the cumulative turn count +
+      // USD across restarts. Token breakdowns don't persist (by design —
+      // they'd bloat the row for marginal observability value), so their
+      // per-session totals are always in-process only.
       const renderer = existing ? ctx.renderers.get(existing) : undefined
-      if (!renderer) {
-        return {
-          turns: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheCreationTokens: 0,
-          totalCostUsd: 0,
-        }
+      const live = renderer?.cumulativeUsage() ?? {
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalCostUsd: 0,
       }
-      return renderer.cumulativeUsage()
+      const priorUsage = existing?.priorUsage ?? { turns: 0, totalCostUsd: 0 }
+      return {
+        ...live,
+        turns: live.turns + priorUsage.turns,
+        totalCostUsd: live.totalCostUsd + priorUsage.totalCostUsd,
+      }
     },
     project,
     workspace: sessionParts.workspace,
@@ -640,6 +693,14 @@ function attachBannerOnce(
       inputs: {
         project,
         sessionId: event.sessionId,
+        ...(entry.resumed
+          ? {
+              resumed: {
+                priorTurns: entry.priorUsage.turns,
+                priorCostUsd: entry.priorUsage.totalCostUsd,
+              },
+            }
+          : {}),
       },
     }).catch((err) => log.error(`slack banner: ${String(err)}`))
   }

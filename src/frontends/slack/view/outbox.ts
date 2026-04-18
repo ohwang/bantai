@@ -33,8 +33,18 @@ import { log } from "../../../utils/logger"
 // ---------------------------------------------------------------------------
 
 export interface SendAdapter {
-  postMessage(args: { channel: string; text: string; threadTs?: string }): Promise<{ ts: string; channel: string }>
-  updateMessage(args: { channel: string; ts: string; text: string }): Promise<void>
+  postMessage(args: {
+    channel: string
+    text: string
+    threadTs?: string
+    blocks?: unknown[]
+  }): Promise<{ ts: string; channel: string }>
+  updateMessage(args: {
+    channel: string
+    ts: string
+    text: string
+    blocks?: unknown[]
+  }): Promise<void>
 }
 
 export interface OutboxOpts {

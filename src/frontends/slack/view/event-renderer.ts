@@ -26,7 +26,6 @@ import type { App } from "@slack/bolt"
 import type { ConversationEvent } from "../../../protocol/types"
 import { EventBatcher } from "../../../utils/event-batcher"
 import { log } from "../../../utils/logger"
-import { postMessage } from "../transport/events"
 import {
   createOutboundStream,
   type OutboundStream,
@@ -78,25 +77,7 @@ export interface CreateRendererOpts {
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   const { app, binding } = opts
   const sendAdapter: SendAdapter =
-    opts.sendAdapter ?? {
-      async postMessage(args) {
-        return postMessage(app, {
-          channel: args.channel,
-          text: args.text,
-          threadTs: args.threadTs,
-        })
-      },
-      async updateMessage(args) {
-        const res = await app.client.chat.update({
-          channel: args.channel,
-          ts: args.ts,
-          text: args.text,
-        })
-        if (!res.ok) {
-          throw new Error(`chat.update failed: ${res.error ?? "unknown"}`)
-        }
-      },
-    }
+    opts.sendAdapter ?? buildDefaultSendAdapter(app)
 
   const reactionAdapter: ReactionAdapter =
     opts.reactionAdapter ?? {
@@ -242,6 +223,39 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
       batcher.destroy()
       if (inTurn) {
         void endTurn("interrupted").catch(() => undefined)
+      }
+    },
+  }
+}
+
+/**
+ * Build the production SendAdapter from a live Bolt App. Exported so the
+ * banner / future Block Kit views can construct the same adapter without
+ * duplicating the wiring.
+ */
+export function buildDefaultSendAdapter(app: App): SendAdapter {
+  return {
+    async postMessage(args) {
+      const res = await app.client.chat.postMessage({
+        channel: args.channel,
+        text: args.text,
+        ...(args.threadTs ? { thread_ts: args.threadTs } : {}),
+        ...(args.blocks ? { blocks: args.blocks as never } : {}),
+      })
+      if (!res.ok || !res.ts || !res.channel) {
+        throw new Error(`chat.postMessage failed: ${res.error ?? "unknown"}`)
+      }
+      return { ts: String(res.ts), channel: String(res.channel) }
+    },
+    async updateMessage(args) {
+      const res = await app.client.chat.update({
+        channel: args.channel,
+        ts: args.ts,
+        text: args.text,
+        ...(args.blocks ? { blocks: args.blocks as never } : {}),
+      })
+      if (!res.ok) {
+        throw new Error(`chat.update failed: ${res.error ?? "unknown"}`)
       }
     },
   }

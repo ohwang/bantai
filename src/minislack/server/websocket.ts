@@ -20,6 +20,7 @@
 import type { ServerWebSocket } from "bun"
 import { buildEventsApi, buildHello } from "./envelope"
 import type { SocketRegistry } from "./methods/apps"
+import type { WsRegistry } from "./ws-registry"
 import type { EventBus, Unsubscribe } from "../core/events"
 import type { Workspace } from "../types/slack"
 import type { SlackEvent, SlackEventType } from "../types/events"
@@ -35,6 +36,7 @@ export interface WsContext {
   ws: Workspace
   bus: EventBus
   sockets: SocketRegistry
+  wsRegistry: WsRegistry
 }
 
 /**
@@ -54,6 +56,7 @@ export function buildWebSocketHandler(ctx: WsContext) {
         return
       }
       socket.data.appId = appId
+      ctx.wsRegistry.register(appId, socket)
 
       // hello immediately
       socket.send(JSON.stringify(buildHello(appId)))
@@ -77,9 +80,12 @@ export function buildWebSocketHandler(ctx: WsContext) {
     message(socket: ServerWebSocket<WsData>, raw: string | Buffer) {
       const text = typeof raw === "string" ? raw : raw.toString("utf8")
       try {
-        const parsed = JSON.parse(text) as { envelope_id?: string }
+        const parsed = JSON.parse(text) as { envelope_id?: string; payload?: unknown }
         if (parsed && typeof parsed.envelope_id === "string") {
           socket.data.ackedEnvelopes.push(parsed.envelope_id)
+          if (parsed.payload !== undefined) {
+            ctx.wsRegistry.resolveAck(parsed.envelope_id, parsed.payload)
+          }
         }
       } catch {
         // Malformed ack — Slack just ignores these.
@@ -88,6 +94,7 @@ export function buildWebSocketHandler(ctx: WsContext) {
     close(socket: ServerWebSocket<WsData>) {
       socket.data.unsubscribe?.()
       socket.data.unsubscribe = undefined
+      ctx.wsRegistry.unregister(socket)
     },
   }
 }

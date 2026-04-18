@@ -21,6 +21,10 @@ import type {
   Workspace,
 } from "../types/slack"
 import type { SlackEvent } from "../types/events"
+import type {
+  InteractivePayload,
+  SlashCommandPayload,
+} from "../types/interactive"
 
 /** Time the process booted — used to stamp `debug_info.started` on `hello`. */
 const BOOT_ISO = new Date().toISOString()
@@ -88,6 +92,68 @@ export function buildEventsApi(
       context_team_id: ws.team.id,
       context_enterprise_id: null,
     },
+  }
+}
+
+export function buildSlashCommand(
+  payload: SlashCommandPayload,
+): EventEnvelope<SlashCommandPayload> {
+  return {
+    envelope_id: randomUUID(),
+    type: "slash_commands",
+    // Slash commands support a response payload on ack (Slack will post it
+    // back to the user if the handler returns one).
+    accepts_response_payload: true,
+    payload,
+  }
+}
+
+export function buildInteractive(
+  payload: InteractivePayload,
+): EventEnvelope<InteractivePayload> {
+  return {
+    envelope_id: randomUUID(),
+    type: "interactive",
+    // view_submission acks can carry a response_action; block_actions can
+    // carry a replacement message. Either way the framing is the same.
+    accepts_response_payload: true,
+    payload,
+  }
+}
+
+/**
+ * Build a synthetic SlashCommandPayload given a minimal set of inputs.
+ * Callers inject `app.id` + the inviting user + the channel.
+ */
+export interface SlashCommandInput {
+  workspace: Workspace
+  appId: string
+  userId: string
+  userName: string
+  channelId: string
+  channelName: string
+  command: string      // e.g. "/deploy"
+  text: string
+  responseUrl: string  // e.g. `${baseHttp}/_minislack/response/${token}`
+}
+
+export function makeSlashCommandPayload(input: SlashCommandInput): SlashCommandPayload {
+  return {
+    token: "minislack-legacy-token",
+    team_id: input.workspace.team.id,
+    team_domain: input.workspace.team.domain,
+    enterprise_id: null,
+    enterprise_name: null,
+    channel_id: input.channelId,
+    channel_name: input.channelName,
+    user_id: input.userId,
+    user_name: input.userName,
+    command: input.command,
+    text: input.text,
+    api_app_id: input.appId,
+    response_url: input.responseUrl,
+    trigger_id: `${Date.now()}.${randomId(6)}`,
+    is_enterprise_install: false,
   }
 }
 

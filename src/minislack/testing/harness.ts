@@ -20,6 +20,16 @@ import { applyFixture, type FixtureName } from "./fixtures"
 import { createDiskStorage } from "../storage/disk"
 import { createMemoryStorage } from "../storage/memory"
 import type { StorageBackend } from "../storage/types"
+import { createWsRegistry } from "../server/ws-registry"
+import {
+  buildInteractive,
+  buildSlashCommand,
+  makeSlashCommandPayload,
+} from "../server/envelope"
+import type {
+  InteractivePayload,
+  SlashCommandPayload,
+} from "../types/interactive"
 
 export interface UserClient {
   user: User
@@ -45,8 +55,33 @@ export interface MinislackHandle {
   events: {
     subscribe(filter: EventFilter, handler: (evt: SlackEvent) => void): Unsubscribe
   }
+  /**
+   * Fire a slash command at the connected Socket Mode app for `appId`.
+   * Resolves with the ack payload when the app responds (if any).
+   */
+  fireSlashCommand(appId: string, opts: FireSlashCommandOpts): Promise<{
+    envelope_id: string
+    payload: SlashCommandPayload
+    ack?: unknown
+  }>
+  /**
+   * Push a block_actions / view_submission / shortcut payload at the app.
+   */
+  fireInteractive(appId: string, payload: InteractivePayload): Promise<{
+    envelope_id: string
+    ack?: unknown
+  }>
   snapshot(): WorkspaceSnapshot
   stop(): Promise<void>
+}
+
+export interface FireSlashCommandOpts {
+  userId: string
+  channelId: string
+  command: string        // "/deploy"
+  text?: string
+  /** ms to wait for the ack payload; 0 = don't wait. Default 0 (fire-and-forget). */
+  awaitAckMs?: number
 }
 
 export interface WorkspaceSnapshot {
@@ -88,6 +123,7 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
   }
 
   const sockets = createSocketsRegistry()
+  const wsRegistry = createWsRegistry()
 
   let web: WebBundle | undefined
   if (opts.serveWeb !== false) {
@@ -124,7 +160,7 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
         web,
       })
     },
-    websocket: buildWebSocketHandler({ ws, bus, sockets }),
+    websocket: buildWebSocketHandler({ ws, bus, sockets, wsRegistry }),
   })
   resolvedPort = server.port ?? 0
   const host = server.hostname === "0.0.0.0" || server.hostname === "::" ? "localhost" : server.hostname
@@ -158,6 +194,57 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
       subscribe(filter, handler) {
         return bus.subscribe(filter, handler)
       },
+    },
+    async fireSlashCommand(appId, input) {
+      const app = ws.apps.get(appId)
+      if (!app) throw new Error(`fireSlashCommand: app ${appId} not registered`)
+      const user = ws.users.get(input.userId)
+      const channel = ws.channels.get(input.channelId)
+      if (!user) throw new Error(`fireSlashCommand: user ${input.userId} missing`)
+      if (!channel) throw new Error(`fireSlashCommand: channel ${input.channelId} missing`)
+      const channelName = "name" in channel ? channel.name : channel.id
+      const responseToken = Math.random().toString(36).slice(2, 18)
+      const payload = makeSlashCommandPayload({
+        workspace: ws,
+        appId,
+        userId: user.id,
+        userName: user.name,
+        channelId: channel.id,
+        channelName,
+        command: input.command,
+        text: input.text ?? "",
+        responseUrl: `${baseHttp}/_minislack/response/${responseToken}`,
+      })
+      const envelope = buildSlashCommand(payload)
+      const sent = wsRegistry.sendToApp(appId, envelope)
+      if (sent === 0) {
+        throw new Error(`fireSlashCommand: no live Socket Mode connection for app ${appId}`)
+      }
+      if (!input.awaitAckMs || input.awaitAckMs === 0) {
+        return { envelope_id: envelope.envelope_id, payload }
+      }
+      try {
+        const ack = await wsRegistry.awaitAckPayload(envelope.envelope_id, input.awaitAckMs)
+        return { envelope_id: envelope.envelope_id, payload, ack }
+      } catch {
+        return { envelope_id: envelope.envelope_id, payload }
+      }
+    },
+    async fireInteractive(appId, payload) {
+      if (!ws.apps.has(appId)) {
+        throw new Error(`fireInteractive: app ${appId} not registered`)
+      }
+      const envelope = buildInteractive(payload)
+      const sent = wsRegistry.sendToApp(appId, envelope)
+      if (sent === 0) {
+        throw new Error(`fireInteractive: no live Socket Mode connection for app ${appId}`)
+      }
+      try {
+        const ack = await wsRegistry.awaitAckPayload(envelope.envelope_id, 2000)
+        return { envelope_id: envelope.envelope_id, ack }
+      } catch {
+        return { envelope_id: envelope.envelope_id }
+      }
     },
     snapshot() {
       return snapshotWorkspace(ws)

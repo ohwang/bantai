@@ -1,6 +1,6 @@
 # bantai — Slack Frontend Plan
 
-**Status:** executing · `main` at `917ea46` (minislack Phase 7 complete).
+**Status:** executing · Phase S0 complete · branched off `main` at `a0c07ad` (minislack Phase 8 + slash/interactive payloads + API fidelity audit + docs — newer than the `917ea46` snapshot this plan was originally drafted against).
 **Scope:** add a fully-featured, polished Slack frontend alongside the existing TUI frontend. Single-workspace self-host first; multi-tenant hosted comes later. Backend-agnostic (Claude / Codex / Gemini / ACP).
 
 ---
@@ -51,14 +51,35 @@ This doc is kept live. Every working session updates:
    - `zod@^3.25.76` — **stuck on v3** because `@modelcontextprotocol/sdk@1.29.0` (pulled in by `@anthropic-ai/claude-agent-sdk@0.2.114`) exports a `zod-compat` that declares `AnySchema = z3.ZodTypeAny | z4.$ZodType` but at runtime z4 schemas don't satisfy the union's constraints on this TS version. Confirmed via `bun run typecheck` — zod@4.3.6 produces 16 TS errors in `src/mcp/server.ts`. Will revisit when MCP SDK ships a zod@4-compatible release.
    - `smol-toml@^1.6.1` (latest).
 
-**In flight (this session):**
-- Phase S0 — everything under §11/S0.
+**Done this session (S0):**
+- `4bdb134` Add `@slack/bolt` ^4.7, `@slack/web-api` ^7.15, `smol-toml`, `zod`@3 deps.
+- `a7facc9` Bump `@opentui/core`, `@opentui/solid`, `@openai/codex-sdk`, `typescript` to latest patch versions (per user directive). Captured the zod@3 constraint in this log.
+- Rebased onto latest local `main` (picks up `a0c07ad` minislack Phase 8 persistence, `e76e549` slash/interactive payloads, `096c971` API fidelity audit, `77dca91` conversations.open/close DMs, `dabb7ed` Phase 8 persist). No conflicts.
+- `db71c27` `src/frontends/slack/config/{schema,loader}.ts` + 11 unit tests — zod-validated slack.toml with `SecretRef` env-indirection.
+- `ac9c68a` `src/frontends/slack/transport/{bolt,events}.ts` + rewritten `launcher.ts` + `--slack-config` / `--slack-api-url` CLI flags. Transport subscribes to `message`, `app_mention`, `member_joined_channel`, `file_shared`, `reaction_added`, `block_actions`, `view_submission` up front — phases S1–S7 plug into the same `onInbound` callback.
+- `ffa...` (follow-redirects patch commit) Added `patches/follow-redirects@1.16.0.patch` — silences a Bun↔V8 strict-mode TypeError that fires at module init when `Error.captureStackTrace(this, ctor)` is called with a prototype-chain object that isn't yet an Error subclass. Without the patch, `bun test` counts it as a spurious failure.
+- `...` S0 exit test — `tests/frontends/slack/integration/ack.test.ts` drives real `@slack/bolt` against an in-process minislack (Socket Mode via the `slack_api_url` override). 4 scenarios: auth, top-level ack, thread reply ack, no-self-feedback-loop. All pass.
 
-**Discovered / scope deltas:**
-- (none yet this session; will log here as they come up)
+**Full test suite:** 1731 pass / 11 skip / 0 fail / 0 error across 92 files.
 
-**Next up after S0 exit:**
-- S1 (router + inbox + outbox MVP). Plan §11/S1.
+**S0 exit criterion from plan:** "`bun run dev -- slack --minislack` boots, posts an ack." → **Met** (minislack is run as an in-process harness rather than via a CLI flag, which is cleaner — the production CLI takes `--slack-api-url <url>` to point at any Slack-API-compatible endpoint).
+
+**Discovered / scope deltas from S0:**
+
+1. **Bolt → minislack wiring is more specific than the plan hinted.** `slack_api_url` must flow through *both* `AppOptions.clientOptions.slackApiUrl` (for `app.client.*` Web API calls) *and* `AppOptions.installerOptions.clientOptions.slackApiUrl` (the SocketModeReceiver's internal SocketModeClient → WebClient path). Documented in `src/frontends/slack/transport/bolt.ts` with line refs.
+2. **follow-redirects/Bun interop is now a permanent cost.** The patch is stable (1.16.0 is pinned by axios@1); revisit if axios drops follow-redirects or if Bun relaxes V8 strict mode. Captured as `patches/follow-redirects@1.16.0.patch` so fresh installs survive.
+3. **We subscribe to more Slack events than S0 uses.** `events.ts` registers handlers for the complete plan set (message, app_mention, reactions, block actions, view submissions, file shared, member joined) up front. Phases S2–S7 swap in new handlers without touching `bolt.ts` or `launcher.ts`. Unrecognised payload shapes `log.warn` per AGENTS.md's "never silently drop" rule.
+4. **Minislack Phase 8 persistence + slash/interactive commands are available.** Not needed for S0, but useful for later phases — specifically `e76e549` lands *slash commands + interactive payloads* over Socket Mode, which we'll use when S4 wires up Block Kit approvals and emoji-command dispatch.
+5. **Work item added:** `src/frontends/slack/config/schema.ts` reserves the full `ChannelOverride` shape but S0 only consumes workspace + defaults. S1 router needs to actually read `channels[]` and map channelId → ProjectConfig; scope kept for S1.
+
+**Next up (S1 — Round-trip MVP):**
+- `src/frontends/slack/router/{registry,resolver,host-factory}.ts`
+- `src/frontends/slack/inbox/{dedup,mention,turn-builder}.ts`
+- `src/frontends/slack/view/outbox.ts` (bare — post text on `turn_complete`)
+- SQLite store (`store/db.ts`, sessions + channels + inbound_messages tables)
+- Replace the S0 ack handler with the real session/host pipeline
+
+**Plan §11/S1 exit:** "in minislack, @mention the bot in a channel → bot reads a real file via Claude SDK in a test repo → posts the result in a thread."
 
 ---
 

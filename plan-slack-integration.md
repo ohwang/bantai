@@ -347,6 +347,42 @@ This doc is kept live. Every working session updates:
 
 ---
 
+### Session — 2026-04-18 · S8 resilience & polish
+
+**Status:** Phase S8 core items complete (rate-limit, graceful shutdown, cost command, per-turn timeout, session cost cap). Full suite: 2016 pass / 11 skip / 0 fail across 123 files.
+
+**Done this session (S8):**
+- `...` `src/frontends/slack/transport/bolt.ts` — surfaced the rate-limit policy explicitly on both Socket Mode and HTTP Mode `clientOptions`: `retryConfig = retryPolicies.tenRetriesInAboutThirtyMinutes` + `rejectRateLimitedCalls = false`. `@slack/web-api`'s defaults were already sensible; the explicit config makes "we retry 429s" a visible choice instead of a hidden default, and lets future operators tune the policy in one place.
+- `...` `src/frontends/slack/launcher.ts` — added a `shuttingDown: { value: boolean }` cell on `RoutingCtx`. `handle.stop()` flips it BEFORE teardown; the routing handler shortcuts new message/app_mention events with a `:zzz: bantai is shutting down` ephemeral reply instead of spinning up a SessionHost that will die in the next few ms.
+- `...` `src/frontends/slack/view/event-renderer.ts` + `src/frontends/slack/commands/dispatch.ts` + launcher wiring — introduced session-cumulative usage tracking. Every `turn_complete.usage` folds into a running `CumulativeUsage` total (turns, input/output/cache tokens, USD). Exposed via `renderer.cumulativeUsage()`; the launcher threads that into `CommandContext.cumulativeUsage()` which powers `!bantai cost`. Cost output is compact and cache-aware: a cache breakdown line only appears when cache tokens are non-zero.
+- `...` `src/frontends/slack/view/event-renderer.ts` + `config/schema.ts` + `router/resolver.ts` — new per-turn deadline + session cost cap. `defaults.turn_timeout_s` / `defaults.max_budget_usd` + per-channel overrides lift into `ProjectConfig.turnTimeoutS` / `ProjectConfig.maxBudgetUsd`. Renderer arms a `setTimeout` on `turn_start`; on expiry it posts a `:hourglass_flowing_sand: turn exceeded Ns — interrupting` note and fires `onTurnTimeout()` which the launcher hooks to `backend.interrupt()`. Session cost cap is checked on every `turn_complete` — crossing the cap posts a `:moneybag: session cost $X crossed cap $Y — interrupting` note and fires `onBudgetExceeded()` once (latched, so subsequent turns don't spam). Both guards are opt-in (0 = disabled); tests cover the enabled + disabled + cancel-on-turn-complete paths.
+- `...` `tests/frontends/slack/commands/commands.test.ts` + `tests/frontends/slack/view/event-renderer-guard.test.ts` — 9 new unit cases covering the cost command (no turns / one turn / with cache / no hook wired) and the two guards (timeout fires / doesn't fire when disabled / cancelled by turn_complete; budget fires once on crossing / stays quiet under cap / disabled when cap=0).
+
+**Full test suite:** 2016 pass / 11 skip / 0 fail across 123 files. `tsc --noEmit` clean.
+
+**S8 partial-exit criterion:** plan-worded as "kill -9 the process mid-turn, restart, thread survives; `!bantai cost` reports accurately." `!bantai cost` is fully met. The kill-9 + restart path (persistence layer that lets a session rehydrate across process boundaries) is **deferred** to S10 — it requires the SQLite store promised in plan §2.4, which we postponed in S1 and which doesn't fit cleanly inside the S8 window without rearchitecting the launcher's in-memory registry. The related "restart recovery" feature is tracked as a follow-up; the resilience items that DO fit without persistence (rate limit, graceful shutdown, cost cap, turn timeout) are all live.
+
+**Discovered / scope deltas from S8:**
+
+1. **`@slack/web-api`'s built-in retry policy already covers 429 handling.** First pass tried to write a bespoke retry wrapper around the SendAdapter; on reading the WebClient source we found `tenRetriesInAboutThirtyMinutes` + `rejectRateLimitedCalls = false` was the default. We surface the same values explicitly rather than rewriting — adds zero runtime overhead but gives operators a lever in `bolt.ts`.
+2. **`shuttingDown` as a cell rather than a ctx field.** Wrapping the flag in a `{ value: boolean }` lets the launcher flip it from `handle.stop()` while the pre-built `RoutingCtx` (captured by `buildRoutingHandler`) still sees the updated value through its reference. Avoids having to rebuild the handler on each shutdown.
+3. **Guard hooks are `on*` callbacks, not method calls into the backend.** Keeps the event-renderer frontend-agnostic — the renderer only knows "something went wrong, fire this callback". The launcher translates that into `backend.interrupt()`. If a future frontend (e.g. a CLI replay harness) wants timeouts WITHOUT interrupt behaviour, it can pass a no-op callback.
+4. **`budgetAlreadyExceeded` latches after the first cross.** Without the latch, every turn past the cap would post another `:moneybag:` note and re-trigger `interrupt()`. Latching means the cap fires ONCE; the launcher's follow-up decision (block further turns entirely, or just warn per-turn) is a policy choice we intentionally leave above the renderer.
+5. **Restart recovery + cost cap persistence still needs SQLite.** The in-memory `CumulativeUsage` resets on process restart, so `!bantai cost` reports zero after a restart. Noted as an S10 follow-up (plan §11 web UI + persistence).
+6. **Prometheus `/metrics` endpoint deferred.** The HTTP receiver path is already live; adding an observability endpoint is additive and scheduled for S10 alongside the web viewer.
+7. **Per-turn thinking-throttle interaction.** Verified guard timers don't race with the 250ms thinking throttle — guard armed on turn_start, cleared on turn_complete; thinking throttle is per-turn too and doesn't leak state.
+
+**Next up (S9 — Real-Slack hardening):**
+- `bantai slack init-manifest` — writes a ready-to-install Slack app manifest JSON.
+- `assistant:write` scope gate at auth.test time — graceful downgrade to tier-2 fallback when the workspace lacks the scope.
+- Workspace-admin diagnostic pass on boot: auth.test → scope check → post-to-self smoke test.
+- `docs/slack-setup.md` walking through app creation, manifest install, token setup.
+- E2E smoke test (gated by env) — real Slack workspace + throwaway credentials.
+
+**Plan §11/S9 exit:** "new user can go from `gh clone` → working bot in a real workspace in ≤10 minutes, following only the doc."
+
+---
+
 ## 1. Premises — what we already have vs. what we need to build
 
 ### What's already in the tree (reuse, don't rebuild)

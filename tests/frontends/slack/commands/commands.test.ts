@@ -170,4 +170,41 @@ describe("dispatchCommand", () => {
     expect(r.kind).toBe("unknown")
     expect(h.replies[0]).toContain("!bantai help")
   })
+
+  it("settings → dumps the resolved ProjectConfig without leaking env values", async () => {
+    const h = harness({
+      project: project({
+        channelName: "eng-backend",
+        model: "claude-opus-4-7",
+        approvers: ["U0ALICE"],
+        allowedTools: ["Read", "Grep"],
+        mcpServers: ["git"],
+        claudeConfigDir: "/home/me/.claude/backend",
+        systemPromptAppend: "Be terse.",
+        env: { ANTHROPIC_API_KEY: "sk-secret-not-posted" },
+      }),
+    })
+    const res = await dispatchCommand({ cmd: "settings", args: "" }, h.ctx)
+    expect(res.kind).toBe("handled")
+    const body = h.replies[0] ?? ""
+    expect(body).toContain("*bantai settings*")
+    expect(body).toContain("eng-backend")
+    expect(body).toContain("claude-opus-4-7")
+    expect(body).toContain("U0ALICE")
+    expect(body).toContain("Read")
+    expect(body).toContain("git")
+    expect(body).toContain("/home/me/.claude/backend")
+    expect(body).toContain("Be terse.")
+    expect(body).toContain("ANTHROPIC_API_KEY")
+    // Value must not leak.
+    expect(body).not.toContain("sk-secret-not-posted")
+  })
+
+  it("settings with empty arrays renders <empty> sentinels", async () => {
+    const h = harness()
+    await dispatchCommand({ cmd: "settings", args: "" }, h.ctx)
+    const body = h.replies[0] ?? ""
+    expect(body).toContain("approvers: `<empty>`")
+    expect(body).toContain("env keys: `<empty>`")
+  })
 })

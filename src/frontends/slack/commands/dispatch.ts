@@ -127,6 +127,11 @@ export async function dispatchCommand(
       return { kind: "handled" }
     }
 
+    case "settings": {
+      await ctx.sendReply(renderSettingsDump(ctx.project))
+      return { kind: "handled" }
+    }
+
     default:
       await ctx.sendReply(
         `unknown command \`${command.cmd}\`. try \`!bantai help\`.`,
@@ -144,6 +149,50 @@ const HELP_TEXT = [
   "• `!bantai model [id]` — list available models, or set the active one",
   "• `!bantai verbosity <silent|concise|normal|verbose|debug>` — change bot verbosity",
   "• `!bantai new` — reset this thread's session (destructive)",
+  "• `!bantai settings` — dump the resolved per-channel config",
   "",
   "_more commands (backend, cost, resume, permissions, thinking, compact) land in later phases._",
 ].join("\n")
+
+/**
+ * Render the resolved ProjectConfig as a mrkdwn-formatted block. Secrets
+ * (env values) are redacted — we show the keys so operators can verify the
+ * plumbing without leaking tokens back into chat. Arrays land as comma
+ * joins with an `<empty>` marker so empty state is visible.
+ */
+export function renderSettingsDump(project: ProjectConfig): string {
+  const envKeys = Object.keys(project.env)
+  const lines = [
+    "*bantai settings* — resolved config for this channel",
+    "",
+    `• channel: \`${project.channelId}\`${project.channelName ? ` (#${project.channelName})` : ""}`,
+    `• backend: \`${project.backend}\``,
+    `• model: \`${project.model ?? "<backend default>"}\``,
+    `• project_dir: \`${project.projectDir}\``,
+    `• permission_mode: \`${project.permissionMode}\``,
+    `• verbosity: \`${project.verbosity}\``,
+    `• show_cost: \`${project.showCost}\``,
+    `• session_banner: \`${project.sessionBanner}\``,
+    `• require_mention: \`${project.requireMention}\``,
+    `• auto_join_threads: \`${project.autoJoinThreads}\``,
+    `• trigger_name: \`${project.triggerName}\``,
+    `• control_prefix: \`${project.controlPrefix}\``,
+    `• approvers: ${formatList(project.approvers)}`,
+    `• allowed_tools: ${formatList(project.allowedTools)}`,
+    `• mcp_servers: ${formatList(project.mcpServers)}`,
+    `• claude_config_dir: \`${project.claudeConfigDir ?? "<default>"}\``,
+    `• system_prompt_append: ${project.systemPromptAppend ? `\`${truncate(project.systemPromptAppend, 80)}\`` : "`<none>`"}`,
+    `• env keys: ${formatList(envKeys)} (values redacted)`,
+  ]
+  return lines.join("\n")
+}
+
+function formatList(xs: readonly string[] | undefined): string {
+  if (!xs || xs.length === 0) return "`<empty>`"
+  return xs.map((x) => `\`${x}\``).join(", ")
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s
+  return `${s.slice(0, max - 1)}…`
+}

@@ -19,9 +19,11 @@
  *     falls back.
  *
  * Requires live Slack workspace validation (see slack-int-gap.md §4).
- * minislack does not implement `chat.startStream` / `appendStream` /
- * `stopStream` — the outbox auto-falls-back on the 400 return code, so
- * local dogfood remains safe with this module loaded.
+ * minislack implements `chat.startStream` / `appendStream` /
+ * `stopStream` (accepting both `markdown_text` and the Bolt-native
+ * `chunks` shape), so tier-1 stays engaged in local dogfood. On real
+ * Slack the outbox still auto-falls-back when the workspace lacks the
+ * AI-apps capability — fallback is error-driven, not host-keyed.
  *
  * Ported from openclaw/extensions/slack/src/streaming.ts (MIT). Bantai
  * changes: swap `logVerbose` for our `log.debug` singleton; drop the

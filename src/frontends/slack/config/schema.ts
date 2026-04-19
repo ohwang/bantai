@@ -117,8 +117,10 @@ export const DefaultsSchema = z
      * `stopStream`. Slack's Assistant API surface — streams tokens
      * word-by-word into a single message, noticeably better UX than
      * our tier-2 draft+update loop. Only exposed on paid workspaces
-     * with the AI-apps capability; minislack does NOT implement these
-     * methods so the outbox auto-falls-back in tests.
+     * with the AI-apps capability. minislack also implements these
+     * methods so integration tests can exercise tier-1 end-to-end;
+     * on real Slack workspaces without the capability the outbox
+     * auto-falls-back on the error.
      *
      * Off by default; requires live Slack workspace validation before
      * enabling in defaults (slack-int-gap.md §4).

@@ -21,6 +21,7 @@ import { resolveProjectForChannel, type ProjectConfig } from "./router/resolver"
 import type { SessionEntry, SessionRegistry } from "./router/registry"
 import type { InboundSlackEvent } from "./transport/events"
 import type { createDedupCache } from "./inbox/dedup"
+import type { ThreadParticipationCache } from "./inbox/thread-participation"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
 import type { AttachmentFetcher } from "./inbox/attachments"
@@ -46,6 +47,13 @@ export interface RoutingCtx {
   config: ResolvedSlackConfig
   registry: SessionRegistry
   dedup: ReturnType<typeof createDedupCache>
+  /**
+   * Cache of (channel, thread) pairs the bot has recently posted in. Used
+   * to let follow-up user messages in those threads drive a turn without
+   * requiring `@bantai` every time. Populated by the send-adapter's
+   * `onPostSucceeded` hook; read here before calling `decideGate`.
+   */
+  threadParticipation: ThreadParticipationCache
   userCache: UserCache
   botUserId: string
   workspaceId: string
@@ -211,6 +219,10 @@ export function buildRoutingHandler(
       requireMention: project.requireMention,
       autoJoinThreads: project.autoJoinThreads,
       threadHasActiveSession: !!existing,
+      threadHasPriorBotPost: event.threadTs
+        ? ctx.threadParticipation.has(event.channel, event.threadTs)
+        : false,
+      threadRequireExplicitMention: project.threadRequireExplicitMention,
     })
     if (!decision.accept) {
       log.debug(`slack: gate rejected ${event.kind} ${key} (${decision.reason})`)

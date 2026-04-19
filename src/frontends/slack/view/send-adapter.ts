@@ -12,7 +12,28 @@
 import type { App } from "@slack/bolt"
 import type { SendAdapter } from "./outbox"
 
-export function buildDefaultSendAdapter(app: App): SendAdapter {
+export interface SendAdapterHooks {
+  /**
+   * Called after every successful `chat.postMessage`. Receives the
+   * channel + thread_ts the message landed in. Use this to record bot
+   * thread participation so later inbound messages in the same thread
+   * can skip the mention gate.
+   *
+   * Not invoked for `chat.update` — updates always modify a message we
+   * previously posted, so the cache entry already exists from the
+   * original post.
+   */
+  onPostSucceeded?(args: {
+    channel: string
+    ts: string
+    threadTs?: string
+  }): void
+}
+
+export function buildDefaultSendAdapter(
+  app: App,
+  hooks: SendAdapterHooks = {},
+): SendAdapter {
   return {
     async postMessage(args) {
       const res = await app.client.chat.postMessage({
@@ -24,7 +45,10 @@ export function buildDefaultSendAdapter(app: App): SendAdapter {
       if (!res.ok || !res.ts || !res.channel) {
         throw new Error(`chat.postMessage failed: ${res.error ?? "unknown"}`)
       }
-      return { ts: String(res.ts), channel: String(res.channel) }
+      const channel = String(res.channel)
+      const ts = String(res.ts)
+      hooks.onPostSucceeded?.({ channel, ts, threadTs: args.threadTs })
+      return { ts, channel }
     },
     async updateMessage(args) {
       const res = await app.client.chat.update({

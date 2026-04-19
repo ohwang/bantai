@@ -116,6 +116,46 @@ describe("decideGate", () => {
       ),
     ).toEqual({ accept: false, reason: "no-mention-in-channel" })
   })
+
+  it("auto-joins a thread with a prior bot post even after session eviction", () => {
+    expect(
+      decideGate(
+        base({
+          text: "still talking",
+          threadTs: "100.001",
+          threadHasActiveSession: false,
+          threadHasPriorBotPost: true,
+        }),
+      ),
+    ).toEqual({ accept: true, reason: "thread-prior-bot-post" })
+  })
+
+  it("ignores the participation cache when threadRequireExplicitMention is set", () => {
+    expect(
+      decideGate(
+        base({
+          text: "still talking",
+          threadTs: "100.001",
+          threadHasActiveSession: false,
+          threadHasPriorBotPost: true,
+          threadRequireExplicitMention: true,
+        }),
+      ),
+    ).toEqual({ accept: false, reason: "no-mention-in-channel" })
+  })
+
+  it("prefers the live-session reason when both signals are present", () => {
+    expect(
+      decideGate(
+        base({
+          text: "still talking",
+          threadTs: "100.001",
+          threadHasActiveSession: true,
+          threadHasPriorBotPost: true,
+        }),
+      ),
+    ).toEqual({ accept: true, reason: "thread-auto-join" })
+  })
 })
 
 describe("mentionsBot + stripBotMention", () => {

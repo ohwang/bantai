@@ -9,7 +9,12 @@
  *       a) a `<@BOTID>` mention of our bot user, OR
  *       b) `project.autoJoinThreads && thread is already attached`
  *          — i.e. the bot has replied in this thread before, so replies
- *          without re-mentions continue to drive the same session.
+ *          without re-mentions continue to drive the same session. The
+ *          "thread is already attached" signal comes from EITHER a live
+ *          `SessionEntry` (fast path) OR the thread-participation cache
+ *          (`hasPriorBotPost`) which survives session eviction and short
+ *          restarts. Disable the cache-sourced side with
+ *          `threadRequireExplicitMention`.
  *       c) `project.requireMention === false` — explicit opt-out, useful
  *          for "sandbox" channels where every post goes to the agent.
  *
@@ -32,10 +37,27 @@ export interface GateContext {
   autoJoinThreads: boolean
   /** True when the (channel, thread) pair already has an active SessionHost. */
   threadHasActiveSession: boolean
+  /**
+   * True when the bot posted in this (channel, thread) recently, according
+   * to the thread-participation cache. Survives session eviction, bounded
+   * by a TTL (default 24h). Populated by the routing layer from the cache
+   * before calling `decideGate`.
+   */
+  threadHasPriorBotPost?: boolean
+  /**
+   * When true, the cache-sourced `threadHasPriorBotPost` signal is ignored
+   * — only an explicit `<@bot>` mention (or a live session) drives a turn.
+   * Use for "silent default" channels where the bot should not keep
+   * speaking in a thread after an initial exchange.
+   */
+  threadRequireExplicitMention?: boolean
 }
 
 export type GateDecision =
-  | { accept: true; reason: "dm" | "mention" | "thread-auto-join" | "no-mention-required" }
+  | {
+      accept: true
+      reason: "dm" | "mention" | "thread-auto-join" | "thread-prior-bot-post" | "no-mention-required"
+    }
   | { accept: false; reason: "no-mention-in-channel" | "empty-text" | "self" }
 
 export function decideGate(ctx: GateContext): GateDecision {
@@ -53,8 +75,13 @@ export function decideGate(ctx: GateContext): GateDecision {
     return { accept: true, reason: "no-mention-required" }
   }
 
-  if (ctx.autoJoinThreads && ctx.threadTs && ctx.threadHasActiveSession) {
-    return { accept: true, reason: "thread-auto-join" }
+  if (ctx.autoJoinThreads && ctx.threadTs) {
+    if (ctx.threadHasActiveSession) {
+      return { accept: true, reason: "thread-auto-join" }
+    }
+    if (ctx.threadHasPriorBotPost && !ctx.threadRequireExplicitMention) {
+      return { accept: true, reason: "thread-prior-bot-post" }
+    }
   }
 
   return { accept: false, reason: "no-mention-in-channel" }

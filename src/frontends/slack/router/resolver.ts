@@ -70,6 +70,12 @@ export interface ProjectConfig {
   showCost: boolean
   /** Should the bot auto-attach to threads it's posted in without re-mention? */
   autoJoinThreads: boolean
+  /**
+   * When true, ignore the thread-participation cache — only explicit
+   * `<@bot>` mentions or a live session drive follow-up turns in threads.
+   * See schema comment for `thread_require_explicit_mention`.
+   */
+  threadRequireExplicitMention: boolean
   /** Max seconds a single turn may run before auto-interrupt. 0 → disabled. */
   turnTimeoutS: number
   /** Max cumulative USD per session. 0 → disabled. */
@@ -140,6 +146,7 @@ export function resolveProjectForChannel(
     sessionBanner: defaults.session_banner,
     showCost: defaults.show_cost,
     autoJoinThreads: defaults.auto_join_threads,
+    threadRequireExplicitMention: defaults.thread_require_explicit_mention,
     turnTimeoutS: override?.turn_timeout_s ?? defaults.turn_timeout_s,
     maxBudgetUsd: override?.max_budget_usd ?? defaults.max_budget_usd,
     env: resolveEnvRefs(override?.env, env),

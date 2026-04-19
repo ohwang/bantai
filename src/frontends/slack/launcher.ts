@@ -27,6 +27,7 @@ import {
 } from "./router/registry"
 import { auditSlackConfig } from "./router/audit"
 import { createDedupCache } from "./inbox/dedup"
+import { createThreadParticipationCache } from "./inbox/thread-participation"
 import { createUserCache, type UserCache } from "./view/user-cache"
 import { buildDefaultSendAdapter } from "./view/event-renderer"
 import { createApprovalCoordinator } from "./approvals/coordinator"
@@ -183,8 +184,13 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
   })
   const dedup = createDedupCache()
+  const threadParticipation = createThreadParticipationCache()
   const userCache = createUserCache(app)
-  const defaultAdapter = buildDefaultSendAdapter(app)
+  const defaultAdapter = buildDefaultSendAdapter(app, {
+    onPostSucceeded: ({ channel, threadTs }) => {
+      threadParticipation.record(channel, threadTs)
+    },
+  })
   const approvals = createApprovalCoordinator({
     adapter: defaultAdapter,
     metrics: {
@@ -285,6 +291,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       bannerPosted: new WeakSet(),
       shuttingDown,
       slackUploadMcpFor,
+      threadParticipation,
     }),
   })
 

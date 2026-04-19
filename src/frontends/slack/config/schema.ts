@@ -85,6 +85,17 @@ export const DefaultsSchema = z
     approvers: z.array(z.string()).default([]),
     auto_join_threads: z.boolean().default(true),
     /**
+     * When true, the bot only reacts to explicit `<@bot>` mentions in a
+     * channel thread — the thread-participation cache (which normally lets
+     * the bot keep responding in a thread it already posted in) is
+     * ignored for this channel. Leave false for ChatGPT-style UX where
+     * the bot "stays in" a thread after the first reply.
+     *
+     * Has no effect in DMs (always triggered) or when `auto_join_threads`
+     * is false.
+     */
+    thread_require_explicit_mention: z.boolean().default(false),
+    /**
      * Off by default per plan §6. When true, a cost footer is posted after
      * every turn_complete; verbosity ≥ normal renders a one-liner, verbose
      * renders per-category token breakdowns.

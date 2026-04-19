@@ -17,6 +17,7 @@ function project(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     sessionBanner: true,
     showCost: false,
     autoJoinThreads: true,
+    threadRequireExplicitMention: false,
     turnTimeoutS: 0,
     maxBudgetUsd: 0,
     env: {},

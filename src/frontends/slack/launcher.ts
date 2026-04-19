@@ -111,6 +111,23 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   if (opts.debug) log.setLevel("debug")
   else log.setLevel("info")
 
+  // When run in the foreground (CLI path, not integration tests), print a
+  // startup banner and mirror log lines to stdout so the operator can see
+  // what the server is doing in real time. Without this, `bantai slack`
+  // looks hung — the only output is eventually written to the log file.
+  const unsubscribeConsoleLogs = opts.returnHandle
+    ? null
+    : attachConsoleLogStream(opts.debug ? "debug" : "info")
+  if (!opts.returnHandle) {
+    process.stdout.write(
+      "bantai slack — starting Slack frontend server\n" +
+        `  log file: ${log.getLogFile()}\n` +
+        `  verbosity: ${opts.debug ? "debug" : "info"}` +
+        `${opts.debug ? "" : " (pass --debug for more detail)"}\n` +
+        "  press Ctrl-C to stop\n\n",
+    )
+  }
+
   const config = await loadSlackConfig({
     path: opts.slackConfigPath,
     cwd: opts.config.cwd,
@@ -419,7 +436,24 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   await waitForSignal()
   log.info("slack: received shutdown signal — stopping")
   await handle.stop()
+  if (unsubscribeConsoleLogs) unsubscribeConsoleLogs()
   return undefined
+}
+
+/**
+ * Mirror logger output to stdout at-or-above `threshold`. Returns an
+ * unsubscribe handle. Used only on the CLI path — integration tests keep
+ * their log output silent.
+ */
+function attachConsoleLogStream(threshold: "debug" | "info"): () => void {
+  const rank = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 } as const
+  const min = threshold === "debug" ? rank.DEBUG : rank.INFO
+  return log.subscribe((line) => {
+    const m = line.match(/^\[[^\]]+\]\s*\[(\w+)/)
+    const tag = (m?.[1] ?? "INFO") as keyof typeof rank
+    if ((rank[tag] ?? rank.INFO) < min) return
+    process.stdout.write(line + "\n")
+  })
 }
 
 // ---------------------------------------------------------------------------

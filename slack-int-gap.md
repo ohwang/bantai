@@ -390,7 +390,7 @@ Also: `channel-inbound` SDK has built-in `shouldDebounceTextInbound` that gates 
 
 ## 10. Outbound identity override
 
-**P2. Small port.**
+**P2. Small port. Shipped. Identity plumbing proven with unit tests; real `chat:write.customize` round-trip still needs a live workspace (see "Live validation" below).**
 
 ### OpenClaw approach
 
@@ -398,20 +398,27 @@ Also: `channel-inbound` SDK has built-in `shouldDebounceTextInbound` that gates 
 
 ### Port plan
 
-- [ ] Add `agent_username`, `agent_icon_url`, `agent_icon_emoji` to per-channel config schema.
-- [ ] Forward to `postMessage` in `view/send-adapter.ts`.
-- [ ] Retry-without-customize on `not_allowed_token_type` / `missing_scope`.
+- [x] Add `agent_username`, `agent_icon_url`, `agent_icon_emoji` to per-channel config schema + `defaults` block (`config/schema.ts`).
+- [x] Resolve into `ProjectConfig.agentIdentity` with field-by-field override precedence (`router/resolver.ts`).
+- [x] Thread identity into the outbox (`view/outbox.ts` — draft, tier-3 chunked, native block-kit follow-up) and wrap the renderer's `SendAdapter` so every tool card, thinking / plan breakout, error inline, cost + budget notice rides with the same identity (`view/event-renderer.ts`).
+- [x] Forward to `chat.postMessage` in `view/send-adapter.ts` as `username` / `icon_url` / `icon_emoji`.
+- [x] Retry-without-customize on `not_allowed_token_type` / `missing_scope` / `invalid_arguments` — one warn per process.
 
 ### Acceptance
 
 - `agent_icon_emoji: ":robot_face:"` on a channel → the bot posts with that emoji, not the default workspace icon.
 - Missing scope → posts still land, with default identity, warn-log once.
 
+### Live validation (requires real workspace)
+
+- [ ] On a workspace where the bot token has `chat:write.customize`, set `agent_username: "Reviewer"` + `agent_icon_emoji: ":robot_face:"` on a channel and confirm posts (stream, tool cards, approvals, elicitations, cost footer) render with the override.
+- [ ] Remove the scope, restart, confirm posts still land with the default identity + exactly one "falling back to default workspace identity" warning in the session log.
+
 ---
 
 ## 11. SSRF-guarded inbound file fetch
 
-**P2. Small port.**
+**P2. Small port. Shipped.**
 
 ### OpenClaw approach
 

@@ -142,6 +142,20 @@ export const DefaultsSchema = z
      * turns refuse to run until `!bantai new`. 0 or undefined → disabled.
      */
     max_budget_usd: z.number().nonnegative().default(0),
+    /**
+     * Per-post identity override fields. When set, every `chat.postMessage`
+     * the bot makes rides with a custom username + icon — useful when a
+     * channel hosts multiple bantai agents backed by the same bot user
+     * ("Reviewer", "Refactor-bot") so humans can tell them apart at a
+     * glance.
+     *
+     * Requires `chat:write.customize` on the bot token. When the scope
+     * is missing, the send-adapter falls back to the default workspace
+     * identity and logs one warning per process lifetime.
+     */
+    agent_username: z.string().optional(),
+    agent_icon_url: z.string().url().optional(),
+    agent_icon_emoji: z.string().optional(),
   })
   .strict()
 export type DefaultsConfig = z.infer<typeof DefaultsSchema>
@@ -214,6 +228,9 @@ export const ChannelOverrideSchema = z
     permission_mode: z.string().optional(),
     turn_timeout_s: z.number().int().nonnegative().optional(),
     max_budget_usd: z.number().nonnegative().optional(),
+    agent_username: z.string().optional(),
+    agent_icon_url: z.string().url().optional(),
+    agent_icon_emoji: z.string().optional(),
     env: z.record(z.string(), SecretRefSchema).optional(),
   })
   .strict()

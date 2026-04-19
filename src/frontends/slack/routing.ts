@@ -409,6 +409,7 @@ async function dispatchMessageBatch(
       ...(project.nativeStreaming && ctx.nativeStream
         ? { nativeStream: ctx.nativeStream }
         : {}),
+      ...(project.agentIdentity ? { identity: project.agentIdentity } : {}),
       turnTimeoutS: project.turnTimeoutS,
       onTurnTimeout: () => {
         entry.host.backend.interrupt()

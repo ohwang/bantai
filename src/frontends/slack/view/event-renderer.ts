@@ -30,6 +30,7 @@ import type { VerbosityLevel } from "../config/schema"
 import {
   createOutboundStream,
   type NativeStreamCapability,
+  type OutboundIdentity,
   type OutboundStream,
   type SendAdapter,
 } from "./outbox"
@@ -188,12 +189,29 @@ export interface CreateRendererOpts {
    * teamId; tests leave it undefined so the outbox stays on tier-2.
    */
   nativeStream?: NativeStreamCapability
+  /**
+   * Optional per-agent identity (`username` / `iconUrl` / `iconEmoji`)
+   * applied to every outbound post this renderer makes — draft/final
+   * stream text, tool cards, plan/thinking breakouts, cost/budget
+   * notices, interactive-reply blocks. Requires `chat:write.customize`
+   * on the bot token; when the scope is missing, the send-adapter
+   * silently falls back to the default workspace identity and logs
+   * one warning per process.
+   */
+  identity?: OutboundIdentity
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   const { app, binding } = opts
-  const sendAdapter: SendAdapter =
+  const baseSendAdapter: SendAdapter =
     opts.sendAdapter ?? buildDefaultSendAdapter(app)
+  // Wrap once so every postMessage call in this renderer (tool cards,
+  // thinking, plan, error inline, budget/timeout notices, concise
+  // summary, cost footer) inherits the per-channel `identity` without
+  // threading it through every handler.
+  const sendAdapter: SendAdapter = opts.identity
+    ? withIdentity(baseSendAdapter, opts.identity)
+    : baseSendAdapter
 
   const reactionAdapter: ReactionAdapter =
     opts.reactionAdapter ?? {
@@ -325,10 +343,16 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   function ensureStream(): OutboundStream {
     if (!stream) {
       stream = createOutboundStream({
-        adapter: sendAdapter,
+        // Hand the outbox the RAW adapter + identity so its `identity`
+        // accessor (passed to outbox.ts directly) stays the single
+        // source of truth. If we passed the wrapped adapter here, an
+        // identity override would be applied twice — harmless but
+        // confusing when reading a debug log.
+        adapter: baseSendAdapter,
         channel: binding.channel,
         threadTs: binding.threadTs,
         ...(opts.nativeStream ? { nativeStream: opts.nativeStream } : {}),
+        ...(opts.identity ? { identity: opts.identity } : {}),
       })
     }
     return stream
@@ -856,4 +880,30 @@ function isLiveApp(app: App): boolean {
   if (!client || typeof client !== "object") return false
   const files = (client as { files?: unknown }).files
   return typeof files === "object" && files !== null
+}
+
+/**
+ * Decorate a SendAdapter so every `postMessage` call rides with the
+ * bound identity. If a caller already supplied `identity`, it wins —
+ * this is a default, not an override.
+ *
+ * `updateMessage` is left untouched. Slack's `chat.update` ignores
+ * identity fields, so carrying them here would just produce API
+ * warnings for no gain.
+ */
+function withIdentity(
+  base: SendAdapter,
+  identity: OutboundIdentity,
+): SendAdapter {
+  return {
+    postMessage(args) {
+      return base.postMessage({
+        ...args,
+        identity: args.identity ?? identity,
+      })
+    },
+    updateMessage(args) {
+      return base.updateMessage(args)
+    },
+  }
 }

@@ -39,6 +39,13 @@ export interface SendAdapter {
     text: string
     threadTs?: string
     blocks?: unknown[]
+    /**
+     * Optional per-post identity override. Requires `chat:write.customize`
+     * scope on the bot token; when the scope is missing, the adapter
+     * retries once without the identity fields so the post still lands
+     * with the default workspace identity.
+     */
+    identity?: OutboundIdentity
   }): Promise<{ ts: string; channel: string }>
   updateMessage(args: {
     channel: string
@@ -46,6 +53,12 @@ export interface SendAdapter {
     text: string
     blocks?: unknown[]
   }): Promise<void>
+}
+
+export interface OutboundIdentity {
+  username?: string
+  iconUrl?: string
+  iconEmoji?: string
 }
 
 export interface OutboxOpts {
@@ -68,6 +81,13 @@ export interface OutboxOpts {
    * "native-unavailable" for its lifetime and falls back to tier-2.
    */
   nativeStream?: NativeStreamCapability
+  /**
+   * Optional per-agent identity applied to every `chat.postMessage` the
+   * outbox makes (draft, tier-3 chunked, block-kit follow-up). Requires
+   * `chat:write.customize` on the bot token; when the scope is missing
+   * the send-adapter silently retries without identity fields.
+   */
+  identity?: OutboundIdentity
 }
 
 export interface NativeStreamCapability {
@@ -180,6 +200,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
         channel: opts.channel,
         threadTs: opts.threadTs,
         text: visibleHead(accumulator, maxChunkLen) || placeholderText(),
+        ...(opts.identity ? { identity: opts.identity } : {}),
       })
       draftTs = res.ts
       lastFlushAt = now()
@@ -274,6 +295,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
                 threadTs: opts.threadTs,
                 text: accumulator || placeholderText(),
                 blocks: finalBlocks,
+                ...(opts.identity ? { identity: opts.identity } : {}),
               })
             } catch (err) {
               log.error(
@@ -309,6 +331,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
               threadTs: opts.threadTs,
               text: chunk,
               ...(attachBlocks ? { blocks: finalBlocks } : {}),
+              ...(opts.identity ? { identity: opts.identity } : {}),
             })
           } catch (err) {
             log.error(`slack outbox (tier-3): postMessage chunk failed: ${String(err)}`)

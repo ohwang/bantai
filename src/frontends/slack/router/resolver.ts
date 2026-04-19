@@ -90,6 +90,18 @@ export interface ProjectConfig {
   turnTimeoutS: number
   /** Max cumulative USD per session. 0 → disabled. */
   maxBudgetUsd: number
+  /**
+   * Per-post identity override. Undefined when the channel + defaults
+   * both leave it blank — then the bot posts under the workspace
+   * default, unchanged from pre-identity behaviour. When set, every
+   * `chat.postMessage` from this channel's renderer/outbox applies
+   * these fields (requires `chat:write.customize`).
+   */
+  agentIdentity?: {
+    username?: string
+    iconUrl?: string
+    iconEmoji?: string
+  }
   /** Extra env vars to pass to the backend process. Resolved from SecretRefs. */
   env: Record<string, string>
 }
@@ -165,6 +177,17 @@ export function resolveProjectForChannel(
     nativeStreaming: override?.native_streaming ?? defaults.native_streaming,
     turnTimeoutS: override?.turn_timeout_s ?? defaults.turn_timeout_s,
     maxBudgetUsd: override?.max_budget_usd ?? defaults.max_budget_usd,
+    ...((): { agentIdentity?: ProjectConfig["agentIdentity"] } => {
+      const username = override?.agent_username ?? defaults.agent_username
+      const iconUrl = override?.agent_icon_url ?? defaults.agent_icon_url
+      const iconEmoji = override?.agent_icon_emoji ?? defaults.agent_icon_emoji
+      if (!username && !iconUrl && !iconEmoji) return {}
+      const identity: NonNullable<ProjectConfig["agentIdentity"]> = {}
+      if (username) identity.username = username
+      if (iconUrl) identity.iconUrl = iconUrl
+      if (iconEmoji) identity.iconEmoji = iconEmoji
+      return { agentIdentity: identity }
+    })(),
     env: resolveEnvRefs(override?.env, env),
   }
 }

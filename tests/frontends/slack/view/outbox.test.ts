@@ -3,6 +3,7 @@ import {
   createOutboundStream,
   type NativeStreamCapability,
   type NativeStreamHandle,
+  type OutboundIdentity,
   type SendAdapter,
 } from "../../../../src/frontends/slack/view/outbox"
 
@@ -12,6 +13,7 @@ interface Call {
   text: string
   threadTs?: string
   ts?: string
+  identity?: OutboundIdentity
 }
 
 function createFakeAdapter(opts: { failPostAt?: number; failUpdateAt?: number } = {}): {
@@ -32,6 +34,7 @@ function createFakeAdapter(opts: { failPostAt?: number; failUpdateAt?: number } 
         channel: args.channel,
         text: args.text,
         threadTs: args.threadTs,
+        ...(args.identity ? { identity: args.identity } : {}),
       })
       return { ts: `ts${counter.n}`, channel: args.channel }
     },
@@ -277,6 +280,97 @@ describe("createOutboundStream — tier-1 native streaming", () => {
     // Native stream stopped, and blocks rode on a follow-up post.
     expect(native.state.stops).toHaveLength(1)
     expect(calls.filter((c) => c.kind === "post")).toHaveLength(1)
+  })
+})
+
+describe("createOutboundStream — identity forwarding", () => {
+  const identity: OutboundIdentity = {
+    username: "Reviewer",
+    iconEmoji: ":robot_face:",
+  }
+
+  it("forwards identity on the tier-2 draft post", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      identity,
+    })
+    stream.append("hello")
+    await drain()
+    await stream.stop("hello")
+    const firstPost = calls.find((c) => c.kind === "post")!
+    expect(firstPost.identity).toEqual(identity)
+  })
+
+  it("forwards identity on tier-3 fallback chunks", async () => {
+    // First post throws → fallback → stop() reposts via tier-3.
+    const { adapter, calls } = createFakeAdapter({ failPostAt: 1 })
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      identity,
+    })
+    stream.append("the full body of this reply")
+    await drain()
+    await stream.stop("the full body of this reply")
+    const fallbackPosts = calls.filter((c) => c.kind === "post")
+    expect(fallbackPosts.length).toBeGreaterThanOrEqual(1)
+    for (const p of fallbackPosts) {
+      expect(p.identity).toEqual(identity)
+    }
+  })
+
+  it("forwards identity on the native-stream Block Kit follow-up", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const native: NativeStreamCapability = {
+      async start() {
+        return {
+          async append() {},
+          async stop() {},
+        }
+      },
+    }
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      nativeStream: native,
+      identity,
+    })
+    stream.append("body")
+    await drain()
+    await stream.stop("body", [
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Go" },
+            action_id: "x",
+          },
+        ],
+      },
+    ])
+    const followup = calls.find((c) => c.kind === "post")!
+    expect(followup.identity).toEqual(identity)
+  })
+
+  it("is absent when no identity was supplied (no accidental defaults)", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+    })
+    stream.append("hello")
+    await drain()
+    await stream.stop("hello")
+    for (const c of calls) {
+      expect(c.identity).toBeUndefined()
+    }
   })
 })
 

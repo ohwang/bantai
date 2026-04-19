@@ -136,6 +136,71 @@ describe("resolveProjectForChannel", () => {
     const proj = resolveProjectForChannel(cfg, "C0NO_MCP", { launchCwd: "/cwd" })
     expect(proj.resolvedMcpServers).toBeUndefined()
   })
+
+  describe("agentIdentity", () => {
+    it("is undefined when neither defaults nor override supply fields", async () => {
+      const cfg = await makeConfig({
+        workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+        channels: [{ id: "C0NOID" }],
+      })
+      const proj = resolveProjectForChannel(cfg, "C0NOID", { launchCwd: "/cwd" })
+      expect(proj.agentIdentity).toBeUndefined()
+    })
+
+    it("picks up defaults-level identity when channel omits", async () => {
+      const cfg = await makeConfig({
+        workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+        defaults: {
+          agent_username: "bantai-default",
+          agent_icon_emoji: ":robot_face:",
+        },
+        channels: [{ id: "C0DEF" }],
+      })
+      const proj = resolveProjectForChannel(cfg, "C0DEF", { launchCwd: "/cwd" })
+      expect(proj.agentIdentity).toEqual({
+        username: "bantai-default",
+        iconEmoji: ":robot_face:",
+      })
+    })
+
+    it("channel override fields win field-by-field (not all-or-nothing)", async () => {
+      // Real-world: defaults set a shared icon, a single channel retitles
+      // the bot. The icon should still come from defaults.
+      const cfg = await makeConfig({
+        workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+        defaults: {
+          agent_username: "bantai",
+          agent_icon_emoji: ":robot_face:",
+        },
+        channels: [
+          { id: "C0OVR", agent_username: "Reviewer" },
+        ],
+      })
+      const proj = resolveProjectForChannel(cfg, "C0OVR", { launchCwd: "/cwd" })
+      expect(proj.agentIdentity).toEqual({
+        username: "Reviewer",
+        iconEmoji: ":robot_face:",
+      })
+    })
+
+    it("accepts icon_url from the channel override", async () => {
+      const cfg = await makeConfig({
+        workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+        channels: [
+          {
+            id: "C0URL",
+            agent_username: "Refactor-bot",
+            agent_icon_url: "https://example.com/icon.png",
+          },
+        ],
+      })
+      const proj = resolveProjectForChannel(cfg, "C0URL", { launchCwd: "/cwd" })
+      expect(proj.agentIdentity).toEqual({
+        username: "Refactor-bot",
+        iconUrl: "https://example.com/icon.png",
+      })
+    })
+  })
 })
 
 describe("resolveMcpServersForChannel", () => {

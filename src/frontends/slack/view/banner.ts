@@ -43,7 +43,7 @@ export function buildSessionBanner(input: BannerInputs): {
   const bodyLines = [
     `*backend*  \`${project.backend}\``,
     `*model*  \`${project.model ?? "<default>"}\``,
-    `*project*  ${project.channelName ? `${project.channelName} — ` : ""}\`${project.projectDir}\``,
+    `*project*  \`${project.channelName ? `${project.channelName} — ` : ""}${project.projectDir}\``,
     `*session*  \`${input.sessionId ?? "<pending>"}\``,
     `*verbosity*  \`${project.verbosity}\``,
   ]

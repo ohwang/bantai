@@ -28,7 +28,7 @@
  */
 
 import type { SessionHost } from "../../../session/host"
-import type { AgentBackend, ConversationEvent, SessionConfig, SessionOrigin, UserMessage } from "../../../protocol/types"
+import type { AgentBackend, ConversationEvent, PermissionMode, SessionConfig, SessionOrigin, UserMessage } from "../../../protocol/types"
 import { SubagentManager } from "../../../subagents/manager"
 import { createBackend } from "../../../subagents/backend-factory"
 import { createSessionHost } from "../../../session/host"
@@ -392,6 +392,7 @@ export function buildSessionConfigFromProject(
   }
   const base: SessionConfig = {
     cwd: project.projectDir,
+    permissionMode: project.permissionMode as PermissionMode,
     ...(project.model ? { model: project.model } : {}),
     ...(project.systemPromptAppend ? { systemPrompt: project.systemPromptAppend } : {}),
     ...(project.allowedTools ? { allowedTools: project.allowedTools } : {}),

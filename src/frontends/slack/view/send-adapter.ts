@@ -10,7 +10,10 @@
  */
 
 import type { App } from "@slack/bolt"
+import type { KnownBlock } from "@slack/types"
 import type { SendAdapter } from "./outbox"
+import { withBlockKitFallback } from "./blocks/fallback"
+import { log } from "../../../utils/logger"
 
 export interface SendAdapterHooks {
   /**
@@ -36,11 +39,15 @@ export function buildDefaultSendAdapter(
 ): SendAdapter {
   return {
     async postMessage(args) {
+      const safe = applyBlockKitFallback({
+        text: args.text,
+        ...(args.blocks ? { blocks: args.blocks as KnownBlock[] } : {}),
+      })
       const res = await app.client.chat.postMessage({
         channel: args.channel,
-        text: args.text,
+        text: safe.text,
         ...(args.threadTs ? { thread_ts: args.threadTs } : {}),
-        ...(args.blocks ? { blocks: args.blocks as never } : {}),
+        ...(safe.blocks ? { blocks: safe.blocks as never } : {}),
       })
       if (!res.ok || !res.ts || !res.channel) {
         throw new Error(`chat.postMessage failed: ${res.error ?? "unknown"}`)
@@ -51,15 +58,38 @@ export function buildDefaultSendAdapter(
       return { ts, channel }
     },
     async updateMessage(args) {
+      const safe = applyBlockKitFallback({
+        text: args.text,
+        ...(args.blocks ? { blocks: args.blocks as KnownBlock[] } : {}),
+      })
       const res = await app.client.chat.update({
         channel: args.channel,
         ts: args.ts,
-        text: args.text,
-        ...(args.blocks ? { blocks: args.blocks as never } : {}),
+        text: safe.text,
+        ...(safe.blocks ? { blocks: safe.blocks as never } : {}),
       })
       if (!res.ok) {
         throw new Error(`chat.update failed: ${res.error ?? "unknown"}`)
       }
     },
   }
+}
+
+/**
+ * Run the payload through withBlockKitFallback. When the fallback
+ * actually kicks in (blocks dropped), log a single warn so operators
+ * can find the culprit in the session log — a silent demotion to
+ * plain-text can be confusing when designing a card.
+ */
+function applyBlockKitFallback(input: {
+  text: string
+  blocks?: KnownBlock[]
+}): { text: string; blocks?: KnownBlock[] } {
+  const out = withBlockKitFallback(input)
+  if (input.blocks && input.blocks.length > 0 && !out.blocks) {
+    log.warn(
+      `slack send-adapter: block kit payload exceeded limits (${input.blocks.length} blocks) — falling back to plain text`,
+    )
+  }
+  return out
 }

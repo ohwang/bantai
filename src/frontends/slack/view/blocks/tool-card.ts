@@ -30,6 +30,7 @@
 
 import type { KnownBlock } from "@slack/types"
 import type { VerbosityLevel } from "../../config/schema"
+import { truncateSlackMrkdwn } from "./truncate"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -259,8 +260,10 @@ function safeJsonStringify(value: unknown, indent?: number): string {
 
 function codeFence(body: string, lang = ""): string {
   if (!body) return ""
-  const truncated =
-    body.length > MAX_FENCE_CHARS ? `${body.slice(0, MAX_FENCE_CHARS - 1)}…` : body
+  // Use truncateSlackMrkdwn so a mid-content cut doesn't leave a
+  // dangling triple-backtick. The inner body is plain (pre-fence) so
+  // the caller-side fences we're adding below will always balance.
+  const truncated = truncateSlackMrkdwn(body, MAX_FENCE_CHARS)
   return ["```" + lang, truncated, "```"].join("\n")
 }
 

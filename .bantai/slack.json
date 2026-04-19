@@ -20,12 +20,17 @@
     // Real adapter — requires `codex` on PATH. Swap to "claude", "gemini",
     // "acp", or "mock" depending on what you want to exercise.
     "backend": "codex",
-    "verbosity": "verbose",
+    "verbosity": "normal",
     "require_mention": true,
     "trigger_name": "bantai",
     "control_prefix": "!bantai",
     "session_banner": true,
     "auto_join_threads": true,
+
+    // Bypass permission prompts so interactive multi-channel dogfooding
+    // doesn't gate on Block-Kit approval flows. Flip back to "default" to
+    // exercise the approver experience end-to-end.
+    "permission_mode": "bypassPermissions",
 
     // Cost footer lights up after every turn_complete. Useful while
     // exercising a real backend — turn it off for headless scripted runs.
@@ -40,25 +45,35 @@
     // user IDs (alice=U00000001, bob=U00000002 in the `basic` fixture)
     // to exercise the approver allow-list.
     "approvers": []
-  }
+  },
 
-  // Per-channel overrides — uncomment once you need one.
-  // The `basic` fixture creates #general first (C00000001) and
-  // #random second (C00000002).
-  //
-  // "channels": [
-  //   {
-  //     "id": "C00000001",
-  //     "name": "general",
-  //     "verbosity": "verbose",
-  //     "show_cost": true
-  //   },
-  //   {
-  //     "id": "C00000002",
-  //     "name": "random",
-  //     "require_mention": false
-  //   }
-  // ]
+  // Per-channel overrides — each project mapped to a different backend +
+  // model so one minislack instance can exercise three adapters at once.
+  // Channel IDs come from `bantai minislack --fixture basic` plus the three
+  // channels created via `conversations.create` (proj-bantai, proj-cringle-ai,
+  // trip-2026-okinawa → C00000003/4/5 in fixture order).
+  "channels": [
+    {
+      "id": "C00000003",
+      "name": "proj-bantai",
+      "project_dir": "/Users/odin/dev/repos/bantai",
+      "backend": "claude",
+      "model": "claude-sonnet-4-6",
+      "verbosity": "verbose"
+    },
+    {
+      "id": "C00000004",
+      "name": "proj-cringle-ai",
+      "project_dir": "/Users/odin/dev/repos/cringle.ai",
+      "backend": "codex"
+    },
+    {
+      "id": "C00000005",
+      "name": "trip-2026-okinawa",
+      "project_dir": "/Users/odin/dev/repos/slack-agent-projects/trip-2026-okinawa",
+      "backend": "gemini"
+    }
+  ]
 }
 
 // ---------------------------------------------------------------------------

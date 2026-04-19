@@ -71,6 +71,9 @@ export function fromSnapshot(snapshot: WorkspaceSnapshot): Workspace {
     files: new Map(migrated.files.map((f) => [f.id, f])),
     tsState: new Map(migrated.ts_state),
     idCounters: new Map(migrated.id_counters),
+    // Ephemerals are intrinsically transient — real Slack loses them on
+    // client reload, so minislack doesn't persist them across restart.
+    ephemerals: [],
   }
   for (const snap of migrated.channels) {
     const { messages, ...rest } = snap

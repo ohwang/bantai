@@ -20,6 +20,7 @@ export type SlackEvent =
   | MessageEvent
   | MessageChangedEvent
   | MessageDeletedEvent
+  | EphemeralMessageEvent
   | ReactionAddedEvent
   | ReactionRemovedEvent
   | AppMentionEvent
@@ -95,6 +96,29 @@ export interface MessageDeletedEvent {
   channel_type: MessageEvent["channel_type"]
   previous_message: { type: "message"; user: string; text: string; ts: string }
   hidden: true
+}
+
+/**
+ * chat.postEphemeral delivery. Published for the web SPA / test observers
+ * only — the Events API fan-out in server/websocket.ts intentionally
+ * doesn't include this type in the default subscribed_events list, because
+ * real Slack never propagates ephemerals back to bot apps.
+ */
+export interface EphemeralMessageEvent {
+  type: "ephemeral_message"
+  event_ts: string
+  ts: string
+  channel: string
+  /** Target user — only this user "sees" the message. */
+  user: string
+  /** Posting principal (the caller of chat.postEphemeral). */
+  posted_by: string
+  bot_id?: string
+  app_id?: string
+  text: string
+  blocks?: (KnownBlock | Block)[]
+  attachments?: MessageAttachment[]
+  thread_ts?: string
 }
 
 export interface ReactionAddedEvent {

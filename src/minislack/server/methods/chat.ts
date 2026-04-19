@@ -17,6 +17,7 @@ import { channelTypeOf, messageToMessageEvent } from "../../core/event-mappers"
 import type { EventBus } from "../../core/events"
 import type { Channel, Message, Workspace } from "../../types/slack"
 import type {
+  EphemeralMessageEvent,
   MessageChangedEvent,
   MessageDeletedEvent,
 } from "../../types/events"
@@ -235,7 +236,7 @@ export interface ChatPostEphemeralResponse {
 
 export function chatPostEphemeral(
   ws: Workspace,
-  _bus: EventBus,
+  bus: EventBus,
   ctx: AuthContext,
   args: ChatPostEphemeralArgs,
 ): ChatPostEphemeralResponse {
@@ -244,8 +245,43 @@ export function chatPostEphemeral(
   if (!ws.users.has(args.user)) {
     throw new MinislackError("user_not_in_channel", args.user)
   }
-  // Ephemerals don't persist; we mint a ts so clients can correlate.
+  if (
+    (args.text ?? "").trim().length === 0 &&
+    !args.blocks &&
+    !args.attachments
+  ) {
+    throw new MinislackError("no_text", "ephemeral must have text, blocks, or attachments")
+  }
+  // Ephemerals don't persist into channel.messages; they live in a parallel
+  // per-workspace log so the SPA + tests can observe them.
   const ts = nextTs(ws, ch.id)
+  ws.ephemerals.push({
+    ts,
+    channel: ch.id,
+    user: args.user,
+    posted_by: ctx.userId,
+    ...(ctx.kind === "bot" && ctx.botId ? { bot_id: ctx.botId } : {}),
+    ...(ctx.kind === "bot" && ctx.appId ? { app_id: ctx.appId } : {}),
+    text: args.text ?? "",
+    ...(args.blocks ? { blocks: args.blocks } : {}),
+    ...(args.attachments ? { attachments: args.attachments } : {}),
+    ...(args.thread_ts ? { thread_ts: args.thread_ts } : {}),
+  })
+  const evt: EphemeralMessageEvent = {
+    type: "ephemeral_message",
+    event_ts: ts,
+    ts,
+    channel: ch.id,
+    user: args.user,
+    posted_by: ctx.userId,
+    ...(ctx.kind === "bot" && ctx.botId ? { bot_id: ctx.botId } : {}),
+    ...(ctx.kind === "bot" && ctx.appId ? { app_id: ctx.appId } : {}),
+    text: args.text ?? "",
+    ...(args.blocks ? { blocks: args.blocks } : {}),
+    ...(args.attachments ? { attachments: args.attachments } : {}),
+    ...(args.thread_ts ? { thread_ts: args.thread_ts } : {}),
+  }
+  bus.publish(evt)
   return { ok: true, message_ts: ts }
 }
 

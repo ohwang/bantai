@@ -24,6 +24,34 @@ export interface Workspace {
   tsState: Map<string, { lastUnix: number; seq: number }>
   /** Deterministic counters for id minting, keyed by prefix. */
   idCounters: Map<string, number>
+  /**
+   * Ephemerals posted via chat.postEphemeral. Chronological, append-only
+   * within a single process lifetime — ephemerals don't persist across
+   * restart (matches real Slack, where they're UI-only and expire when the
+   * client reloads).
+   */
+  ephemerals: EphemeralRecord[]
+}
+
+/**
+ * A single chat.postEphemeral delivery. Visible only to `user` in the web
+ * SPA; not fanned out on the Events API bus (matching real Slack).
+ */
+export interface EphemeralRecord {
+  /** Per-channel monotonic ts so callers can correlate with their response. */
+  ts: string
+  channel: string
+  /** Target user id (the only one who "sees" the message). */
+  user: string
+  /** Posting principal — the user or bot that called chat.postEphemeral. */
+  posted_by: string
+  /** Present when posted via a bot token. */
+  bot_id?: string
+  app_id?: string
+  text: string
+  blocks?: (KnownBlock | Block)[]
+  attachments?: MessageAttachment[]
+  thread_ts?: string
 }
 
 export interface Team {

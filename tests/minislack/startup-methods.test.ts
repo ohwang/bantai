@@ -144,19 +144,66 @@ describe("users.lookupByEmail", () => {
 })
 
 describe("chat.postEphemeral + chat.meMessage", () => {
-  test("postEphemeral returns a message_ts without persisting", async () => {
+  test("postEphemeral delivers into the ephemeral log and publishes an event", async () => {
     createUser(handle.workspace, { name: "alice" })
+    const bob = createUser(handle.workspace, { name: "bob" })
     const alice = handle.asUser("alice")
     const ch = createPublicChannel(handle.workspace, { name: "eph", creator: alice.user.id })
+    const received: any[] = []
+    handle.events.subscribe({ types: ["ephemeral_message"] }, (e) => received.push(e))
     const before = handle.workspace.channels.get(ch.id)!.messages.size
     const res = await call(alice.token, "chat.postEphemeral", {
       channel: ch.id,
-      user: alice.user.id,
+      user: bob.id,
       text: "hello just you",
     })
     expect(res.ok).toBe(true)
     expect(res.message_ts).toMatch(/^\d+\.\d{6}$/)
+    // Not written into the channel log (matches real Slack: ephemerals don't persist).
     expect(handle.workspace.channels.get(ch.id)!.messages.size).toBe(before)
+    // But recorded on the workspace so tests + the web SPA can see them.
+    expect(handle.workspace.ephemerals).toHaveLength(1)
+    expect(handle.workspace.ephemerals[0]).toMatchObject({
+      channel: ch.id,
+      user: bob.id,
+      posted_by: alice.user.id,
+      text: "hello just you",
+      ts: res.message_ts,
+    })
+    // And published on the bus so the SPA's SSE stream shows it in real time.
+    expect(received).toHaveLength(1)
+    expect(received[0]).toMatchObject({
+      type: "ephemeral_message",
+      channel: ch.id,
+      user: bob.id,
+      posted_by: alice.user.id,
+    })
+  })
+
+  test("postEphemeral rejects an empty body", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "empty", creator: alice.user.id })
+    const res = await call(alice.token, "chat.postEphemeral", {
+      channel: ch.id,
+      user: alice.user.id,
+      text: "",
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe("no_text")
+  })
+
+  test("postEphemeral rejects an unknown target user", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "ghost", creator: alice.user.id })
+    const res = await call(alice.token, "chat.postEphemeral", {
+      channel: ch.id,
+      user: "U_NOT_REAL",
+      text: "hi",
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe("user_not_in_channel")
   })
 
   test("meMessage stamps me_message subtype", async () => {

@@ -34,6 +34,7 @@ export function createWorkspace(opts: CreateWorkspaceOpts = {}): Workspace {
     files: new Map(),
     tsState: new Map(),
     idCounters: new Map(),
+    ephemerals: [],
   }
   ws.team.id = nextId(ws, "T")
   return ws

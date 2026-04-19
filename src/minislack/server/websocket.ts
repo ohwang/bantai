@@ -68,6 +68,11 @@ export function buildWebSocketHandler(ctx: WsContext) {
       socket.data.unsubscribe = ctx.bus.subscribe(
         { types },
         (evt: SlackEvent) => {
+          // Ephemerals are UI-only in real Slack — they never fan out to bot
+          // apps over Events API. Hard-block regardless of subscribed_events
+          // so a misconfigured app can't accidentally leak every other user's
+          // ephemerals into its event feed.
+          if (evt.type === "ephemeral_message") return
           const envelope = buildEventsApi(ctx.ws, appId, evt)
           try {
             socket.send(JSON.stringify(envelope))

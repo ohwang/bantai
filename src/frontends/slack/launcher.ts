@@ -17,7 +17,12 @@ import type { CLIFlags } from "../../cli/options"
 import { log } from "../../utils/logger"
 import { loadSlackConfig } from "./config/loader"
 import type { ResolvedSlackConfig } from "./config/schema"
-import { createBoltApp, runBootDiagnostics, verifyAuth } from "./transport/bolt"
+import {
+  attachFatalAuthGuard,
+  createBoltApp,
+  runBootDiagnostics,
+  verifyAuth,
+} from "./transport/bolt"
 import { registerEvents } from "./transport/events"
 import {
   createSessionRegistry,
@@ -157,6 +162,19 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       : []
 
   const app = createBoltApp({ config, customRoutes: metricsRoute })
+  // Guard against token-revocation / account-deactivation reconnect loops.
+  // Bolt's socket client otherwise spins forever on `invalid_auth`, which
+  // looks identical to a transient outage in the log. On a fatal auth
+  // error we log loud and exit with a non-zero code so supervisor
+  // processes (systemd, k8s) see the failure and stop restarting.
+  attachFatalAuthGuard(app, {
+    onFatal: () => {
+      // Give the error log a beat to flush, then exit. Skip in tests
+      // that set returnHandle — the caller owns shutdown there.
+      if (opts.returnHandle) return
+      setTimeout(() => process.exit(1), 100)
+    },
+  })
   await app.start()
   const auth = await verifyAuth(app)
   // Boot-time scope probes — best-effort, never blocks startup. Log each

@@ -187,3 +187,91 @@ function withApiSuffix(url: string): string {
   if (url.endsWith("/api/")) return url
   return `${url}/api/`
 }
+
+/**
+ * Slack error codes that mean "stop trying to reconnect — this token
+ * is dead." Bolt's Socket Mode client will otherwise loop forever on
+ * an `invalid_auth`, which looks identical to a transient outage to
+ * anyone tailing the log.
+ *
+ * Ported from openclaw/extensions/slack/src/monitor/reconnect-policy.ts
+ * (MIT).
+ */
+export const FATAL_SLACK_AUTH_ERRORS = new Set<string>([
+  "invalid_auth",
+  "not_authed",
+  "account_inactive",
+  "token_revoked",
+  "token_expired",
+])
+
+/**
+ * Duck-type the tangle of error shapes Slack clients emit:
+ *   - `Error` with a parsed `data.error` ("invalid_auth")
+ *   - `Error` whose message literally contains the code
+ *   - `{ code, data }` objects from the underlying WebSocket
+ *
+ * We don't try to be clever — just scan the obvious spots for a known
+ * code. False negatives are fine (Bolt's reconnect handles them); false
+ * positives would wrongly shut us down, so the allowlist is tight.
+ */
+export function isFatalSlackAuthError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false
+  const any = err as {
+    code?: string
+    message?: string
+    data?: { error?: string }
+    original?: { data?: { error?: string } }
+  }
+  const candidates = [
+    any.data?.error,
+    any.original?.data?.error,
+    any.code,
+    any.message,
+  ]
+  for (const c of candidates) {
+    if (typeof c !== "string") continue
+    if (FATAL_SLACK_AUTH_ERRORS.has(c)) return true
+    // Some client paths stringify the error into the message field.
+    for (const code of FATAL_SLACK_AUTH_ERRORS) {
+      if (c.includes(code)) return true
+    }
+  }
+  return false
+}
+
+/**
+ * Wire a fatal-auth guard into Bolt's error pipeline. When a Slack
+ * error with a non-recoverable auth code surfaces (token revoked mid-
+ * run, admin deactivates the app), `onFatal` fires exactly once with
+ * the original error; everything after is a no-op so we don't spam
+ * multiple shutdowns from the reconnect loop.
+ *
+ * Non-fatal errors are rethrown — Bolt's existing handling (including
+ * socket reconnect on transient network trouble) stays intact.
+ */
+export function attachFatalAuthGuard(
+  app: App,
+  opts: { onFatal: (err: unknown) => void },
+): void {
+  let fired = false
+  app.error(async (err) => {
+    if (isFatalSlackAuthError(err)) {
+      if (!fired) {
+        fired = true
+        log.error(
+          "slack: non-recoverable auth error — token is invalid / revoked / deactivated. " +
+            "Refusing to reconnect-loop; shutting down.",
+        )
+        try {
+          opts.onFatal(err)
+        } catch (cbErr) {
+          log.error(`slack: onFatal callback threw: ${String(cbErr)}`)
+        }
+      }
+      return
+    }
+    // Non-fatal — let it propagate via Bolt's default logging.
+    throw err
+  })
+}

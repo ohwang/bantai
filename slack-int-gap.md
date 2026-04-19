@@ -41,7 +41,7 @@ Running doc tracking everywhere bantai's Slack frontend reinvented a wheel that 
 | 9 | Inbound interaction payload sanitiser + compaction | P2 | `[ ]` | — |
 | 10 | Outbound identity override (`chat:write.customize`) | P2 | `[x]` † | needs live-workspace scope check |
 | 11 | SSRF-guarded inbound file fetch | P2 | `[x]` | — |
-| 12 | Socket-mode reconnect backoff + auth-error fast-fail | P2 | `[~]` | — |
+| 12 | Socket-mode reconnect backoff + auth-error fast-fail | P2 | `[x]` | — |
 | 13 | `thread.inheritParent` / configurable history scope | P3 | `[ ]` | — |
 
 ---
@@ -445,7 +445,7 @@ Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's d
 
 ## 12. Socket-mode reconnect backoff
 
-**P2. Verify; likely partial today.**
+**P2. Shipped.**
 
 ### OpenClaw approach
 
@@ -453,12 +453,19 @@ Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's d
 
 ### Port plan
 
-- [ ] Audit `transport/bolt.ts` for reconnect behaviour. Bolt has defaults, but verify they match.
-- [ ] If using Bolt's built-in reconnect, add a non-recoverable-error guard: on `invalid_auth` / `account_inactive` / `token_revoked`, log loud + exit rather than spin.
+- [x] Reconnect backoff is Bolt's default — `@slack/bolt` + its embedded `@slack/socket-mode` client already exponential-backoff on socket disconnects and retry transient web API errors via `retryPolicies.tenRetriesInAboutThirtyMinutes` (already in `transport/bolt.ts`).
+- [x] Fast-fail guard: added `attachFatalAuthGuard(app, { onFatal })` in `transport/bolt.ts`. Hooks `app.error()` and detects the fatal auth codes (`invalid_auth`, `not_authed`, `account_inactive`, `token_revoked`, `token_expired`) across every shape Slack clients surface them in (`data.error`, `original.data.error`, `code`, `message`). Launcher passes `onFatal: () => process.exit(1)` after a beat so the error log flushes; tests that construct the launcher with `returnHandle: true` skip the exit so integration harnesses own shutdown.
+- [x] Non-fatal errors rethrow so Bolt's default logging + reconnect stay intact — missing-scope, rate-limited, and network blips are transient and shouldn't kill the process.
 
 ### Acceptance
 
-- Revoking the bot token mid-run surfaces a clear fatal error, not an endless reconnect loop.
+- Revoking the bot token mid-run surfaces a clear fatal error (`slack: non-recoverable auth error — token is invalid / revoked / deactivated. Refusing to reconnect-loop; shutting down.`) and exits with code 1 (`tests/frontends/slack/transport/fatal-auth-guard.test.ts`).
+- Transient errors (`rate_limited`, `ECONNRESET`, `missing_scope`) do NOT fire the fatal path — Bolt's existing handling kicks in.
+
+### Live validation (requires real workspace)
+
+- [ ] Install the app, start bantai, revoke the token from Slack admin, confirm the process exits with code 1 rather than looping.
+- [ ] Temporarily block network egress to slack.com, confirm bantai keeps retrying (no fatal exit).
 
 ---
 

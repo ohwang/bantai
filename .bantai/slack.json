@@ -58,14 +58,13 @@
       "name": "proj-bantai",
       "project_dir": "/Users/odin/dev/repos/bantai",
       "backend": "claude",
-      "model": "claude-sonnet-4-6",
-      "verbosity": "verbose"
+      "model": "claude-opus-4-7"
     },
     {
       "id": "C00000004",
       "name": "proj-cringle-ai",
       "project_dir": "/Users/odin/dev/repos/cringle.ai",
-      "backend": "codex"
+      "model": "claude-opus-4-7"
     },
     {
       "id": "C00000005",

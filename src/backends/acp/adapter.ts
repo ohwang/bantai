@@ -1479,8 +1479,11 @@ export class AcpAdapter extends BaseAdapter {
   private async handleFsRead(rpcId: number | string, params: AcpFsReadParams): Promise<void> {
     const { path: filePath, line, limit } = params
 
-    // Security: validate path is within the session's working directory
-    const cwd = process.cwd()
+    // Security: validate path is within the session's working directory.
+    // Fall back to process.cwd() only when the adapter was constructed
+    // without a SessionConfig (older tests); production callers always
+    // supply `config.cwd`.
+    const cwd = this.config?.cwd ?? process.cwd()
     const check = validatePathWithinCwd(filePath, cwd)
     if (!check.valid) {
       log.warn("ACP fs/read_text_file blocked: path outside cwd", { path: filePath, cwd })
@@ -1518,8 +1521,11 @@ export class AcpAdapter extends BaseAdapter {
   private async handleFsWrite(rpcId: number | string, params: AcpFsWriteParams): Promise<void> {
     const { path: filePath, content } = params
 
-    // Security: validate path is within the session's working directory
-    const cwd = process.cwd()
+    // Security: validate path is within the session's working directory.
+    // Fall back to process.cwd() only when the adapter was constructed
+    // without a SessionConfig (older tests); production callers always
+    // supply `config.cwd`.
+    const cwd = this.config?.cwd ?? process.cwd()
     const check = validatePathWithinCwd(filePath, cwd)
     if (!check.valid) {
       log.warn("ACP fs/write_text_file blocked: path outside cwd", { path: filePath, cwd })

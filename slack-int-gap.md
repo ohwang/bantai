@@ -42,7 +42,7 @@ Running doc tracking everywhere bantai's Slack frontend reinvented a wheel that 
 | 10 | Outbound identity override (`chat:write.customize`) | P2 | `[x]` † | needs live-workspace scope check |
 | 11 | SSRF-guarded inbound file fetch | P2 | `[x]` | — |
 | 12 | Socket-mode reconnect backoff + auth-error fast-fail | P2 | `[x]` | — |
-| 13 | `thread.inheritParent` / configurable history scope | P3 | `[ ]` | — |
+| 13 | `thread.inheritParent` / configurable history scope | P3 | `[-]` | intentionally deferred |
 
 ---
 
@@ -480,7 +480,7 @@ Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's d
 
 ## 13. `thread.inheritParent` / configurable history scope
 
-**P3. Design decision + port.**
+**P3. Intentionally deferred — design decision not to port yet.**
 
 ### OpenClaw approach
 
@@ -488,10 +488,20 @@ Docs `slack.md:690-698`. `thread.inheritParent` (default false) controls whether
 
 Bantai currently hard-codes thread-only history (session-per-thread). Some users may want "thread inherits channel context" — e.g. for a support bot where prior channel discussion matters.
 
-### Port plan
+### Decision
 
-- [ ] Decide whether we want this knob at all. If yes, add `thread.inherit_parent` + `thread.history_scope` to config schema and plumb through `routing.ts`.
-- [ ] If no: close this entry with a `[-]` + note the reasoning.
+**Skip for now.** Rationale:
+
+- The session-per-thread isolation is load-bearing for bantai's model: each agent sees a clean context, no cross-thread leakage, simple cost + context accounting. Weakening that invariant touches the session registry, the reducer, persistence (SQLite schema stores thread-scoped state), and every backend adapter.
+- The two use cases that justify inheritance in OpenClaw — support-bot reading prior channel discussion, AI-apps "continue this conversation" — don't have demand signal on bantai today. If a user needs them, reopen this entry with the concrete workflow.
+- OpenClaw's implementation is conditional history injection at turn-build time, not a structural change to session identity. If we port this later, the shape is: `project.threadHistoryScope: "thread" | "channel-plus-thread"` + a history-injector in the inbox turn-builder. No schema migration needed.
+
+### Reopen when
+
+- A user files an issue requesting channel-inherited thread context, with a concrete scenario (e.g., "my support bot needs the last N messages of the channel as prologue").
+- Or: we ship a multi-agent workflow where one agent's channel-level context needs to bleed into a child thread session.
+
+Until then, the current thread-isolated behaviour is the intentional default and this gap stays `[-]`.
 
 ---
 
@@ -500,6 +510,7 @@ Bantai currently hard-codes thread-only history (session-per-thread). Some users
 ### Running log
 
 - `2026-04-19` — Doc created. Gaps 1-13 enumerated based on side-by-side audit of bantai `src/frontends/slack/` vs. openclaw `extensions/slack/`. Top-3 priorities (markdown IR, thread-participation cache, interactive DSL) identified as highest ROI.
+- `2026-04-19` — Gaps 1-12 shipped. Gap 13 deferred as a design decision (see §13). Gaps marked `[x] †` need live-workspace validation before defaults flip on: §4 (native streaming / `chat.startStream`), §8 (assistant-thread status banner), §10 (per-agent `chat:write.customize` identity). Full test suite: 477 pass, 0 fail across 50 slack test files.
 
 ### Notes for contributors
 

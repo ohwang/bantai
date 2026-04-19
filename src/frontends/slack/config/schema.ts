@@ -96,6 +96,14 @@ export const DefaultsSchema = z
      */
     thread_require_explicit_mention: z.boolean().default(false),
     /**
+     * Compile `[[slack_buttons: …]]` / `[[slack_select: …]]` directives
+     * and trailing `Options: a, b, c.` lines from the agent's final reply
+     * into Block Kit interactive actions. Clicking a button feeds a new
+     * turn with the button's value. Off by default — flip on for channels
+     * where you want the agent to author rich prompts.
+     */
+    interactive_replies: z.boolean().default(false),
+    /**
      * Off by default per plan §6. When true, a cost footer is posted after
      * every turn_complete; verbosity ≥ normal renders a one-liner, verbose
      * renders per-category token breakdowns.
@@ -178,6 +186,8 @@ export const ChannelOverrideSchema = z
     approvers: z.array(z.string()).optional(),
     verbosity: VerbosityLevelSchema.optional(),
     require_mention: z.boolean().optional(),
+    thread_require_explicit_mention: z.boolean().optional(),
+    interactive_replies: z.boolean().optional(),
     permission_mode: z.string().optional(),
     turn_timeout_s: z.number().int().nonnegative().optional(),
     max_budget_usd: z.number().nonnegative().optional(),

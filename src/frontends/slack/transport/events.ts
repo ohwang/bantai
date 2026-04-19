@@ -49,7 +49,27 @@ export type InboundSlackEvent =
   | { kind: "member_joined"; channel: string; user: string }
   | { kind: "file_shared"; channel?: string; user: string; fileId: string }
   | { kind: "reaction_added"; channel?: string; user: string; reaction: string; itemTs?: string; itemChannel?: string }
-  | { kind: "block_action"; channel?: string; user: string; actionId: string; value?: string; triggerId: string; messageTs?: string; payload: unknown }
+  | {
+      kind: "block_action"
+      channel?: string
+      user: string
+      actionId: string
+      /**
+       * Clicked value for buttons (`action.value`) or selects
+       * (`action.selected_option.value`). Undefined when the action
+       * carries no value (e.g. overflow menus we don't use yet).
+       */
+      value?: string
+      triggerId: string
+      /** ts of the message the user clicked on. */
+      messageTs?: string
+      /**
+       * thread_ts of the message the user clicked on. Needed to route
+       * an interactive-reply click back into the thread's session.
+       */
+      messageThreadTs?: string
+      payload: unknown
+    }
   | { kind: "view_submission"; user: string; viewId: string; callbackId: string; values: Record<string, unknown>; triggerId: string }
 
 export type InboundHandler = (event: InboundSlackEvent) => void | Promise<void>
@@ -178,17 +198,16 @@ export function registerEvents({ app, onInbound, botUserId }: RegisterEventsOpts
     const actionId = typeof action === "object" && action && "action_id" in action
       ? String((action as { action_id: string }).action_id)
       : "<unknown>"
-    const value = typeof action === "object" && action && "value" in action
-      ? (action as { value?: string }).value
-      : undefined
+    const value = extractActionValue(action)
     await safeInvoke(onInbound, {
       kind: "block_action",
       channel: b.channel?.id,
       user: b.user?.id ?? "<unknown>",
       actionId,
-      value,
+      ...(value !== undefined ? { value } : {}),
       triggerId: b.trigger_id ?? "",
-      messageTs: b.message?.ts,
+      ...(b.message?.ts ? { messageTs: b.message.ts } : {}),
+      ...(b.message?.thread_ts ? { messageThreadTs: b.message.thread_ts } : {}),
       payload: body,
     })
   })
@@ -282,7 +301,34 @@ interface BlockActionBodyLike {
   user?: { id?: string }
   channel?: { id?: string }
   trigger_id?: string
-  message?: { ts?: string }
+  message?: { ts?: string; thread_ts?: string }
+}
+
+/**
+ * Extract the `value` payload from a Slack action. Buttons expose it
+ * directly at `action.value`; static selects put it at
+ * `action.selected_option.value`; multi-selects return an array at
+ * `action.selected_options` which we join with newlines. Returns
+ * undefined when the action has no value the agent should react to.
+ */
+function extractActionValue(action: unknown): string | undefined {
+  if (typeof action !== "object" || action === null) return undefined
+  const a = action as {
+    value?: string
+    selected_option?: { value?: string }
+    selected_options?: Array<{ value?: string }>
+  }
+  if (typeof a.value === "string") return a.value
+  if (a.selected_option && typeof a.selected_option.value === "string") {
+    return a.selected_option.value
+  }
+  if (Array.isArray(a.selected_options)) {
+    const values = a.selected_options
+      .map((o) => o.value)
+      .filter((v): v is string => typeof v === "string")
+    if (values.length > 0) return values.join("\n")
+  }
+  return undefined
 }
 
 interface ViewSubmissionBodyLike {

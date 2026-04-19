@@ -44,6 +44,7 @@ import {
 } from "./blocks/tool-card"
 import { buildPlanBlocks } from "./blocks/plan"
 import { buildThinkingBlocks } from "./blocks/thinking"
+import { compileSlackInteractiveReplies } from "./interactive-replies"
 import {
   buildSlackFileClient,
   uploadFileBestEffort,
@@ -170,6 +171,15 @@ export interface CreateRendererOpts {
    */
   maxBudgetUsd?: number
   onBudgetExceeded?: (cumulativeUsd: number, cap: number) => void
+  /**
+   * When true, the final reply text is passed through
+   * `compileSlackInteractiveReplies` — `[[slack_buttons:…]]` /
+   * `[[slack_select:…]]` directives and trailing `Options: …` lines
+   * are promoted into Block Kit actions. Clicks are routed by the
+   * launcher's block_action handler and dispatched as a new inbound
+   * turn carrying the clicked value.
+   */
+  interactiveReplies?: boolean
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
@@ -201,6 +211,7 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   const annotationsEnabled =
     verbosity !== "silent" && verbosity !== "concise"
   const showCost = opts.showCost ?? false
+  const interactiveReplies = opts.interactiveReplies ?? false
   const toolOutputFileLines = Math.max(1, opts.toolOutputFileLines ?? 200)
   const turnTimeoutMs = (opts.turnTimeoutS ?? 0) * 1000
   const maxBudgetUsd = opts.maxBudgetUsd ?? 0
@@ -365,7 +376,26 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     stream = undefined
     reactions = undefined
     finalText = undefined
-    if (s) await s.stop(final)
+    if (s) {
+      // Optionally compile interactive-reply directives out of the
+      // final text. Only on "done" — interrupt / error paths skip
+      // the DSL so buttons don't linger below an aborted reply.
+      if (
+        interactiveReplies &&
+        terminal === "done" &&
+        typeof final === "string" &&
+        final.length > 0
+      ) {
+        const compiled = compileSlackInteractiveReplies(final)
+        if (compiled.hasInteractive && compiled.blocks) {
+          await s.stop(compiled.text, compiled.blocks)
+        } else {
+          await s.stop(final)
+        }
+      } else {
+        await s.stop(final)
+      }
+    }
     if (r) await r.terminate(terminal)
     if (terminal === "done") {
       await postPerTurnAnnotations()

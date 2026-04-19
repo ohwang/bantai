@@ -25,6 +25,7 @@
  * WebClient.
  */
 
+import type { KnownBlock } from "@slack/types"
 import { markdownToSlackMrkdwnChunks } from "./format"
 import { log } from "../../../utils/logger"
 
@@ -64,10 +65,13 @@ export interface OutboundStream {
   append(chunk: string): void
   /**
    * Finalise the turn. `finalText`, when provided, replaces the accumulator
-   * with the canonical text (the backend's `text_complete`). Always posts
-   * at least one message, even if nothing was streamed.
+   * with the canonical text (the backend's `text_complete`). `finalBlocks`,
+   * when provided, are attached to the final `chat.update` (or the tier-3
+   * fresh post) — use this to land interactive-reply buttons alongside
+   * the canonical reply text. Always posts at least one message, even if
+   * nothing was streamed.
    */
-  stop(finalText?: string): Promise<void>
+  stop(finalText?: string, finalBlocks?: KnownBlock[]): Promise<void>
   /** Current accumulated text — useful for tests + diagnostics. */
   currentText(): string
   /**
@@ -155,7 +159,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       }
     },
 
-    async stop(finalText) {
+    async stop(finalText, finalBlocks) {
       if (stopped) return
       if (pendingTimer) clearTimeout(pendingTimer)
       pendingTimer = undefined
@@ -169,12 +173,18 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
         // (event-renderer) guarantees this path is only taken when the turn
         // produced text or the caller deliberately wants an empty ack, so no
         // placeholder is needed here.
-        for (const chunk of chunks) {
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i]!
+          // Blocks only ride on the LAST chunk — interactive actions
+          // should sit under the final body, not be duplicated across
+          // an arbitrary number of fragments.
+          const attachBlocks = finalBlocks && i === chunks.length - 1
           try {
             await opts.adapter.postMessage({
               channel: opts.channel,
               threadTs: opts.threadTs,
               text: chunk,
+              ...(attachBlocks ? { blocks: finalBlocks } : {}),
             })
           } catch (err) {
             log.error(`slack outbox (tier-3): postMessage chunk failed: ${String(err)}`)
@@ -205,6 +215,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
             channel: opts.channel,
             ts: draftTs,
             text: body,
+            ...(finalBlocks ? { blocks: finalBlocks } : {}),
           })
         } catch (err) {
           log.error(`slack outbox (tier-2 final update): ${String(err)}`)

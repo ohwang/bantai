@@ -24,6 +24,7 @@ import type { createDedupCache } from "./inbox/dedup"
 import type { ThreadParticipationCache } from "./inbox/thread-participation"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
+import { parseInteractiveReplyActionId } from "./view/interactive-replies"
 import type { AttachmentFetcher } from "./inbox/attachments"
 import {
   buildDefaultSendAdapter,
@@ -172,7 +173,12 @@ export function buildRoutingHandler(
           channel: event.channel,
         })
         if (elicRes.kind === "malformed") {
-          log.debug(`slack: unrecognised block_action ignored: ${event.actionId}`)
+          const interactiveHandled = await handleInteractiveReplyAction(ctx, event)
+          if (!interactiveHandled) {
+            log.debug(
+              `slack: unrecognised block_action ignored: ${event.actionId}`,
+            )
+          }
         }
       }
       return
@@ -276,6 +282,7 @@ export function buildRoutingHandler(
         },
         verbosity: project.verbosity,
         showCost: project.showCost,
+        interactiveReplies: project.interactiveReplies,
         turnTimeoutS: project.turnTimeoutS,
         onTurnTimeout: () => {
           entry.host.backend.interrupt()
@@ -470,4 +477,70 @@ function attachBannerOnce(
     }).catch((err) => log.error(`slack banner: ${String(err)}`))
   }
   unsub = entry.subscribe(subscriber)
+}
+
+// ---------------------------------------------------------------------------
+// Interactive-reply click dispatch.
+//
+// When an agent-authored `[[slack_buttons:…]]` / `[[slack_select:…]]`
+// block is clicked, Slack fires a block_action with an id prefixed
+// `bantai:reply_button:` / `bantai:reply_select:` and the clicked value
+// on the action payload. We translate that into a fresh inbound turn on
+// the same session (thread) so the agent can react to the choice.
+// ---------------------------------------------------------------------------
+
+async function handleInteractiveReplyAction(
+  ctx: RoutingCtx,
+  event: Extract<InboundSlackEvent, { kind: "block_action" }>,
+): Promise<boolean> {
+  const parsed = parseInteractiveReplyActionId(event.actionId)
+  if (!parsed) return false
+  if (!event.channel) {
+    log.warn(
+      `slack: interactive-reply click ${event.actionId} arrived without a channel`,
+    )
+    return true
+  }
+  if (!event.value) {
+    log.warn(
+      `slack: interactive-reply click ${event.actionId} carried no value; ignoring`,
+    )
+    return true
+  }
+  // The session is anchored at the *thread* the user clicked under.
+  // For a top-level message (no thread), anchor on the message's own
+  // ts — same convention `buildRoutingHandler` uses for fresh inbound
+  // messages.
+  const anchorTs = event.messageThreadTs ?? event.messageTs
+  if (!anchorTs) {
+    log.warn(
+      `slack: interactive-reply click ${event.actionId} missing both thread_ts and message ts`,
+    )
+    return true
+  }
+  const entry = ctx.registry.peek({
+    workspace: ctx.workspaceId,
+    channelId: event.channel,
+    threadTs: anchorTs,
+  })
+  if (!entry) {
+    log.info(
+      `slack: interactive-reply click on a session that has been evicted ` +
+        `(channel=${event.channel} thread=${anchorTs}); posting ephemeral`,
+    )
+    try {
+      await ctx.app.client.chat.postEphemeral({
+        channel: event.channel,
+        user: event.user,
+        text: ":warning: that session has ended — @mention the bot to start a new one.",
+      })
+    } catch (err) {
+      log.debug(`slack: ephemeral post failed: ${String(err)}`)
+    }
+    return true
+  }
+  const displayName = await ctx.userCache.displayName(event.user)
+  const authorLabel = displayName ?? event.user
+  entry.send({ text: `@${authorLabel}: ${event.value}` })
+  return true
 }

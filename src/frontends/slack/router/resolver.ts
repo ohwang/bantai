@@ -76,6 +76,12 @@ export interface ProjectConfig {
    * See schema comment for `thread_require_explicit_mention`.
    */
   threadRequireExplicitMention: boolean
+  /**
+   * Compile `[[slack_buttons:…]]` / `[[slack_select:…]]` directives
+   * and trailing `Options: …` lines from agent final text into Block
+   * Kit interactive actions.
+   */
+  interactiveReplies: boolean
   /** Max seconds a single turn may run before auto-interrupt. 0 → disabled. */
   turnTimeoutS: number
   /** Max cumulative USD per session. 0 → disabled. */
@@ -146,7 +152,11 @@ export function resolveProjectForChannel(
     sessionBanner: defaults.session_banner,
     showCost: defaults.show_cost,
     autoJoinThreads: defaults.auto_join_threads,
-    threadRequireExplicitMention: defaults.thread_require_explicit_mention,
+    threadRequireExplicitMention:
+      override?.thread_require_explicit_mention ??
+      defaults.thread_require_explicit_mention,
+    interactiveReplies:
+      override?.interactive_replies ?? defaults.interactive_replies,
     turnTimeoutS: override?.turn_timeout_s ?? defaults.turn_timeout_s,
     maxBudgetUsd: override?.max_budget_usd ?? defaults.max_budget_usd,
     env: resolveEnvRefs(override?.env, env),

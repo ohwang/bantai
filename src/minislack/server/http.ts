@@ -30,6 +30,11 @@ import {
   chatUpdate,
 } from "./methods/chat"
 import {
+  assistantThreadsSetStatus,
+  assistantThreadsSetSuggestedPrompts,
+  assistantThreadsSetTitle,
+} from "./methods/assistant"
+import {
   reactionsAdd,
   reactionsGet,
   reactionsList,
@@ -466,6 +471,31 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             text: args.text as string | undefined,
             blocks: args.blocks as chatBlocks,
             attachments: args.attachments as chatAttachments,
+          }),
+        )
+      case "assistant.threads.setStatus":
+        return slackOk(
+          assistantThreadsSetStatus(ctx.ws, ctx.bus, auth, {
+            channel_id: str(args.channel_id),
+            thread_ts: str(args.thread_ts),
+            status: str(args.status),
+          }),
+        )
+      case "assistant.threads.setSuggestedPrompts":
+        return slackOk(
+          assistantThreadsSetSuggestedPrompts(ctx.ws, ctx.bus, auth, {
+            channel_id: str(args.channel_id),
+            thread_ts: str(args.thread_ts),
+            prompts: (args.prompts as Array<{ title: string; message: string }>) ?? [],
+            title: args.title as string | undefined,
+          }),
+        )
+      case "assistant.threads.setTitle":
+        return slackOk(
+          assistantThreadsSetTitle(ctx.ws, ctx.bus, auth, {
+            channel_id: str(args.channel_id),
+            thread_ts: str(args.thread_ts),
+            title: str(args.title),
           }),
         )
       case "reactions.add":

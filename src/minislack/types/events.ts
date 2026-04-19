@@ -31,6 +31,9 @@ export type SlackEvent =
   | ImOpenEvent
   | ImCloseEvent
   | FileSharedEvent
+  | AssistantThreadStatusChangedEvent
+  | AssistantThreadSuggestedPromptsChangedEvent
+  | AssistantThreadTitleChangedEvent
 
 export interface MessageEvent {
   type: "message"
@@ -213,6 +216,38 @@ export interface FileSharedEvent {
   user_id: string
   file: { id: string }
   channel_id: string
+}
+
+/**
+ * Assistant-thread chrome writes from assistant.threads.setStatus /
+ * setSuggestedPrompts / setTitle. These are SSE-only — real Slack doesn't
+ * propagate them back to bot apps over Events API (bots write this state;
+ * only the Slack client UI consumes it). server/websocket.ts filters all
+ * three types out of the fan-out regardless of subscribed_events.
+ */
+export interface AssistantThreadStatusChangedEvent {
+  type: "assistant_thread_status_changed"
+  event_ts: string
+  channel: string
+  thread_ts: string
+  status: string
+}
+
+export interface AssistantThreadSuggestedPromptsChangedEvent {
+  type: "assistant_thread_suggested_prompts_changed"
+  event_ts: string
+  channel: string
+  thread_ts: string
+  prompts: Array<{ title: string; message: string }>
+  title?: string
+}
+
+export interface AssistantThreadTitleChangedEvent {
+  type: "assistant_thread_title_changed"
+  event_ts: string
+  channel: string
+  thread_ts: string
+  title: string
 }
 
 /** Extract the literal `type` field of a SlackEvent variant. */

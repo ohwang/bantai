@@ -36,7 +36,7 @@ Running doc tracking everywhere bantai's Slack frontend reinvented a wheel that 
 | 4 | Native Slack streaming (`chat.startStream` / `appendStream` / `stopStream`) | P1 | `[x]` † | — |
 | 5 | Block-kit size-limit fallback (truncate + drop blocks if over cap) | P1 | `[x]` | — |
 | 6 | Inbound debouncer + app_mention vs message race handling | P1 | `[x]` | — |
-| 7 | Sender-name + channel-name resolution cache | P2 | `[ ]` | — |
+| 7 | Sender-name + channel-name resolution cache | P2 | `[x]` | — |
 | 8 | Thread-status "is typing…" (`assistant.threads.setStatus`) | P2 | `[ ]` | — |
 | 9 | Inbound interaction payload sanitiser + compaction | P2 | `[ ]` | — |
 | 10 | Outbound identity override (`chat:write.customize`) | P2 | `[x]` † | needs live-workspace scope check |
@@ -315,11 +315,13 @@ Also: `channel-inbound` SDK has built-in `shouldDebounceTextInbound` that gates 
 
 ## 7. Sender-name + channel-name resolution cache
 
-**P2. Small port.**
+**P2. Shipped.**
 
 ### Current state (bantai)
 
-`src/frontends/slack/view/user-cache.ts` exists. Unclear if it handles channel names; current code posts with raw `U…` / `C…` IDs in most places that show user attribution (approval "Resolved by …", etc.).
+`src/frontends/slack/view/user-cache.ts` now covers users **and** channels with TTL + LRU eviction. The existing user-display-name path is unchanged for callers; channel-name lookup is new and exposed via `userCache.channelName(channelId)` for future consumers (e.g. enrichment of the `!bantai settings` dump when a channel isn't declared in config).
+
+Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's deliberate: Slack's client renders native user mentions as `@display-name` for us without a round-trip to `users.info`. The cache is for surfaces that can't rely on Slack's native rendering (plain-text inbox prefixes, audit logs).
 
 ### OpenClaw approach
 
@@ -327,14 +329,17 @@ Also: `channel-inbound` SDK has built-in `shouldDebounceTextInbound` that gates 
 
 ### Port plan
 
-- [ ] Audit `user-cache.ts` against `openclaw/extensions/slack/src/monitor/context.ts:*` for scope (users + channels + DM-open).
-- [ ] Add a bounded DM-open cache keyed `token:userId → channelId` for outbound DM delivery (if/when we support DMs). Not critical for channel flows.
-- [ ] Replace raw `<@U…>` with resolved `@real-name` in human-facing surfaces (approval resolved text, audit logs). Keep raw IDs in structured metadata.
+- [x] Extended `user-cache.ts` with TTL (default 15 min) + maxSize (default 1000) + oldest-first eviction; each lookup bumps the entry for LRU recency.
+- [x] Added `channelName(channelId)` lazy lookup via `conversations.info` with in-flight coalescing (same as users). DMs + named-less groups return undefined, not the id — callers decide how to display.
+- [x] Added `seedChannel()` / `size()` test hooks so unit tests can simulate state without mocking Bolt.
+- [ ] Bounded DM-open cache keyed `token:userId → channelId` — deferred; bantai doesn't open DMs outbound today. Re-open this bullet when DM delivery lands.
+- [ ] Wire `channelName()` into `!bantai settings` fallback when `project.channelName` is unset — trivial follow-up, low priority because operators typically declare channels in slack.json.
 
 ### Acceptance
 
-- `!bantai status` in a channel shows resolved human names, not raw IDs.
-- The cache has a TTL (15 min) + max size (1000 entries).
+- `userCache.displayName(...)` still returns the resolved display name and caches on first hit (existing behaviour preserved).
+- A 1000-entry cap evicts oldest; a 15-minute TTL refetches on next lookup (`tests/frontends/slack/view/user-cache.test.ts`).
+- `channelName("C1")` returns the channel's name, caches, coalesces concurrent lookups.
 
 ---
 

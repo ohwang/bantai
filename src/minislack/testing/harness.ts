@@ -179,6 +179,7 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
         wsBase: () => wsBase,
         baseHttp: () => baseHttp,
         web,
+        wsRegistry,
       })
     },
     websocket: buildWebSocketHandler({ ws, bus, sockets, wsRegistry }),

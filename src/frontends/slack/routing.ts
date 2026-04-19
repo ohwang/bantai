@@ -23,6 +23,7 @@ import type { InboundSlackEvent } from "./transport/events"
 import type { createDedupCache } from "./inbox/dedup"
 import type { ThreadParticipationCache } from "./inbox/thread-participation"
 import type { NativeStreamCapability } from "./view/outbox"
+import type { ThreadStatusAdapter } from "./view/thread-status"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
 import {
@@ -67,6 +68,13 @@ export interface RoutingCtx {
    * renderer, others leave it undefined so the outbox stays on tier-2.
    */
   nativeStream?: NativeStreamCapability
+  /**
+   * Assistant-thread status banner adapter. Always provided in
+   * production (the controller self-disables on channels that don't
+   * support the capability); tests omit it to keep the renderer path
+   * quiet.
+   */
+  threadStatus?: ThreadStatusAdapter
   userCache: UserCache
   botUserId: string
   workspaceId: string
@@ -410,6 +418,7 @@ async function dispatchMessageBatch(
         ? { nativeStream: ctx.nativeStream }
         : {}),
       ...(project.agentIdentity ? { identity: project.agentIdentity } : {}),
+      ...(ctx.threadStatus ? { threadStatusAdapter: ctx.threadStatus } : {}),
       turnTimeoutS: project.turnTimeoutS,
       onTurnTimeout: () => {
         entry.host.backend.interrupt()

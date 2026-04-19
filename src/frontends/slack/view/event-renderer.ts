@@ -40,6 +40,11 @@ import {
   type StatusReactionController,
 } from "./reactions"
 import {
+  createThreadStatusController,
+  type ThreadStatusAdapter,
+  type ThreadStatusController,
+} from "./thread-status"
+import {
   buildConciseToolSummary,
   buildToolCompletedCard,
   buildToolRunningCard,
@@ -110,6 +115,15 @@ export interface CreateRendererOpts {
    * Test hook: replaces the live ReactionAdapter (reactions.add + reactions.remove).
    */
   reactionAdapter?: ReactionAdapter
+  /**
+   * Optional assistant-thread status adapter. When provided, every
+   * agent event drives the `assistant.threads.setStatus` banner on
+   * the bound thread ("thinking…", "running Bash…"). The launcher
+   * always wires this; the controller self-disables gracefully on
+   * channels that don't support the capability. Tests that don't
+   * care about thread status omit it.
+   */
+  threadStatusAdapter?: ThreadStatusAdapter
   /**
    * Optional approval hook. When present, every `permission_request` event
    * is handed off to the hook; the launcher wires this to the approval
@@ -249,6 +263,10 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   let triggerTs: string | undefined = binding.triggerTs
   let stream: OutboundStream | undefined
   let reactions: StatusReactionController | undefined
+  // Thread-status banner lives alongside reactions — same lifecycle,
+  // different API surface (`assistant.threads.setStatus` vs reactions).
+  // Only instantiated when a threadStatusAdapter is provided.
+  let threadStatus: ThreadStatusController | undefined
   let finalText: string | undefined
   let inTurn = false
   /** permission_request ids we've handed off to approvals but not yet heard
@@ -371,6 +389,18 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     return reactions
   }
 
+  function ensureThreadStatus(): ThreadStatusController | undefined {
+    if (!opts.threadStatusAdapter) return undefined
+    if (!threadStatus) {
+      threadStatus = createThreadStatusController({
+        adapter: opts.threadStatusAdapter,
+        channel: binding.channel,
+        threadTs: binding.threadTs,
+      })
+    }
+    return threadStatus
+  }
+
   function cancelPendingApprovals(): void {
     if (!opts.approvals || pendingApprovals.size === 0) return
     const ids = Array.from(pendingApprovals)
@@ -405,9 +435,11 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     }
     const s = stream
     const r = reactions
+    const ts = threadStatus
     const final = finalText
     stream = undefined
     reactions = undefined
+    threadStatus = undefined
     finalText = undefined
     if (s) {
       // Optionally compile interactive-reply directives out of the
@@ -430,6 +462,10 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
       }
     }
     if (r) await r.terminate(terminal)
+    // Always clear the thread-status banner — a stale "thinking…" on a
+    // timed-out turn reads as "the bot is hung," which is the opposite
+    // of what we want to communicate.
+    if (ts) await ts.terminate()
     if (terminal === "done") {
       await postPerTurnAnnotations()
     }
@@ -706,8 +742,11 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
 
   function applyEvents(events: ConversationEvent[]): void {
     for (const event of events) {
-      // Feed every event into the reaction state machine.
+      // Feed every event into the reaction state machine + thread-status
+      // banner. Both are display-only side effects — separate surfaces,
+      // same lifecycle, so they're driven side by side here.
       ensureReactions()?.apply(event)
+      ensureThreadStatus()?.apply(event)
 
       switch (event.type) {
         case "turn_start":

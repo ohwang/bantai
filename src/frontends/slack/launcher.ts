@@ -341,6 +341,36 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     slackUploadMcpFor,
     threadParticipation,
     nativeStream,
+    // Thread-status banner wrapper — single adapter per process. The
+    // controller self-disables on channels that don't support the
+    // capability, so it's safe to pass unconditionally.
+    threadStatus: {
+      async setStatus({ channel, threadTs, status }) {
+        const client = app.client as unknown as {
+          assistant?: {
+            threads?: {
+              setStatus?: (args: {
+                channel_id: string
+                thread_ts: string
+                status: string
+              }) => Promise<{ ok: boolean; error?: string }>
+            }
+          }
+        }
+        const fn = client.assistant?.threads?.setStatus
+        if (!fn) {
+          throw new Error("missing_scope:assistant.threads.setStatus")
+        }
+        const res = await fn.call(client.assistant!.threads!, {
+          channel_id: channel,
+          thread_ts: threadTs,
+          status,
+        })
+        if (!res.ok) {
+          throw new Error(res.error ?? "unknown")
+        }
+      },
+    },
   })
   registerEvents({
     app,

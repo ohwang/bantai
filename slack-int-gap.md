@@ -37,7 +37,7 @@ Running doc tracking everywhere bantai's Slack frontend reinvented a wheel that 
 | 5 | Block-kit size-limit fallback (truncate + drop blocks if over cap) | P1 | `[x]` | — |
 | 6 | Inbound debouncer + app_mention vs message race handling | P1 | `[x]` | — |
 | 7 | Sender-name + channel-name resolution cache | P2 | `[x]` | — |
-| 8 | Thread-status "is typing…" (`assistant.threads.setStatus`) | P2 | `[ ]` | — |
+| 8 | Thread-status "is typing…" (`assistant.threads.setStatus`) | P2 | `[x]` † | needs live-workspace validation |
 | 9 | Inbound interaction payload sanitiser + compaction | P2 | `[ ]` | — |
 | 10 | Outbound identity override (`chat:write.customize`) | P2 | `[x]` † | needs live-workspace scope check |
 | 11 | SSRF-guarded inbound file fetch | P2 | `[x]` | — |
@@ -345,7 +345,7 @@ Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's d
 
 ## 8. Thread-status "is typing…"
 
-**P2. Tiny port. Visible polish.**
+**P2. Shipped. Plumbing proven with unit tests; real assistant-thread channel still needs live validation.**
 
 ### OpenClaw approach
 
@@ -353,14 +353,21 @@ Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's d
 
 ### Port plan
 
-- [ ] Wire `client.assistant.threads.setStatus({ channel_id, thread_ts, status })` into `view/reactions.ts` state transitions — `thinking` → `"is thinking…"`, `tool:<name>` → `"running {name}…"`, idle → `""`.
-- [ ] Gate on channel capability: only emit when the channel is an assistant thread (needs scope `assistant:write`).
-- [ ] Clear status on turn_complete / interrupt / error.
+- [x] `view/thread-status.ts`: `nextThreadStatus(event)` mapper + `createThreadStatusController({ adapter, channel, threadTs })` — debounces transitions, dedupes unchanged states, auto-clears on terminate().
+- [x] Gate on channel capability via **graceful self-disable**: on the first error that matches `method_not_supported_for_channel_type` / `channel_not_found` / `missing_scope` / `not_allowed_token_type` / `invalid_arguments`, the controller flips itself off for the session and logs once. No per-event error spam in regular channels.
+- [x] `event-renderer` drives the thread-status controller side-by-side with the reactions state machine — same lifecycle, different API surface. `endTurn()` always calls `terminate()` so crashed / interrupted turns don't leave a stale "thinking…" banner.
+- [x] Launcher wraps `app.client.assistant.threads.setStatus` into the `ThreadStatusAdapter` shape and threads it through `RoutingCtx`. `assistant:write` scope is inferred from the error-driven self-disable — installs without the scope still boot and just skip the banner.
 
 ### Acceptance
 
-- In an assistant-thread channel, the bot shows a live status banner during a turn.
-- In a regular channel, no-op; no API errors.
+- Transitions are posted via the adapter with the correct status strings (`tests/frontends/slack/view/thread-status.test.ts` — "posts transitions through the adapter").
+- Regular (non-assistant) channels self-disable on first error (same file — "disables itself on…").
+- Crashed / timed-out turns clear the banner via `terminate()` (same file — "clears the banner after a live session").
+
+### Live validation (requires real workspace)
+
+- [ ] Install the app with the AI-apps / Assistant API capability enabled, open an assistant thread, send a message that triggers a multi-tool turn, verify the "thinking…" / "running Bash…" banner tracks turn progress and clears on completion.
+- [ ] Send the same message in a regular public channel, verify no errors and no banner (self-disable path).
 
 ---
 

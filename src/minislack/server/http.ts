@@ -453,6 +453,8 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             thread_ts: args.thread_ts as string | undefined,
             recipient_team_id: args.recipient_team_id as string | undefined,
             recipient_user_id: args.recipient_user_id as string | undefined,
+            markdown_text: args.markdown_text as string | undefined,
+            chunks: args.chunks as chatChunks,
           }),
         )
       case "chat.appendStream":
@@ -460,7 +462,8 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
           chatAppendStream(ctx.ws, ctx.bus, auth, {
             channel: str(args.channel),
             ts: str(args.ts),
-            markdown_text: str(args.markdown_text),
+            markdown_text: args.markdown_text as string | undefined,
+            chunks: args.chunks as chatChunks,
           }),
         )
       case "chat.stopStream":
@@ -469,6 +472,8 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             channel: str(args.channel),
             ts: str(args.ts),
             text: args.text as string | undefined,
+            markdown_text: args.markdown_text as string | undefined,
+            chunks: args.chunks as chatChunks,
             blocks: args.blocks as chatBlocks,
             attachments: args.attachments as chatAttachments,
           }),
@@ -720,6 +725,7 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
 
 type chatBlocks = Parameters<typeof chatPostMessage>[3]["blocks"]
 type chatAttachments = Parameters<typeof chatPostMessage>[3]["attachments"]
+type chatChunks = Parameters<typeof chatStartStream>[3]["chunks"]
 
 function slackOk(payload: unknown): Response {
   // Slack always returns { ok: true, ...payload } at the top level — mix them.
@@ -777,7 +783,7 @@ async function readArgs(req: Request): Promise<Record<string, unknown>> {
  * serializes them that way by default. Parse them eagerly so downstream
  * `Array.isArray` checks work the same on JSON vs form callers.
  */
-const JSON_FORM_FIELDS = new Set(["blocks", "attachments", "files", "metadata", "authorizations", "options"])
+const JSON_FORM_FIELDS = new Set(["blocks", "attachments", "files", "metadata", "authorizations", "options", "chunks"])
 
 function coerceFormField(key: string, value: string): unknown {
   if (!JSON_FORM_FIELDS.has(key)) return value

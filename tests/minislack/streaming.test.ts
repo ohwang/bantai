@@ -246,3 +246,122 @@ describe("chat.stopStream", () => {
     expect(msg.blocks).toEqual(blocks as never)
   })
 })
+
+// Bolt's @slack/web-api ChatStreamer never calls startStream/appendStream with
+// `markdown_text`; it always emits `chunks: [{ type: "markdown_text", text }]`.
+// These tests wire that exact shape end-to-end so main's native-stream tier-1
+// path works against minislack instead of falling through to the draft+update
+// fallback.
+describe("chunks-format (Bolt ChatStreamer shape)", () => {
+  test("startStream seeds the placeholder from a markdown_text chunk", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "bolt-start", creator: alice.user.id })
+    const res = await call(alice.token, "chat.startStream", {
+      channel: ch.id,
+      chunks: [{ type: "markdown_text", text: "hello " }],
+    })
+    expect(res.ok).toBe(true)
+    const msg = handle.workspace.channels.get(ch.id)!.messages.get(res.ts)!
+    expect(msg.streaming).toBe(true)
+    expect(msg.text).toBe("hello ")
+  })
+
+  test("appendStream accumulates across multiple chunks payloads", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "bolt-append", creator: alice.user.id })
+    const start = await call(alice.token, "chat.startStream", {
+      channel: ch.id,
+      chunks: [{ type: "markdown_text", text: "Hello" }],
+    })
+    await call(alice.token, "chat.appendStream", {
+      channel: ch.id,
+      ts: start.ts,
+      chunks: [{ type: "markdown_text", text: ", " }],
+    })
+    await call(alice.token, "chat.appendStream", {
+      channel: ch.id,
+      ts: start.ts,
+      chunks: [
+        { type: "markdown_text", text: "world" },
+        { type: "markdown_text", text: "!" },
+      ],
+    })
+    const msg = handle.workspace.channels.get(ch.id)!.messages.get(start.ts)!
+    expect(msg.text).toBe("Hello, world!")
+    expect(msg.streaming).toBe(true)
+  })
+
+  test("stopStream finalises from chunks when no text is supplied", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "bolt-stop", creator: alice.user.id })
+    const start = await call(alice.token, "chat.startStream", {
+      channel: ch.id,
+      chunks: [{ type: "markdown_text", text: "draft" }],
+    })
+    const res = await call(alice.token, "chat.stopStream", {
+      channel: ch.id,
+      ts: start.ts,
+      chunks: [{ type: "markdown_text", text: "final answer" }],
+    })
+    expect(res.ok).toBe(true)
+    const msg = handle.workspace.channels.get(ch.id)!.messages.get(start.ts)!
+    expect(msg.streaming).toBe(false)
+    expect(msg.text).toBe("final answer")
+  })
+
+  test("explicit text overrides chunks on stopStream", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "bolt-override", creator: alice.user.id })
+    const start = await call(alice.token, "chat.startStream", { channel: ch.id })
+    await call(alice.token, "chat.appendStream", {
+      channel: ch.id,
+      ts: start.ts,
+      chunks: [{ type: "markdown_text", text: "accumulated" }],
+    })
+    const res = await call(alice.token, "chat.stopStream", {
+      channel: ch.id,
+      ts: start.ts,
+      text: "canonical",
+      chunks: [{ type: "markdown_text", text: "ignored" }],
+    })
+    expect(res.ok).toBe(true)
+    const msg = handle.workspace.channels.get(ch.id)!.messages.get(start.ts)!
+    expect(msg.text).toBe("canonical")
+  })
+
+  test("plan_update and task_update chunks are ignored without breaking", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "bolt-mixed", creator: alice.user.id })
+    const start = await call(alice.token, "chat.startStream", {
+      channel: ch.id,
+      chunks: [
+        { type: "markdown_text", text: "body " },
+        { type: "plan_update", plan: { id: "p1", title: "x", tasks: [] } },
+        { type: "markdown_text", text: "continues" },
+        { type: "task_update", task: { id: "t1", title: "y", status: "in_progress" } },
+      ],
+    })
+    expect(start.ok).toBe(true)
+    const msg = handle.workspace.channels.get(ch.id)!.messages.get(start.ts)!
+    expect(msg.text).toBe("body continues")
+  })
+
+  test("appendStream with empty chunks array errors cleanly", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "bolt-empty", creator: alice.user.id })
+    const start = await call(alice.token, "chat.startStream", { channel: ch.id })
+    const res = await call(alice.token, "chat.appendStream", {
+      channel: ch.id,
+      ts: start.ts,
+      chunks: [],
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe("invalid_arguments")
+  })
+})

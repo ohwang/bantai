@@ -286,6 +286,12 @@ export interface StartStreamOpts {
   recipient_team_id?: string
   recipient_user_id?: string
   now?: () => number
+  /**
+   * Initial body seeded into the placeholder. Matches Slack's behaviour
+   * when `chat.startStream` is called with a non-empty `markdown_text`
+   * or `chunks` payload — the stream starts mid-response, not empty.
+   */
+  initialText?: string
 }
 
 export interface StartStreamResult {
@@ -329,7 +335,7 @@ export function startStream(ws: Workspace, opts: StartStreamOpts): StartStreamRe
     ts,
     channel: ch.id,
     user: opts.userId,
-    text: "",
+    text: opts.initialText ?? "",
     team: ws.team.id,
     streaming: true,
     ...(opts.bot_id ? { bot_id: opts.bot_id, subtype: "bot_message" } : {}),

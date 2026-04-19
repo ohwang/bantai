@@ -25,8 +25,9 @@ import type {
   MessageDeletedEvent,
 } from "../../types/events"
 import type { AuthContext } from "../auth"
-import type { KnownBlock, Block } from "@slack/types"
+import type { AnyChunk, KnownBlock, Block } from "@slack/types"
 import type { MessageAttachment } from "@slack/types"
+import { log } from "../../../utils/logger"
 
 export interface ChatPostMessageArgs {
   channel: string
@@ -300,6 +301,9 @@ export interface ChatStartStreamArgs {
   thread_ts?: string
   recipient_team_id?: string
   recipient_user_id?: string
+  /** Slack's Assistant API accepts EITHER markdown_text OR chunks. Optional. */
+  markdown_text?: string
+  chunks?: AnyChunk[]
 }
 
 export interface ChatStartStreamResponse {
@@ -321,6 +325,7 @@ export function chatStartStream(
   }
   const userId = ctx.userId
   if (!userId) throw new MinislackError("not_authed")
+  const initialText = extractStreamText(args)
   const { message: msg, threadParent } = startStream(ws, {
     channelId: ch.id,
     userId,
@@ -330,6 +335,7 @@ export function chatStartStream(
       : {}),
     ...(args.recipient_team_id ? { recipient_team_id: args.recipient_team_id } : {}),
     ...(args.recipient_user_id ? { recipient_user_id: args.recipient_user_id } : {}),
+    ...(initialText ? { initialText } : {}),
   })
   bus.publish(messageToMessageEvent(msg, ch))
   if (threadParent) {
@@ -341,7 +347,9 @@ export function chatStartStream(
 export interface ChatAppendStreamArgs {
   channel: string
   ts: string
-  markdown_text: string
+  /** Slack accepts EITHER markdown_text OR chunks. One must yield non-empty text. */
+  markdown_text?: string
+  chunks?: AnyChunk[]
 }
 
 export interface ChatAppendStreamResponse {
@@ -359,11 +367,18 @@ export function chatAppendStream(
   const ch = resolve(ws, args.channel)
   const userId = ctx.userId
   if (!userId) throw new MinislackError("not_authed")
+  const text = extractStreamText(args)
+  if (text.length === 0) {
+    throw new MinislackError(
+      "invalid_arguments",
+      "chat.appendStream requires non-empty markdown_text or chunks",
+    )
+  }
   const { message, previous } = appendStream(ws, {
     channelId: ch.id,
     ts: args.ts,
     userId,
-    markdown_text: args.markdown_text,
+    markdown_text: text,
   })
   bus.publish(buildMessageChanged(message, previous, ch))
   return { ok: true, channel: ch.id, ts: message.ts }
@@ -372,7 +387,10 @@ export function chatAppendStream(
 export interface ChatStopStreamArgs {
   channel: string
   ts: string
+  /** Overwrites the accumulator. Slack accepts text, markdown_text, or chunks. */
   text?: string
+  markdown_text?: string
+  chunks?: AnyChunk[]
   blocks?: (KnownBlock | Block)[]
   attachments?: MessageAttachment[]
 }
@@ -393,16 +411,68 @@ export function chatStopStream(
   const ch = resolve(ws, args.channel)
   const userId = ctx.userId
   if (!userId) throw new MinislackError("not_authed")
+  // Final text precedence: explicit `text` wins (it's what the existing
+  // server-method surface accepted); otherwise pull from markdown_text /
+  // chunks, which is what Bolt's ChatStreamer emits.
+  const finalText = args.text !== undefined ? args.text : extractStreamText(args)
   const { message, previous } = stopStream(ws, {
     channelId: ch.id,
     ts: args.ts,
     userId,
-    ...(args.text !== undefined ? { text: args.text } : {}),
+    ...(args.text !== undefined || finalText.length > 0 ? { text: finalText } : {}),
     ...(args.blocks !== undefined ? { blocks: args.blocks } : {}),
     ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
   })
   bus.publish(buildMessageChanged(message, previous, ch))
   return { ok: true, channel: ch.id, ts: message.ts, message }
+}
+
+/**
+ * Extract the text payload from Bolt-shaped streaming args. Slack's
+ * Assistant API accepts either a single `markdown_text` string or an
+ * array of typed `chunks`; the SDK's ChatStreamer always uses `chunks`.
+ *
+ * Only `markdown_text` chunks contribute to the visible body. Plan +
+ * task chunks carry UI chrome (plan title, task cards) that minislack
+ * doesn't render — we log the first instance per process and carry on
+ * so a caller can't silently "lose" intent.
+ */
+let planChunkWarned = false
+let taskChunkWarned = false
+function extractStreamText(args: {
+  markdown_text?: string
+  chunks?: AnyChunk[]
+}): string {
+  const parts: string[] = []
+  if (args.markdown_text) parts.push(args.markdown_text)
+  if (Array.isArray(args.chunks)) {
+    for (const raw of args.chunks) {
+      // Incoming JSON may carry chunk types we don't know about — cast to a
+      // broad shape so the `else` branch isn't narrowed to `never` by the
+      // AnyChunk discriminant check.
+      const chunk = raw as unknown as { type?: string; text?: string }
+      if (!chunk || typeof chunk !== "object" || typeof chunk.type !== "string") {
+        log.warn("chat stream chunks: skipping malformed entry")
+        continue
+      }
+      if (chunk.type === "markdown_text") {
+        parts.push(chunk.text ?? "")
+      } else if (chunk.type === "plan_update") {
+        if (!planChunkWarned) {
+          planChunkWarned = true
+          log.warn("chat stream chunks: plan_update not rendered by minislack (logged once per process)")
+        }
+      } else if (chunk.type === "task_update") {
+        if (!taskChunkWarned) {
+          taskChunkWarned = true
+          log.warn("chat stream chunks: task_update not rendered by minislack (logged once per process)")
+        }
+      } else {
+        log.warn(`chat stream chunks: unknown type "${chunk.type}" — ignoring`)
+      }
+    }
+  }
+  return parts.join("")
 }
 
 // ---------------------------------------------------------------------------

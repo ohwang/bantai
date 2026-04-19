@@ -1,153 +1,214 @@
 # bantai
 
-Open-source terminal UI for agentic coding backends. Decoupled from any single AI provider — works with Claude Code, Codex, ACP, and more.
+Open-source **multi-frontend** UI for agentic coding backends. Decoupled from any single AI provider (Claude Code, Codex, ACP, …) *and* from any single surface — today the same agent runs in a local TUI and in a Slack workspace, driven by the same protocol and event stream.
 
 ## Quick Start
 
 ```bash
 bun install
-bun run dev          # Start the TUI
-bun test             # Run all tests
+
+# TUI
+bun run dev                       # default backend (claude)
+bun run dev:mock                  # mock backend
+bun test                          # run all tests
+
+# Slack
+bun run ./src/index.ts slack init-manifest > slack-manifest.yaml   # create app
+bun run ./src/index.ts slack doctor                                # verify config
+bun run ./src/index.ts slack                                       # start server
+
+# Dev-only fake Slack (integration tests + local Slack dev)
+bun run ./src/index.ts minislack --fixture basic
 ```
+
+See `docs/slack-setup.md` for the real-workspace walkthrough and `docs/minislack.md` for the fake Slack server.
 
 ## Build Requirements
 
-- `bunfig.toml` must include `preload = ["@opentui/solid/preload"]` (Babel plugin for SolidJS JSX)
-- Run with `--conditions=browser` flag (e.g., `bun run --conditions=browser ./src/index.ts`)
-- Both are already configured in `bunfig.toml` and `package.json` scripts
+- Bun ≥ 1.3.11 (OpenTUI's Zig FFI bindings require Bun; no Node.js support).
+- `bunfig.toml` must include `preload = ["@opentui/solid/preload"]` (Babel plugin for SolidJS JSX).
+- Run with `--conditions=browser` (already set in every `package.json` script and in `bin/bantai` / `bin/bantai-slack`).
 
 ## Tech Stack
 
-- **Runtime:** Bun (required by OpenTUI's Zig FFI bindings, no Node.js support)
-- **Terminal rendering:** OpenTUI v0.1.90 (Zig native core, double-buffered, 60 FPS)
-- **UI framework:** SolidJS via `@opentui/solid` (NOT React)
-- **Language:** TypeScript (strict mode)
-- **Claude backend:** `@anthropic-ai/claude-agent-sdk` (track the latest released version)
+- **Runtime:** Bun.
+- **Language:** TypeScript (strict). `tsc --noEmit` must pass.
+- **TUI frontend:** OpenTUI ^0.1.100 (Zig native core, double-buffered) + SolidJS ^1.9 via `@opentui/solid` (NOT React).
+- **Slack frontend:** `@slack/bolt` ^4.7 (Socket Mode or HTTP/Events API) + `@slack/web-api` ^7.15.
+- **Backends:** `@anthropic-ai/claude-agent-sdk` (track latest), `@openai/codex-sdk`, ACP over JSON-RPC, and an in-process mock.
+- **Everything else:** `commander` (CLI), `zod` (config schemas), `fuzzysort` (file/session search), `jsonc-parser` (configs with comments).
 
 ## Architecture
 
-Three layers:
+Three layers, strictly ordered:
 
-1. **CLI Entry Point** (`src/index.ts`, `src/cli/`) — Flag parsing, subcommand dispatch, per-frontend bootstrap
-2. **Frontends** (`src/frontends/<name>/`) — `tui/` (SolidJS + OpenTUI, default) and `slack/` (server placeholder). Each frontend exposes a `launch<Name>(flags)` entry point and owns only its presentation concerns.
-3. **Agent Protocol Layer** (`src/protocol/`) — Unified `AgentBackend` interface + `AgentEvent` stream
+1. **CLI Entry Point** (`src/index.ts`, `src/cli/`) — Commander-based subcommand dispatch.
+   - `bantai [prompt]` → TUI (default backend)
+   - `bantai claude|codex|gemini [prompt]` → TUI with a specific backend
+   - `bantai run <message…>` → headless one-shot
+   - `bantai resume [id]` / `bantai continue` → session resume
+   - `bantai slack` / `bantai slack doctor` / `bantai slack init-manifest` → Slack server
+   - `bantai minislack` → local fake Slack
+2. **Frontends** (`src/frontends/<name>/`) — each owns its own presentation + transport and exposes a `launch<Name>(flags)` entry point. Today: `tui/` (interactive terminal, default) and `slack/` (bot/server). Nothing in the protocol or backend layer depends on a specific frontend.
+3. **Agent Protocol Layer** (`src/protocol/`) — unified `AgentBackend` interface, `AgentEvent` stream, `ConversationState`, and the `reduce(state, event) -> newState` reducer. Backends (`src/backends/{claude,codex,acp,mock}/`) implement this; frontends consume it.
 
-The protocol layer is the load-bearing abstraction. All backends implement `AgentBackend`, all frontends consume `AgentEvent` via `ConversationState` / `SessionHost`.
+The protocol layer is the load-bearing abstraction: **adding a frontend or backend means implementing the relevant side of this contract — never forking reducer or event semantics.**
 
 ## Key Conventions
 
-- **SolidJS, not React.** Use `createSignal`, `createStore`, `createMemo`, `batch()`. No `useEffect`, `useState`, `useRef`.
-- **No Effect.js.** Plain TypeScript. Factory functions for service creation.
-- **Context-based DI.** One `AppContext` created at startup via factories. `<AppContext.Provider>` wraps root. Components use `useApp()`.
-- **Event-sourced state.** `ConversationState` derived via reducer: `reduce(state, event) -> newState`. The TUI renders from state, never raw events.
-- **16ms event batching.** Wrap signal updates in Solid's `batch()`. Same pattern as OpenCode.
-- **~500 line file max.** One component per file, one adapter per file.
+### Cross-cutting (apply everywhere)
+
+- **`tsc --noEmit` must pass.** Never commit code that adds new TypeScript errors.
 - **Types as documentation.** `src/protocol/types.ts` IS the spec.
-- **Test contracts, not implementations.** Adapter contract tests validate event ordering and lifecycle rules.
-- **Prefer framework primitives over custom logic.** Use built-in capabilities of OpenTUI, SolidJS, and the SDK before writing manual workarounds. Example: `stickyScroll={true}` + `stickyStart="bottom"` on `<scrollbox>` replaces 80+ lines of timer-based scroll nudging and setTimeout hacks. Custom logic for something the framework already handles is harder to maintain and more likely to have race conditions.
-- **Explicit over clever.** No metaprogramming, no deep inheritance, no magic.
-- **Cleanup must survive deletion.** When removing a variable/timer, grep for ALL references including `onCleanup` callbacks. SolidJS cleanup runs during `renderer.destroy()` — a dangling reference there prevents `process.exit()` and silently breaks exit.
-- **`tsc --noEmit` must pass.** Never commit code that adds new TypeScript errors. The type checker catches undefined variables, missing properties, and type mismatches at compile time.
-- **Never silently drop data from an external source.** Anywhere we ingest data whose shape we don't fully control — SDK events, session JSONL, MCP payloads, ACP notifications, user-provided config — every skip path MUST log, and every unrecognised shape MUST `log.warn`. A bare `break`, `continue`, `return []`, or untyped `if (!expected) break` is a bug. Concretely:
-  - **Event mappers** (`src/backends/*/event-mapper.ts`): every SDK/ACP message branch either maps to an `AgentEvent` or logs. Intentional suppressions (e.g. per-delta streaming items whose content arrives via `*_delta` events) use `log.debug`. Unknown event types, unknown subtypes, and "expected field missing" cases use `log.warn` — these are the signals that a provider's protocol has drifted.
-  - **Session-file parsers** (`src/backends/claude/session-reader.ts`, `src/session/cross-backend.ts`): the SDK types `MessageParam.content` as `string | Array<ContentBlockParam>`, and both forms appear in real JSONL. Handle both; when the shape is neither, `log.warn` with a snippet. Synthetic SDK-injected turns (compaction summaries, `<command-name>` slash markers, `<local-command-*>` wrappers, `isMeta: true`) are suppressed with `log.debug` that names the reason — not bare-drops. The "user messages vanish on resume" regression was exactly this bug. When in doubt, normalise the shape (e.g. upgrade a string to `[{ type: "text", text }]`) before the main loop rather than branching mid-loop.
-  - **Defaulting to `any`/`unknown`**: if a field is typed `unknown` or `any` and you reach for `as any`, you owe either a runtime check (with a log on the unexpected branch) or a tight narrowed type. "It's probably fine" is how this class of bug ships.
-- **Runtime-mutable values must be SolidJS signals or stores.** Plain objects and module-level constants are for truly immutable data only (string enums, static config). If a value can change via a slash command, CLI flag, or user action, it must be reactive. Theme colors (`colors` in `tokens.ts`) are a SolidJS store — never snapshot them into a `const`: read inline in JSX or via `() =>` accessor.
-- **Cross-cutting keyboard shortcuts run FIRST in the root handler, not in overlays.** Any `useKeyboard` intercept that does blanket `event.preventDefault()` on non-whitelist keys (the usual "overlay is open — eat everything" pattern) will silently swallow global shortcuts like Cmd+C copy. Centralise cross-cutting shortcuts as small helpers at the top of the root `useKeyboard` in `src/frontends/tui/app.tsx` (e.g. `tryHandleCopyShortcut`) and invoke them before any overlay branch. Every view inherits them for free — no per-view wiring, no per-view regressions when a new overlay is added.
+- **Test contracts, not implementations.** Adapter contract tests validate event ordering and lifecycle rules (see §Testing).
+- **~500 line file max.** One component per file, one adapter per file; split into submodules when a file grows past that.
+- **No Effect.js, no metaprogramming, no deep inheritance.** Plain TypeScript; factory functions for service construction; explicit over clever.
+- **Never silently drop data from an external source.** SDK events, session JSONL, MCP payloads, ACP notifications, Slack events, user config — every skip path MUST log, every unrecognised shape MUST `log.warn`. A bare `break` / `continue` / `return []` / `if (!expected) break` on external data is a bug. Concretely:
+  - **Event mappers** (`src/backends/*/event-mapper.ts`): every SDK/ACP message branch either maps to an `AgentEvent` or logs. Intentional suppressions (per-delta items whose content arrives via `*_delta` events) use `log.debug`. Unknown types/subtypes and "expected field missing" cases use `log.warn` — these are the signals that a provider's protocol drifted.
+  - **Session-file parsers** (`src/backends/claude/session-reader.ts`, `src/session/cross-backend.ts`): the SDK types `MessageParam.content` as `string | Array<ContentBlockParam>`, and both forms appear in real JSONL. Handle both; when neither, `log.warn` with a snippet. Synthetic SDK-injected turns (compaction summaries, `<command-name>` slash markers, `<local-command-*>` wrappers, `isMeta: true`) are suppressed with `log.debug` that names the reason — not bare-drops. The "user messages vanish on resume" regression was exactly this bug. When in doubt, normalise the shape (e.g. upgrade a string to `[{ type: "text", text }]`) before the main loop rather than branching mid-loop.
+  - **`as any` / `unknown` escape hatches**: if you reach for `as any`, you owe either a runtime check (with a log on the unexpected branch) or a tight narrowed type. "It's probably fine" is how this class of bug ships.
+- **Prefer framework primitives over custom logic.** Use OpenTUI / SolidJS / SDK / Bolt built-ins before writing manual workarounds. E.g. `stickyScroll={true}` + `stickyStart="bottom"` on `<scrollbox>` replaces 80+ lines of timer-based nudging; Bolt's built-in ack+respond pattern replaces hand-rolled event ordering.
+- **Cleanup must survive deletion.** When removing a variable/timer, grep for ALL references including `onCleanup`, Bolt `app.stop()`, and server shutdown hooks. A dangling reference there prevents `process.exit()` and silently breaks exit.
 
-## OpenTUI Prop Rules (CRITICAL)
+### TUI frontend (SolidJS + OpenTUI)
 
-These rules prevent silent rendering failures and Zig FFI crashes:
+- **SolidJS, not React.** Use `createSignal`, `createStore`, `createMemo`, `batch()`. No `useEffect`, `useState`, `useRef`.
+- **Context-based DI.** One `AppContext` created at startup via factories. `<AppContext.Provider>` wraps root. Components use `useApp()`.
+- **Event-sourced state.** The TUI renders from `ConversationState`, never raw events.
+- **16ms event batching.** Wrap signal updates from high-frequency sources in Solid's `batch()`.
+- **Runtime-mutable values must be SolidJS signals or stores.** Plain objects / module-level constants are for truly immutable data only (string enums, static config). Theme colors (`colors` in `tokens.ts`) are a store — never snapshot them into a `const`; read inline in JSX or via `() =>` accessor.
+- **Cross-cutting keyboard shortcuts run FIRST in the root handler, not in overlays.** Any `useKeyboard` intercept that does blanket `event.preventDefault()` on non-whitelist keys (the usual "overlay is open — eat everything" pattern) silently swallows global shortcuts like Cmd+C copy. Centralise them as small helpers at the top of the root `useKeyboard` in `src/frontends/tui/app.tsx` (e.g. `tryHandleCopyShortcut`) and invoke them before any overlay branch.
+
+### Slack frontend (`@slack/bolt` + Web API)
+
+- **The pipeline is fixed; add to it, don't bypass it.** Round trip is: `transport/events` → `inbox/{dedup,gate,debouncer,turn-builder}` → `routing.ts` → `router/{resolver,registry}` → `SessionHost.send` → backend `AgentEvent` stream → `view/event-renderer` → Slack Web API. New features slot into one of these stages; don't post to Slack from anywhere else.
+- **All tier-2 outbox paths must run outbound text through `view/format.ts`'s markdown→mrkdwn conversion.** Slack's mrkdwn dialect is not standard Markdown (single-`*` bold, no `**`, no fenced-inline code, bracket-style links). Skipping the conversion sends visually broken messages — and it's easy to skip when adding a new send site, because plain strings look fine in tests.
+- **Coalesce rapid Slack API calls.** Reactions, status updates, and debounced input all have existing coalescers (`view/reactions.ts`, `view/thread-status.ts`, `inbox/debouncer.ts`) — reuse them. A naive "one API call per event" loop will hit rate limits and cost real money.
+- **Never call `chat.postMessage` directly from view code.** Go through `view/outbox.ts` or `view/send-adapter.ts` so message tracking, edit-vs-append, and mrkdwn conversion stay consistent.
+- **Slack config (`slack.json`) is validated by zod (`config/schema.ts`)**; never read fields off the raw JSON. Run `bantai slack doctor` before deploying config changes — it catches missing scopes, bad channels, and broken workspace auth up front.
+- **Persistence is real.** `store/sessions.ts` writes an on-disk registry so the bot survives restarts without losing in-flight threads. Tests cover this (`tests/frontends/slack/integration/persistence.test.ts`) — don't regress it.
+
+## TUI — OpenTUI Prop Rules (CRITICAL)
+
+These prevent silent rendering failures and Zig FFI crashes. Run `bun run lint:opentui` to check for violations.
 
 1. **`fg=` not `color=`** — `<text color="red">` is silently ignored. Use `<text fg="red">`.
 2. **`attributes=` not `bold`/`dimmed`/`italic`** — Boolean styling props are ignored. Use `attributes={TextAttributes.BOLD}` from `@opentui/core`. Combine with `|`: `attributes={TextAttributes.DIM | TextAttributes.ITALIC}`.
-3. **Hex strings not numbers for colors** — `fg={174}` crashes the Zig FFI. Use `fg="#d78787"` instead. Reference: ANSI 174 = #d78787, 244 = #808080, 246 = #a8a8a8, 231 = #ffffff, 237 = #3a3a3a.
-4. **Never `await render()`** — `render()` resolves immediately. Awaiting causes `main()` to return and the process to exit. Call without await, add `.catch()`.
+3. **Hex strings, not numbers, for colors** — `fg={174}` crashes the Zig FFI. Use `fg="#d78787"`.
+4. **Never `await render()`** — it resolves immediately; awaiting causes `main()` to return and the process to exit. Call without `await`; add `.catch()`.
 5. **`dims()?.width` not `dims()?.columns`** — `useTerminalDimensions()` returns `{ width, height }`.
-6. **No `borderTop`/`borderBottom` on box with textarea** — Causes Zig segfault. Use a `<text>` dash line component instead.
-7. **`scrollBy()` not `scrollToEnd()`** — `ScrollBoxRenderable` has `scrollBy()` and `scrollTo()`, not `scrollToEnd()`.
-8. **Keyed `<Show>` + `&&`: object must be last** — `<Show when={obj() && bool}>{(v) => v().prop}</Show>` crashes because `&&` returns the boolean `true`, not the object. Always put the object-producing expression last: `<Show when={bool && obj()}>`.
-9. **`backgroundColor=` not `bg=` on box** — `<box bg="...">` is silently ignored. Use `<box backgroundColor="...">`. The `bg` prop only works on `<text>` elements.
-
-10. **Render callbacks must be pure functions of their item** — Never read the list source, store, or unrelated signals inside a `<For>`/`<Index>` callback. OpenTUI's Zig engine sorts children by cached position — stale positions from re-created elements cause visual reordering (unlike DOM, which is idempotent). **Pattern:** derive all view state in a `createMemo` chain *before* it reaches the list (`filtered → grouped → flat → render-ready`). For selection highlighting, use a per-item `createMemo` inside the callback that reads a *scalar* signal (e.g. `selected()`), not the list itself. Use `<For>` for stable object lists, `<Index>` for lists that recompute on every update (search/filter).
-
-Run `bun run lint:opentui` to check for violations.
+6. **No `borderTop`/`borderBottom` on a box containing a textarea** — segfaults. Use a `<text>` dash line instead.
+7. **`scrollBy()` / `scrollTo()`, not `scrollToEnd()`** — the latter doesn't exist on `ScrollBoxRenderable`.
+8. **Keyed `<Show>` + `&&`: object must be last** — `<Show when={obj() && bool}>{(v) => v().prop}</Show>` crashes because `&&` returns the boolean. Always: `<Show when={bool && obj()}>`.
+9. **`backgroundColor=` not `bg=` on box** — `<box bg="…">` is silently ignored. `bg` only works on `<text>`.
+10. **Render callbacks must be pure functions of their item** — Never read the list source, store, or unrelated signals inside a `<For>`/`<Index>` callback. OpenTUI's Zig engine sorts children by cached position — stale positions from re-created elements cause visual reordering. Derive all view state in a `createMemo` chain *before* the list (`filtered → grouped → flat → render-ready`). For selection highlighting, read a *scalar* signal (e.g. `selected()`) via a per-item `createMemo` inside the callback. Use `<For>` for stable object lists, `<Index>` for lists that recompute on every update.
 
 ## Project Structure
 
 ```
 src/
-  index.ts                # CLI entry point (flag parsing -> app bootstrap)
+  index.ts                  # CLI entry (registers SIGINT guard, dispatches)
   cli/
-    flags.ts              # CLI flag parsing (46 flags)
+    program.ts              # Commander program + all subcommands
+    options.ts              # Flag definitions (global + TUI + Slack)
+    commands/run.ts         # Headless `bantai run`
   protocol/
-    types.ts              # AgentEvent, AgentBackend, ConversationState, BackendCapabilities
-    reducer.ts            # Event-sourced state: reduce(state, event) -> newState
-    registry.ts           # Backend registry + selection
+    types.ts                # AgentEvent, AgentBackend, ConversationState, …
+    reducer.ts              # reduce(state, event) -> newState
+    registry.ts             # Backend registry + selection
+    lifecycle.ts            # Session lifecycle helpers
+    models.ts               # Model metadata
   backends/
-    claude/
-      adapter.ts          # Claude adapter (query API, default)
+    claude/                 # Claude Agent SDK (default)
+    codex/                  # OpenAI Codex SDK
+    acp/                    # Agent Client Protocol over JSON-RPC
+    mock/                   # Deterministic in-process backend for tests
+    shared/                 # base-adapter + cross-backend glue
+  session/
+    cross-backend.ts        # Session file parsing + resume across backends
+    host.ts                 # SessionHost — the unit consumed by frontends
   frontends/
-    tui/                  # Default interactive TUI frontend
-      app.tsx             # Root SolidJS component
-      launcher.ts         # launchTui(flags) — called by CLI
-      components/         # UI components (one per file)
-      context/            # SolidJS reactive state (follows OpenCode pattern)
-      theme.ts            # Colors, styles
-    slack/                # Slack server frontend (placeholder)
-      launcher.ts         # launchSlack(flags) — `bantai slack` entry
-  commands/
-    registry.ts           # Slash command dispatch
-    builtin/              # /help, /clear, /compact, /model
-  utils/
-    event-batcher.ts      # 16ms batching with Solid batch()
-    logger.ts             # File-based session logging (singleton `log`)
+    tui/
+      launcher.ts           # launchTui(flags)
+      app.tsx               # Root SolidJS component
+      components/           # One UI component per file (conversation, input,
+                            # permission-dialog, session-picker, …)
+      panels/               # Help / hotkeys / about / A-B overlay panels
+      context/              # SolidJS reactive stores (sessions, messages, sync, …)
+      theme/ hooks/ utils/
+    slack/
+      launcher.ts           # launchSlack(flags) — boots Bolt, wires pipeline
+      routing.ts            # Per-event dispatch (split out of launcher)
+      transport/            # Bolt app + raw events + interaction sanitizer
+      inbox/                # dedup, gate, debouncer, turn-builder, attachments
+      router/               # resolver (channel → project), registry (sessions),
+                            # audit (config sanity)
+      view/                 # event-renderer, outbox, format (mrkdwn),
+                            # reactions, approvals, banner, uploads, …
+      approvals/            # Interactive permission dialog coordinator
+      elicitations/         # Interactive input coordinator
+      store/sessions.ts     # Persistent session registry (crash recovery)
+      config/{loader,schema}.ts
+      commands/             # Slash commands (/new, /reset, …)
+      mcp/                  # Slack-specific MCP servers (e.g. file upload)
+      metrics/              # Prometheus-style counters (for HTTP mode)
+      doctor.ts             # `bantai slack doctor` diagnostic
+      manifest.ts           # `bantai slack init-manifest` generator
+  minislack/                # Dev/test-only fake Slack server + web UI
+  commands/                 # Slash-command registry + built-ins
+  mcp/                      # Built-in MCP servers (state-bridge, tools)
+  subagents/                # Sub-agent orchestration (A/B, judge, combine)
+  config/settings.ts        # User settings
+  utils/logger.ts           # File-based session logger (singleton `log`)
 tests/
-  protocol/               # Contract tests + reducer tests (written FIRST)
-  backends/               # Adapter tests
-  tui/                    # Component tests
+  protocol/                 # Contract + reducer tests (written FIRST)
+  backends/                 # Adapter tests per backend
+  tui/                      # Component tests
+  frontends/slack/          # Slack pipeline + integration tests (incl.
+                            # persistence, multi-channel, approvals, …)
+  minislack/                # minislack server tests
+  e2e/                      # End-to-end smoke tests
 ```
 
 ## State Machine
 
-7 states: `INITIALIZING` -> `IDLE` -> `RUNNING` -> `WAITING_FOR_PERM` / `WAITING_FOR_ELIC` -> `INTERRUPTING` -> `ERROR` / `SHUTTING_DOWN`
+7 states: `INITIALIZING` → `IDLE` → `RUNNING` → `WAITING_FOR_PERM` / `WAITING_FOR_ELIC` → `INTERRUPTING` → `ERROR` / `SHUTTING_DOWN`.
 
-Key rules:
-- `sendMessage()` queues everywhere, never blocks
-- `interrupt()` in `WAITING_FOR_PERM` must auto-deny first (or SDK hangs)
-- `interrupt()` in `WAITING_FOR_ELIC` must auto-respond first
-- Error transitions must `close()` the active generator (prevent zombie processes)
+Rules:
+
+- `sendMessage()` queues everywhere, never blocks.
+- `interrupt()` in `WAITING_FOR_PERM` must auto-deny first (or the SDK hangs).
+- `interrupt()` in `WAITING_FOR_ELIC` must auto-respond first.
+- Error transitions must `close()` the active generator (prevents zombie processes).
 
 ## Testing
 
 ```bash
 bun test                          # All tests
 bun test tests/protocol/          # Protocol + contract tests
-bun test tests/backends/          # Adapter tests
-bun test tests/tui/               # Component tests
+bun test tests/backends/          # Adapter tests per backend
+bun test tests/tui/               # TUI component tests
+bun test tests/frontends/slack/   # Slack pipeline + integration tests
+bun test tests/minislack/         # Fake Slack server
 bun test --watch                  # Watch mode
 ```
 
-Contract tests validate:
-- `session_init` must be first event
-- `turn_start` must precede `text_delta`
-- `turn_complete` must follow every turn
-- `permission_request` must block until approve/deny
-- No events after `close()`
+**Contract tests** (`tests/protocol/contract.test.ts`) validate:
+
+- `session_init` must be the first event.
+- `turn_start` must precede `text_delta`.
+- `turn_complete` must follow every turn.
+- `permission_request` must block until approve/deny.
+- No events after `close()`.
+
+**Slack integration tests** run the real launcher against an in-process minislack, so any regression in the end-to-end pipeline (dedup → routing → outbox → mrkdwn) is caught there.
 
 ## Logging
 
-Session logs live at `~/.bantai/logs/<session-id>.log`. Each app run gets a unique log file. The session ID and log path are printed to stdout on exit. Use `--debug` for verbose (event-level) logging; default level is `info`. Import the singleton via `import { log } from "./utils/logger"`.
+Session logs live at `~/.bantai/logs/<session-id>.log`. Each run gets a unique file; the session ID and log path are printed on exit. Use `--debug` for event-level logging; default is `info`. Import the singleton via `import { log } from "./utils/logger"`.
 
-## OpenTUI JSX Elements
+## OpenTUI JSX Elements (TUI only)
 
-Available from `@opentui/solid`:
-- `<box>` — Flexbox container (flexDirection, alignItems, justifyContent, padding, etc.)
-- `<text>` — Text content
-- `<scrollbox>` — Scrollable container (stickyScroll, stickyStart)
-- `<textarea>` — Text input with undo/redo, selection, key bindings
-- `<markdown>` — Markdown rendering
-- `<code>` — Syntax-highlighted code (tree-sitter)
-- `<diff>` — Unified diff rendering
+From `@opentui/solid`: `<box>` (flexbox), `<text>`, `<scrollbox>` (`stickyScroll`, `stickyStart`), `<textarea>`, `<markdown>`, `<code>` (tree-sitter), `<diff>` (unified diff).
 
-Key APIs: `render()`, `useKeyboard()`, `useRenderer()`, `useTerminalDimensions()`
+Key APIs: `render()`, `useKeyboard()`, `useRenderer()`, `useTerminalDimensions()`.

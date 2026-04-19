@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Launch bantai as a Slack frontend against the real workspace configured
+# in ./.bantai/slack.real.json. Extra args (e.g. --debug) are forwarded.
+
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  LINK_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$LINK_DIR/$SOURCE"
+done
+DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+
+exec bun run --conditions=browser "$DIR/src/index.ts" slack \
+  --slack-config "$DIR/.bantai/slack.real.json" "$@"

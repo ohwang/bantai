@@ -28,6 +28,12 @@ import {
 import { auditSlackConfig } from "./router/audit"
 import { createDedupCache } from "./inbox/dedup"
 import { createThreadParticipationCache } from "./inbox/thread-participation"
+import {
+  appendNativeSlackStream,
+  startNativeSlackStream,
+  stopNativeSlackStream,
+} from "./view/native-stream"
+import type { NativeStreamCapability } from "./view/outbox"
 import { createUserCache, type UserCache } from "./view/user-cache"
 import { buildDefaultSendAdapter } from "./view/event-renderer"
 import { createApprovalCoordinator } from "./approvals/coordinator"
@@ -185,6 +191,27 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   })
   const dedup = createDedupCache()
   const threadParticipation = createThreadParticipationCache()
+  // Tier-1 native-stream factory. Handed to the routing layer so each
+  // renderer can opt in. Channels that keep `native_streaming: false`
+  // never touch this capability — the factory returning a no-op would
+  // have worked too, but the outbox already guards on opts.nativeStream
+  // being present, so the cleaner path is to only hand it in when the
+  // channel's project config enables it.
+  const nativeStream: NativeStreamCapability = {
+    async start({ channel, threadTs, initialText }) {
+      const session = await startNativeSlackStream({
+        app,
+        channel,
+        threadTs,
+        ...(initialText ? { text: initialText } : {}),
+        ...(auth.teamId ? { teamId: auth.teamId } : {}),
+      })
+      return {
+        append: (text) => appendNativeSlackStream(session, text),
+        stop: (finalText) => stopNativeSlackStream(session, finalText),
+      }
+    },
+  }
   const userCache = createUserCache(app)
   const defaultAdapter = buildDefaultSendAdapter(app, {
     onPostSucceeded: ({ channel, threadTs }) => {
@@ -289,6 +316,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     shuttingDown,
     slackUploadMcpFor,
     threadParticipation,
+    nativeStream,
   })
   registerEvents({
     app,

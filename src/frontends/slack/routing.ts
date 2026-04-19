@@ -22,6 +22,7 @@ import type { SessionEntry, SessionRegistry } from "./router/registry"
 import type { InboundSlackEvent } from "./transport/events"
 import type { createDedupCache } from "./inbox/dedup"
 import type { ThreadParticipationCache } from "./inbox/thread-participation"
+import type { NativeStreamCapability } from "./view/outbox"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
 import {
@@ -59,6 +60,13 @@ export interface RoutingCtx {
    * `onPostSucceeded` hook; read here before calling `decideGate`.
    */
   threadParticipation: ThreadParticipationCache
+  /**
+   * Optional tier-1 native-stream factory. The launcher builds it
+   * from `app.client.chatStream` + resolved teamId; channels with
+   * `native_streaming: true` in their project config pass it to the
+   * renderer, others leave it undefined so the outbox stays on tier-2.
+   */
+  nativeStream?: NativeStreamCapability
   userCache: UserCache
   botUserId: string
   workspaceId: string
@@ -398,6 +406,9 @@ async function dispatchMessageBatch(
       verbosity: project.verbosity,
       showCost: project.showCost,
       interactiveReplies: project.interactiveReplies,
+      ...(project.nativeStreaming && ctx.nativeStream
+        ? { nativeStream: ctx.nativeStream }
+        : {}),
       turnTimeoutS: project.turnTimeoutS,
       onTurnTimeout: () => {
         entry.host.backend.interrupt()

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { createOutboundStream, type SendAdapter } from "../../../../src/frontends/slack/view/outbox"
+import {
+  createOutboundStream,
+  type NativeStreamCapability,
+  type NativeStreamHandle,
+  type SendAdapter,
+} from "../../../../src/frontends/slack/view/outbox"
 
 interface Call {
   kind: "post" | "update"
@@ -155,6 +160,123 @@ describe("createOutboundStream — tier-3 fallback", () => {
     // After fallback, stop() reposts the full text as a new message.
     const postTexts = calls.filter((c) => c.kind === "post").map((c) => c.text)
     expect(postTexts.some((t) => t === "ABC")).toBe(true)
+  })
+})
+
+describe("createOutboundStream — tier-1 native streaming", () => {
+  interface NativeState {
+    appends: string[]
+    stops: Array<string | undefined>
+    startCalls: number
+  }
+
+  function makeNative(opts: {
+    failStart?: boolean
+    failAppendAt?: number
+    failStop?: boolean
+  } = {}): {
+    capability: NativeStreamCapability
+    state: NativeState
+  } {
+    const state: NativeState = {
+      appends: [],
+      stops: [],
+      startCalls: 0,
+    }
+    const capability: NativeStreamCapability = {
+      async start() {
+        state.startCalls++
+        if (opts.failStart) throw new Error("native start refused")
+        let appendCount = 0
+        const handle: NativeStreamHandle = {
+          async append(text) {
+            appendCount++
+            if (
+              opts.failAppendAt !== undefined &&
+              appendCount === opts.failAppendAt
+            ) {
+              throw new Error(`native append failed at ${appendCount}`)
+            }
+            state.appends.push(text)
+          },
+          async stop(finalText) {
+            if (opts.failStop) throw new Error("native stop failed")
+            state.stops.push(finalText)
+          },
+        }
+        return handle
+      },
+    }
+    return { capability, state }
+  }
+
+  it("prefers native streaming when the capability is provided", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const native = makeNative()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      nativeStream: native.capability,
+    })
+    stream.append("hello ")
+    await drain()
+    stream.append("world")
+    await drain()
+    await stream.stop()
+    expect(native.state.startCalls).toBe(1)
+    // First append kicks off the stream with the initial text; the second
+    // append forwards only the delta.
+    expect(native.state.appends.join("")).toContain("world")
+    // Adapter (tier-2) should never be called.
+    expect(calls).toHaveLength(0)
+  })
+
+  it("falls back to tier-2 when native start throws", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const native = makeNative({ failStart: true })
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      nativeStream: native.capability,
+    })
+    stream.append("draft text")
+    await drain()
+    await stream.stop("final text")
+    // Tier-2 took over — we expect at least one postMessage.
+    expect(calls.some((c) => c.kind === "post")).toBe(true)
+    // And native.stop() must not have been called since start never
+    // succeeded.
+    expect(native.state.stops).toHaveLength(0)
+  })
+
+  it("follow-up Block Kit payload posts as a separate message when native stream succeeds", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const native = makeNative()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      nativeStream: native.capability,
+    })
+    stream.append("body")
+    await drain()
+    await stream.stop("body", [
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Go" },
+            action_id: "x",
+          },
+        ],
+      },
+    ])
+    // Native stream stopped, and blocks rode on a follow-up post.
+    expect(native.state.stops).toHaveLength(1)
+    expect(calls.filter((c) => c.kind === "post")).toHaveLength(1)
   })
 })
 

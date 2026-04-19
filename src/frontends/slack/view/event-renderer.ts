@@ -29,6 +29,7 @@ import type { ElicitationHook } from "../elicitations/coordinator"
 import type { VerbosityLevel } from "../config/schema"
 import {
   createOutboundStream,
+  type NativeStreamCapability,
   type OutboundStream,
   type SendAdapter,
 } from "./outbox"
@@ -180,6 +181,13 @@ export interface CreateRendererOpts {
    * turn carrying the clicked value.
    */
   interactiveReplies?: boolean
+  /**
+   * When provided, the outbox tries this tier-1 native-streaming path
+   * on each new turn before falling back to tier-2 draft+update. The
+   * launcher builds this from `app.client.chatStream` + resolved
+   * teamId; tests leave it undefined so the outbox stays on tier-2.
+   */
+  nativeStream?: NativeStreamCapability
 }
 
 export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
@@ -320,6 +328,7 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
         adapter: sendAdapter,
         channel: binding.channel,
         threadTs: binding.threadTs,
+        ...(opts.nativeStream ? { nativeStream: opts.nativeStream } : {}),
       })
     }
     return stream

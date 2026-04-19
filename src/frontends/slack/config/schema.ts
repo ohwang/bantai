@@ -113,6 +113,18 @@ export const DefaultsSchema = z
      */
     debounce_ms: z.number().int().nonnegative().default(0),
     /**
+     * Tier-1 streaming via `chat.startStream` / `appendStream` /
+     * `stopStream`. Slack's Assistant API surface — streams tokens
+     * word-by-word into a single message, noticeably better UX than
+     * our tier-2 draft+update loop. Only exposed on paid workspaces
+     * with the AI-apps capability; minislack does NOT implement these
+     * methods so the outbox auto-falls-back in tests.
+     *
+     * Off by default; requires live Slack workspace validation before
+     * enabling in defaults (slack-int-gap.md §4).
+     */
+    native_streaming: z.boolean().default(false),
+    /**
      * Off by default per plan §6. When true, a cost footer is posted after
      * every turn_complete; verbosity ≥ normal renders a one-liner, verbose
      * renders per-category token breakdowns.
@@ -198,6 +210,7 @@ export const ChannelOverrideSchema = z
     thread_require_explicit_mention: z.boolean().optional(),
     interactive_replies: z.boolean().optional(),
     debounce_ms: z.number().int().nonnegative().optional(),
+    native_streaming: z.boolean().optional(),
     permission_mode: z.string().optional(),
     turn_timeout_s: z.number().int().nonnegative().optional(),
     max_budget_usd: z.number().nonnegative().optional(),

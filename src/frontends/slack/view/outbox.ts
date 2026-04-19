@@ -58,6 +58,34 @@ export interface OutboxOpts {
   maxChunkLen?: number
   /** Test hook: override Date.now for deterministic throttling. */
   now?: () => number
+  /**
+   * Optional tier-1 native Slack streaming. When provided, the first
+   * `append()` tries `native.start()`; subsequent appends go through
+   * `native.append()` and `stop()` finalises with `native.stop()`.
+   *
+   * If `start()` throws (workspace doesn't have the AI-apps capability,
+   * thread_ts rejected, transport error), the outbox marks this stream
+   * "native-unavailable" for its lifetime and falls back to tier-2.
+   */
+  nativeStream?: NativeStreamCapability
+}
+
+export interface NativeStreamCapability {
+  /**
+   * Begin a native stream on the bound (channel, threadTs). Called on
+   * the first append. Must throw on failure so the outbox can fall
+   * back; no silent returns.
+   */
+  start(args: {
+    channel: string
+    threadTs: string
+    initialText?: string
+  }): Promise<NativeStreamHandle>
+}
+
+export interface NativeStreamHandle {
+  append(text: string): Promise<void>
+  stop(finalText?: string): Promise<void>
 }
 
 export interface OutboundStream {
@@ -87,6 +115,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
   const now = opts.now ?? Date.now
 
   let accumulator = ""
+  let accumulatorSentToNative = 0
   let draftTs: string | undefined
   let draftStarted = false
   let lastFlushAt = 0
@@ -94,9 +123,53 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
   let stopped = false
   let fellBack = false
   let inflightUpdate: Promise<void> = Promise.resolve()
+  // Tier-1 native stream state. `nativeAttempted` guards against
+  // repeated start() calls after a fallback; `nativeSession` is the
+  // live handle when start() succeeded. When nativeSession is set we
+  // skip the draft-post/chat.update path entirely.
+  let nativeAttempted = false
+  let nativeSession: NativeStreamHandle | undefined
   const markFallback = (err: unknown) => {
     if (!fellBack) log.warn(`slack outbox: falling back to tier-3 — ${String(err)}`)
     fellBack = true
+  }
+
+  async function startNativeIfNeeded(): Promise<boolean> {
+    if (!opts.nativeStream) return false
+    if (nativeAttempted) return nativeSession !== undefined
+    nativeAttempted = true
+    try {
+      nativeSession = await opts.nativeStream.start({
+        channel: opts.channel,
+        threadTs: opts.threadTs,
+        initialText: accumulator || undefined,
+      })
+      if (accumulator.length > 0) {
+        accumulatorSentToNative = accumulator.length
+      }
+      return true
+    } catch (err) {
+      log.warn(
+        `slack outbox: native-stream start failed, falling back to tier-2: ${String(err)}`,
+      )
+      nativeSession = undefined
+      return false
+    }
+  }
+
+  async function appendNative(): Promise<void> {
+    if (!nativeSession) return
+    const pending = accumulator.slice(accumulatorSentToNative)
+    if (pending.length === 0) return
+    try {
+      await nativeSession.append(pending)
+      accumulatorSentToNative = accumulator.length
+    } catch (err) {
+      log.warn(
+        `slack outbox: native-stream append failed, dropping session: ${String(err)}`,
+      )
+      nativeSession = undefined
+    }
   }
 
   async function startDraftIfNeeded(): Promise<void> {
@@ -152,6 +225,20 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       if (stopped) return
       if (chunk.length === 0) return
       accumulator += chunk
+      // Tier-1 native streaming wins when configured: first append kicks
+      // off the stream; subsequent ones forward the delta. If native
+      // start fails we fall through to tier-2.
+      if (opts.nativeStream && !nativeAttempted) {
+        inflightUpdate = inflightUpdate.then(async () => {
+          const ok = await startNativeIfNeeded()
+          if (!ok) await startDraftIfNeeded()
+        })
+        return
+      }
+      if (nativeSession) {
+        inflightUpdate = inflightUpdate.then(appendNative)
+        return
+      }
       if (!draftStarted && !fellBack) {
         inflightUpdate = inflightUpdate.then(startDraftIfNeeded)
       } else {
@@ -166,6 +253,43 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       if (finalText !== undefined) accumulator = finalText
       // Let any pending throttled update settle first.
       await inflightUpdate
+
+      // Tier-1 native finaliser: if the stream is alive, call stop()
+      // with the final accumulator text. On success we're done — no
+      // tier-2 post needed. On failure we fall through so at least
+      // tier-3 chunks make it out.
+      if (nativeSession) {
+        const deltaSinceLast = accumulator.slice(accumulatorSentToNative)
+        try {
+          await nativeSession.stop(
+            deltaSinceLast.length > 0 ? deltaSinceLast : undefined,
+          )
+          // Native stream doesn't support Block Kit finale — if the
+          // caller handed blocks, post them as a separate follow-up so
+          // interactive-reply actions still land beneath the stream.
+          if (finalBlocks && finalBlocks.length > 0) {
+            try {
+              await opts.adapter.postMessage({
+                channel: opts.channel,
+                threadTs: opts.threadTs,
+                text: accumulator || placeholderText(),
+                blocks: finalBlocks,
+              })
+            } catch (err) {
+              log.error(
+                `slack outbox: native-stream block-kit followup failed: ${String(err)}`,
+              )
+            }
+          }
+          stopped = true
+          return
+        } catch (err) {
+          log.warn(
+            `slack outbox: native-stream stop failed, falling through: ${String(err)}`,
+          )
+          nativeSession = undefined
+        }
+      }
 
       const postTier3 = async () => {
         const chunks = markdownToSlackMrkdwnChunks(accumulator, { maxLen: maxChunkLen })

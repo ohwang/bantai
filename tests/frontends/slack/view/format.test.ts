@@ -113,3 +113,78 @@ describe("markdownToSlackMrkdwnChunks", () => {
     ])
   })
 })
+
+describe("angle-token preservation", () => {
+  it("preserves Slack user mentions", () => {
+    expect(markdownToSlackMrkdwn("hey <@U12345> ping")).toBe("hey <@U12345> ping")
+  })
+
+  it("preserves Slack channel refs with display name", () => {
+    expect(markdownToSlackMrkdwn("see <#C0123|general>")).toBe("see <#C0123|general>")
+  })
+
+  it("preserves <!here> / <!channel> / subteams", () => {
+    expect(markdownToSlackMrkdwn("<!here> heads up")).toBe("<!here> heads up")
+    expect(markdownToSlackMrkdwn("<!subteam^S123|oncall>")).toBe(
+      "<!subteam^S123|oncall>",
+    )
+  })
+
+  it("preserves mailto / tel / http autolinks", () => {
+    expect(markdownToSlackMrkdwn("<mailto:a@b.com>")).toBe("<mailto:a@b.com>")
+    expect(markdownToSlackMrkdwn("<tel:+15551234>")).toBe("<tel:+15551234>")
+    expect(markdownToSlackMrkdwn("<https://example.com>")).toBe(
+      "<https://example.com>",
+    )
+  })
+
+  it("HTML-escapes bare < and > in user text", () => {
+    expect(markdownToSlackMrkdwn("a < b > c")).toBe("a &lt; b &gt; c")
+    expect(markdownToSlackMrkdwn("A&B Corp")).toBe("A&amp;B Corp")
+  })
+
+  it("escapes an unrecognised angle token instead of letting it render", () => {
+    // `<script>` isn't in the allowlist; it gets escaped so Slack
+    // doesn't attempt to parse it.
+    expect(markdownToSlackMrkdwn("<script>x</script>")).toBe(
+      "&lt;script&gt;x&lt;/script&gt;",
+    )
+  })
+
+  it("leaves angle tokens inside inline code untouched", () => {
+    expect(markdownToSlackMrkdwn("run `<script>` inline")).toBe(
+      "run `<script>` inline",
+    )
+  })
+})
+
+describe("table conversion", () => {
+  it("converts a simple GFM table to an aligned code fence", () => {
+    const input = "| a | bb |\n|---|----|\n| 1 | 22 |"
+    const out = markdownToSlackMrkdwn(input)
+    expect(out).toBe(["```", "a  bb", "-  --", "1  22", "```"].join("\n"))
+  })
+
+  it("handles multi-row tables", () => {
+    const input = [
+      "| name | role |",
+      "|------|------|",
+      "| alice | dev |",
+      "| bob | pm |",
+    ].join("\n")
+    const out = markdownToSlackMrkdwn(input)
+    expect(out).toContain("```")
+    expect(out).toContain("alice  dev")
+    expect(out).toContain("bob    pm")
+  })
+
+  it("leaves non-table pipe text alone", () => {
+    const input = "run `foo | bar` in a shell"
+    expect(markdownToSlackMrkdwn(input)).toBe("run `foo | bar` in a shell")
+  })
+
+  it("does not treat a pipe row without separator as a table", () => {
+    const input = "| a | b |"
+    expect(markdownToSlackMrkdwn(input)).toBe("| a | b |")
+  })
+})

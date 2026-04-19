@@ -130,6 +130,69 @@ describe("reactions.* API", () => {
     expect(getRes.message.reactions[0].users).toEqual([bob.user.id])
   })
 
+  test("reactions.list returns items the caller reacted to, newest first", async () => {
+    const alice = handle.asUser("alice")
+    const bob = handle.asUser("bob")
+    const first = await alice.sendMessage("general", "first")
+    const second = await alice.sendMessage("general", "second")
+    const third = await alice.sendMessage("general", "third")
+
+    async function react(userToken: string, ts: string, name: string) {
+      await fetch(`${handle.url}/api/reactions.add`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${userToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: "general", timestamp: ts, name }),
+      })
+    }
+    await react(bob.token, first.ts, "eyes")
+    await react(bob.token, third.ts, "tada")
+    // Alice reacts to `second` — excluded from bob's list.
+    await react(alice.token, second.ts, "rocket")
+
+    const res = await fetch(`${handle.url}/api/reactions.list`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bob.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    })
+    const body = (await res.json()) as any
+    expect(body.ok).toBe(true)
+    expect(body.items).toHaveLength(2)
+    expect(body.items[0].type).toBe("message")
+    expect(body.items[0].message.ts).toBe(third.ts)
+    expect(body.items[1].message.ts).toBe(first.ts)
+    expect(body.response_metadata.next_cursor).toBe("")
+  })
+
+  test("reactions.list paginates + filters to the caller's reactions", async () => {
+    const alice = handle.asUser("alice")
+    const bob = handle.asUser("bob")
+    const a = await alice.sendMessage("general", "a")
+    const b = await alice.sendMessage("general", "b")
+    const c = await alice.sendMessage("general", "c")
+    for (const ts of [a.ts, b.ts, c.ts]) {
+      await fetch(`${handle.url}/api/reactions.add`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bob.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: "general", timestamp: ts, name: "eyes" }),
+      })
+    }
+    const firstPage = (await (await fetch(`${handle.url}/api/reactions.list`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bob.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 2 }),
+    })).json()) as any
+    expect(firstPage.items).toHaveLength(2)
+    expect(firstPage.response_metadata.next_cursor).not.toBe("")
+
+    const secondPage = (await (await fetch(`${handle.url}/api/reactions.list`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bob.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 2, cursor: firstPage.response_metadata.next_cursor }),
+    })).json()) as any
+    expect(secondPage.items).toHaveLength(1)
+    expect(secondPage.response_metadata.next_cursor).toBe("")
+  })
+
   test("reaction_added event is delivered to subscribers", async () => {
     const seen: any[] = []
     handle.events.subscribe({ types: ["reaction_added"] }, (evt) => seen.push(evt))

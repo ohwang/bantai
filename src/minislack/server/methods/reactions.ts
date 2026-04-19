@@ -1,5 +1,5 @@
 /**
- * reactions.add / reactions.remove / reactions.get.
+ * reactions.add / reactions.remove / reactions.get / reactions.list.
  *
  * Each add/remove also publishes a `reaction_added` / `reaction_removed`
  * event on the bus so subscribers (web SPA, Socket Mode apps) see the
@@ -17,6 +17,7 @@ import type { EventBus } from "../../core/events"
 import type { Channel, Message, Reaction, Workspace } from "../../types/slack"
 import type { ReactionAddedEvent, ReactionRemovedEvent } from "../../types/events"
 import type { AuthContext } from "../auth"
+import { paginate } from "../pagination"
 
 export interface ReactionArgs {
   /** Channel id OR name (with or without `#`). */
@@ -134,6 +135,85 @@ export function reactionsGet(
     channel: ch.id,
     message: { ts: args.timestamp, reactions },
   }
+}
+
+// ---------------------------------------------------------------------------
+// reactions.list — items the caller (or a specified user) has reacted to.
+// ---------------------------------------------------------------------------
+
+export interface ReactionListArgs {
+  /** User whose reacted items to return. Defaults to the caller. */
+  user?: string
+  limit?: number
+  cursor?: string
+  /** Slack's `full` flag — when true, include the full message body. */
+  full?: boolean
+}
+
+export interface ReactionListItem {
+  type: "message"
+  channel: string
+  message: Message & { reactions: Reaction[] }
+}
+
+export interface ReactionListResponse {
+  ok: true
+  items: ReactionListItem[]
+  response_metadata: { next_cursor: string }
+}
+
+/**
+ * reactions.list — walk every channel the caller can see and collect
+ * messages the target user has reacted to. Minislack stores only message
+ * reactions (no file_comment reactions), so items are always
+ * `type: "message"`.
+ *
+ * When `user` is omitted we default to the caller's own reactions,
+ * matching Slack's real behaviour.
+ */
+export function reactionsList(
+  ws: Workspace,
+  ctx: AuthContext,
+  args: ReactionListArgs,
+): ReactionListResponse {
+  const targetUser = args.user?.trim() || ctx.userId
+  if (!targetUser) throw new MinislackError("not_authed")
+
+  const items: ReactionListItem[] = []
+  for (const ch of ws.channels.values()) {
+    if (!channelVisibleTo(ch, ctx)) continue
+    for (const msg of ch.messages.values()) {
+      if (msg.tombstone) continue
+      const reactions = msg.reactions ?? []
+      if (!reactions.some((r) => r.users.includes(targetUser))) continue
+      items.push({
+        type: "message",
+        channel: ch.id,
+        message: { ...msg, reactions },
+      })
+    }
+  }
+  // Newest first, mirroring real Slack.
+  items.sort((a, b) => Number(b.message.ts) - Number(a.message.ts))
+
+  const page = paginate(items, { limit: args.limit, cursor: args.cursor })
+  return {
+    ok: true,
+    items: page.items,
+    response_metadata: { next_cursor: page.next_cursor },
+  }
+}
+
+/**
+ * Cheap visibility filter. Bot tokens see every channel they're a member
+ * of; user tokens see every channel they're listed in. Anything tagged as
+ * public is always visible so the probe sweep (which fires before a bot
+ * joins anywhere) still returns `ok: true` on a fresh workspace.
+ */
+function channelVisibleTo(ch: Channel, ctx: AuthContext): boolean {
+  if ("is_channel" in ch && ch.is_channel) return true
+  if (!ctx.userId) return false
+  return "members" in ch && ch.members.includes(ctx.userId)
 }
 
 // ---------------------------------------------------------------------------

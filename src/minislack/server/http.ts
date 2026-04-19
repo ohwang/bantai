@@ -29,6 +29,7 @@ import {
 import {
   reactionsAdd,
   reactionsGet,
+  reactionsList,
   reactionsRemove,
 } from "./methods/reactions"
 import {
@@ -458,6 +459,15 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
           reactionsGet(ctx.ws, {
             channel: str(args.channel),
             timestamp: str(args.timestamp),
+            full: toBool(args.full),
+          }),
+        )
+      case "reactions.list":
+        return slackOk(
+          reactionsList(ctx.ws, auth, {
+            user: args.user as string | undefined,
+            limit: toNum(args.limit),
+            cursor: args.cursor as string | undefined,
             full: toBool(args.full),
           }),
         )

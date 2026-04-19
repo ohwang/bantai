@@ -8,13 +8,18 @@ import {
 } from "../../../src/frontends/slack/manifest"
 
 describe("buildManifest", () => {
-  it("socket mode default — bot_events present, no request_url", () => {
+  it("socket mode default — bot_events present, no request_url on event subs", () => {
     const m = buildManifest()
     expect(m.settings.socket_mode_enabled).toBe(true)
     expect(m.settings.event_subscriptions?.bot_events).toEqual([...SUBSCRIBED_EVENTS])
     expect(m.settings.event_subscriptions?.request_url).toBeUndefined()
     expect(m.settings.interactivity.is_enabled).toBe(true)
-    expect(m.settings.interactivity.request_url).toBeUndefined()
+    // Interactivity request_url is always emitted (defaults to a placeholder)
+    // so operators can flip socket mode off without re-editing the manifest.
+    expect(m.settings.interactivity.request_url).toBe(
+      "https://example.com/slack/interactive",
+    )
+    expect(m.settings.is_mcp_enabled).toBe(true)
   })
 
   it("http mode — request_url required, surfaced on interactivity too", () => {

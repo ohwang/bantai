@@ -20,12 +20,14 @@
 /** Scopes the launcher needs on the bot user. */
 export const BOT_SCOPES: readonly string[] = [
   "app_mentions:read",
+  "assistant:write",
   "channels:history",
   "channels:read",
   "chat:write",
   "chat:write.customize",
   "chat:write.public",
   "commands",
+  "emoji:read",
   "files:read",
   "files:write",
   "groups:history",
@@ -45,6 +47,7 @@ export const BOT_SCOPES: readonly string[] = [
 /** Event subscriptions on the bot. Mirrors `transport/events.ts`. */
 export const SUBSCRIBED_EVENTS: readonly string[] = [
   "app_mention",
+  "channel_rename",
   "file_shared",
   "member_joined_channel",
   "message.channels",
@@ -52,6 +55,34 @@ export const SUBSCRIBED_EVENTS: readonly string[] = [
   "message.im",
   "message.mpim",
   "reaction_added",
+  "reaction_removed",
+]
+
+/** Slash command spec inside `features.slash_commands`. */
+export interface SlashCommandSpec {
+  command: string
+  description: string
+  should_escape?: boolean
+  url?: string
+  usage_hint?: string
+}
+
+/**
+ * Slash commands the app registers. `/bantai <message>` is a global
+ * shortcut — same semantics as @-mentioning the bot in the current
+ * channel, without needing an install in that channel.
+ *
+ * Wiring the handler lives in `transport/events.ts`
+ * (`app.command("/bantai", ...)`). Until that exists, invoking the
+ * command will fail fast on Slack's side; the manifest entry is
+ * intentionally forward-looking per `slack-int-new-scope.md`.
+ */
+export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
+  {
+    command: "/bantai",
+    description: "Send a message to bantai",
+    should_escape: false,
+  },
 ]
 
 export interface ManifestOpts {
@@ -72,6 +103,7 @@ interface ManifestShape {
   features: {
     bot_user: { display_name: string; always_online: boolean }
     app_home?: { home_tab_enabled: boolean; messages_tab_enabled: boolean; messages_tab_read_only_enabled: boolean }
+    slash_commands?: SlashCommandSpec[]
   }
   oauth_config: {
     scopes: { bot: string[] }
@@ -88,8 +120,17 @@ interface ManifestShape {
     org_deploy_enabled: boolean
     socket_mode_enabled: boolean
     token_rotation_enabled: boolean
+    /**
+     * Slack MCP server surface. When true, the app exposes its
+     * installed Slack capabilities as MCP tools that external MCP
+     * clients (including bantai's own agent) can invoke.
+     */
+    is_mcp_enabled?: boolean
   }
 }
+
+/** Default placeholder for the interactivity request URL. */
+const DEFAULT_INTERACTIVITY_URL = "https://example.com/slack/interactive"
 
 export function buildManifest(opts: ManifestOpts = {}): ManifestShape {
   const socketMode = opts.socketMode ?? true
@@ -97,16 +138,18 @@ export function buildManifest(opts: ManifestOpts = {}): ManifestShape {
   const bot = opts.botUserDisplayName ?? display
   const description =
     opts.description ?? "Pair-programming bot backed by Claude / Codex / Gemini."
+  const interactivityUrl = opts.requestUrl ?? DEFAULT_INTERACTIVITY_URL
 
   const manifest: ManifestShape = {
     display_information: { name: display, description },
     features: {
-      bot_user: { display_name: bot, always_online: true },
+      bot_user: { display_name: bot, always_online: false },
       app_home: {
         home_tab_enabled: false,
         messages_tab_enabled: true,
         messages_tab_read_only_enabled: false,
       },
+      slash_commands: SLASH_COMMANDS.map((c) => ({ ...c })),
     },
     oauth_config: {
       scopes: { bot: [...BOT_SCOPES] },
@@ -118,15 +161,14 @@ export function buildManifest(opts: ManifestOpts = {}): ManifestShape {
             request_url: opts.requestUrl ?? "https://example.com/slack/events",
             bot_events: [...SUBSCRIBED_EVENTS],
           },
-      interactivity: socketMode
-        ? { is_enabled: true }
-        : {
-            is_enabled: true,
-            request_url: opts.requestUrl ?? "https://example.com/slack/events",
-          },
+      interactivity: {
+        is_enabled: true,
+        request_url: interactivityUrl,
+      },
       org_deploy_enabled: false,
       socket_mode_enabled: socketMode,
       token_rotation_enabled: false,
+      is_mcp_enabled: true,
     },
   }
   return manifest

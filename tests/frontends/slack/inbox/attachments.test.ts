@@ -70,6 +70,7 @@ describe("createAttachmentFetcher", () => {
       botToken: "xoxb-abc",
       stagingDir,
       fetchImpl: fakeFetch as unknown as typeof fetch,
+      disableSsrfGuard: true,
     })
 
     const files: InboundFile[] = [
@@ -104,6 +105,7 @@ describe("createAttachmentFetcher", () => {
       botToken: "xoxb",
       stagingDir,
       fetchImpl: fakeFetch as unknown as typeof fetch,
+      disableSsrfGuard: true,
     })
     const files: InboundFile[] = [
       {
@@ -137,6 +139,7 @@ describe("createAttachmentFetcher", () => {
       botToken: "xoxb",
       stagingDir,
       fetchImpl: fakeFetch as unknown as typeof fetch,
+      disableSsrfGuard: true,
     })
     const out = await fetcher.fetch(
       [
@@ -155,6 +158,7 @@ describe("createAttachmentFetcher", () => {
       botToken: "xoxb",
       stagingDir,
       fetchImpl: fakeFetch as unknown as typeof fetch,
+      disableSsrfGuard: true,
     })
     const out = await fetcher.fetch(
       [
@@ -165,6 +169,54 @@ describe("createAttachmentFetcher", () => {
     )
     expect(out.images).toEqual([])
     expect(out.paths).toEqual([])
+  })
+
+  it("SSRF guard blocks non-Slack hosts", async () => {
+    const { fakeFetch, calls } = makeFakeFetch(new Map())
+    const fetcher = createAttachmentFetcher({
+      botToken: "xoxb",
+      stagingDir,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    })
+    const out = await fetcher.fetch(
+      [
+        {
+          id: "F1",
+          name: "pwned.png",
+          mimetype: "image/png",
+          url_private: "http://169.254.169.254/latest/meta-data/",
+        },
+      ],
+      { channelId: "C01", ts: "100.001" },
+    )
+    expect(out.images).toEqual([])
+    expect(out.paths).toEqual([])
+    // Guard short-circuits BEFORE fetch is called.
+    expect(calls).toHaveLength(0)
+  })
+
+  it("SSRF guard accepts *.slack.com by default", async () => {
+    const bytes = new Uint8Array([1, 2, 3])
+    const { fakeFetch, calls } = makeFakeFetch(
+      new Map([["https://files.slack.com/f/F1", { status: 200, bytes }]]),
+    )
+    const fetcher = createAttachmentFetcher({
+      botToken: "xoxb",
+      stagingDir,
+      fetchImpl: fakeFetch as unknown as typeof fetch,
+    })
+    const out = await fetcher.fetch(
+      [
+        {
+          id: "F1",
+          name: "ok.bin",
+          url_private: "https://files.slack.com/f/F1",
+        },
+      ],
+      { channelId: "C01", ts: "100.001" },
+    )
+    expect(calls).toHaveLength(1)
+    expect(out.paths).toHaveLength(1)
   })
 
   it("respects maxFilesPerTurn", async () => {
@@ -179,6 +231,7 @@ describe("createAttachmentFetcher", () => {
       botToken: "xoxb",
       stagingDir,
       fetchImpl: fakeFetch as unknown as typeof fetch,
+      disableSsrfGuard: true,
       maxFilesPerTurn: 2,
     })
     const out = await fetcher.fetch(
@@ -221,6 +274,7 @@ describe("createAttachmentFetcher", () => {
       stagingDir,
       fetchImpl: fakeFetch as unknown as typeof fetch,
       rewriteUrl: (_u) => "http://localhost/ok",
+      extraAllowedHosts: ["localhost"],
     })
     const out = await fetcher.fetch(
       [{ id: "F1", name: "x.txt", url_private: "https://slack.com/files/x" }],
@@ -248,6 +302,7 @@ describe("createAttachmentFetcher", () => {
       botToken: "xoxb",
       stagingDir,
       fetchImpl: fakeFetch as unknown as typeof fetch,
+      disableSsrfGuard: true,
     })
     const out = await fetcher.fetch(
       [

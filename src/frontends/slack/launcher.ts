@@ -276,6 +276,12 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       ...(config.workspace.slackApiUrl
         ? {
             rewriteUrl: rewriterForSlackApiUrl(config.workspace.slackApiUrl),
+            // Extend the SSRF allowlist with the minislack host — the
+            // rewriter directs every Slack-hosted URL at it, and without
+            // this the guard would drop every inbound attachment in
+            // local dev. In prod runs `slackApiUrl` is unset and the
+            // default `*.slack*.com` allowlist applies.
+            extraAllowedHosts: extractHost(config.workspace.slackApiUrl),
           }
         : {}),
     })
@@ -409,6 +415,19 @@ function openSessionStore(path: string): SessionStore {
 function rewriterForSlackApiUrl(slackApiUrl: string): (url: string) => string {
   const base = slackApiUrl.replace(/\/$/, "")
   return (u) => u.replace(/^https?:\/\/[^/]+/, base)
+}
+
+/**
+ * Extract the host from a URL for the SSRF allowlist. Returns a single-
+ * element array (the host) or an empty array if the URL is unparseable
+ * — the caller falls back to the default Slack allowlist in that case.
+ */
+function extractHost(url: string): string[] {
+  try {
+    return [new URL(url).hostname]
+  } catch {
+    return []
+  }
 }
 
 function waitForSignal(): Promise<void> {

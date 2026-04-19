@@ -70,6 +70,17 @@ export interface AttachmentFetcherOpts {
    */
   rewriteUrl?: (url: string) => string
   /**
+   * Additional hostnames to accept on top of the default Slack allowlist
+   * (`*.slack.com`, `*.slack-edge.com`, `*.slack-files.com`). Minislack
+   * tests add `localhost` / `127.0.0.1` here.
+   */
+  extraAllowedHosts?: string[]
+  /**
+   * Bypass the SSRF hostname allowlist entirely. Only useful in tests
+   * that point at a mock fetchImpl — production must NEVER set this.
+   */
+  disableSsrfGuard?: boolean
+  /**
    * Maximum number of files to ingest per message. Extras are dropped
    * with a log.warn so a flood doesn't hang the turn on downloads.
    * Defaults to 8.
@@ -90,12 +101,50 @@ export interface AttachmentFetcher {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Hostnames we're willing to fetch inbound attachments from. Ported
+ * from OpenClaw's SSRF hardening (openclaw/extensions/slack/src/send.ts
+ * MIT). A crafted `url_private` like `http://169.254.169.254/…` (AWS
+ * metadata) would otherwise exfiltrate the bot token on the
+ * Authorization header it adds below; locking the allowlist prevents
+ * that class of attack.
+ */
+const DEFAULT_ALLOWED_HOST_SUFFIXES = [
+  ".slack.com",
+  ".slack-edge.com",
+  ".slack-files.com",
+] as const
+
+function isAllowedHost(
+  url: string,
+  extra: readonly string[],
+): { ok: true } | { ok: false; reason: string } {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return { ok: false, reason: "unparseable-url" }
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { ok: false, reason: `disallowed-protocol:${parsed.protocol}` }
+  }
+  const host = parsed.hostname.toLowerCase()
+  const allowed =
+    DEFAULT_ALLOWED_HOST_SUFFIXES.some(
+      (suffix) => host === suffix.slice(1) || host.endsWith(suffix),
+    ) || extra.some((entry) => host === entry.toLowerCase())
+  if (!allowed) return { ok: false, reason: `host-not-in-allowlist:${host}` }
+  return { ok: true }
+}
+
 export function createAttachmentFetcher(
   opts: AttachmentFetcherOpts,
 ): AttachmentFetcher {
   const fetchImpl = opts.fetchImpl ?? fetch
   const maxFiles = opts.maxFilesPerTurn ?? 8
   const maxBytes = opts.maxFileBytes ?? 25 * 1024 * 1024
+  const extraHosts = opts.extraAllowedHosts ?? []
+  const ssrfGuardDisabled = opts.disableSsrfGuard ?? false
 
   async function downloadOne(file: InboundFile): Promise<Uint8Array | undefined> {
     const url = file.url_private_download ?? file.url_private
@@ -104,6 +153,16 @@ export function createAttachmentFetcher(
       return undefined
     }
     const effective = opts.rewriteUrl ? opts.rewriteUrl(url) : url
+    if (!ssrfGuardDisabled) {
+      const guard = isAllowedHost(effective, extraHosts)
+      if (!guard.ok) {
+        log.warn(
+          `slack attachments: ${file.id} blocked by SSRF guard (${guard.reason}); ` +
+            `only Slack-hosted URLs are allowed`,
+        )
+        return undefined
+      }
+    }
     try {
       const resp = await fetchImpl(effective, {
         headers: { Authorization: `Bearer ${opts.botToken}` },

@@ -419,12 +419,15 @@ Also: `channel-inbound` SDK has built-in `shouldDebounceTextInbound` that gates 
 
 ### Port plan
 
-- [ ] When bantai downloads inbound files (screenshots, attachments the agent should see), run the URL through the SSRF guard.
-- [ ] Share the guard with `mcp/slack-upload.ts` outbound (in case we ever fetch-then-reupload).
+- [x] Added `DEFAULT_ALLOWED_HOST_SUFFIXES = [".slack.com", ".slack-edge.com", ".slack-files.com"]` + `isAllowedHost()` gate in `inbox/attachments.ts`. Every `url_private` / `url_private_download` is checked before the authenticated `fetch` that would attach the bot token.
+- [x] Exposed `extraAllowedHosts` + `disableSsrfGuard` opts so minislack tests (and the `rewriteUrl` redirect) can loop back to localhost without opening the production path.
+- [x] Launcher auto-extends `extraAllowedHosts` with the host portion of `slackApiUrl` when it's configured — minislack self-hosts work out of the box, real Slack keeps the lockdown.
+- [x] Blocked URLs short-circuit with a `log.warn("blocked by SSRF guard")` so operators see why a file didn't land.
 
 ### Acceptance
 
-- A crafted file with `url_private` pointing at `http://169.254.169.254/…` is rejected before fetch.
+- A crafted file with `url_private` pointing at `http://169.254.169.254/…` is rejected before fetch (`tests/frontends/slack/inbox/attachments.test.ts` — "SSRF guard blocks non-Slack hosts").
+- `*.slack.com` round-trips unchanged (same file — "SSRF guard accepts *.slack.com by default").
 
 ---
 

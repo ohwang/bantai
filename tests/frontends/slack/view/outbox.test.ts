@@ -390,6 +390,104 @@ describe("createOutboundStream — currentText", () => {
   })
 })
 
+describe("createOutboundStream — markdown → mrkdwn conversion", () => {
+  it("converts markdown in the initial draft post", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+    })
+    stream.append("**bold** and _italic_")
+    await drain()
+    const draft = calls.find((c) => c.kind === "post")!
+    expect(draft.text).toBe("*bold* and _italic_")
+  })
+
+  it("converts markdown in throttled intermediate updates", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    let t = 0
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      minUpdateMs: 50,
+      now: () => t,
+    })
+    stream.append("**bold**")
+    await drain()
+    t = 60
+    stream.append(" more")
+    await drain(60)
+    const update = calls.find((c) => c.kind === "update")!
+    expect(update.text).toBe("*bold* more")
+    await stream.stop()
+  })
+
+  it("converts markdown in the tier-2 final stop update", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+    })
+    stream.append("# Heading\n\n- item one\n- item two")
+    await drain()
+    await stream.stop()
+    const finalCall = calls.at(-1)!
+    expect(finalCall.text).toBe("*Heading*\n\n• item one\n• item two")
+  })
+
+  it("flushes overflow as extra postMessage chunks at stop() (tier-2)", async () => {
+    // maxChunkLen=50, accumulator will exceed it so stop() must post overflow
+    const { adapter, calls } = createFakeAdapter()
+    const para1 = "First paragraph that fits in the first chunk easily."
+    const para2 = "Second paragraph that lands in the overflow chunk."
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      maxChunkLen: 55,
+    })
+    stream.append(para1 + "\n\n" + para2)
+    await drain()
+    await stream.stop()
+    // The draft post carries the head (truncated) during streaming; the
+    // final stop() should update it with chunk-1 and post chunk-2 onwards.
+    const postCalls = calls.filter((c) => c.kind === "post")
+    const updateCalls = calls.filter((c) => c.kind === "update")
+    // At least the draft post + final update on the draft, plus ≥1 overflow post.
+    expect(postCalls.length).toBeGreaterThanOrEqual(2) // draft + overflow
+    expect(updateCalls.length).toBeGreaterThanOrEqual(1)
+    const allText = [...updateCalls, ...postCalls].map((c) => c.text).join("\n\n")
+    expect(allText).toContain("First paragraph")
+    expect(allText).toContain("Second paragraph")
+  })
+
+  it("overflow chunks inherit identity when set", async () => {
+    const para1 = "First paragraph that fits in the first chunk here."
+    const para2 = "Second paragraph that lands in overflow."
+    const id: OutboundIdentity = { username: "Bot", iconEmoji: ":robot_face:" }
+    const { adapter, calls } = createFakeAdapter()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+      maxChunkLen: 55,
+      identity: id,
+    })
+    stream.append(para1 + "\n\n" + para2)
+    await drain()
+    await stream.stop()
+    // Every postMessage (draft + overflow) should carry the identity.
+    const posts = calls.filter((c) => c.kind === "post")
+    expect(posts.length).toBeGreaterThanOrEqual(2)
+    for (const p of posts) {
+      expect(p.identity).toEqual(id)
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

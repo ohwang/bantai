@@ -145,25 +145,23 @@ export async function runCli(argv: string[]): Promise<void> {
   slackCmd
     .command("doctor")
     .description("Verify slack.json + workspace install without starting the server")
-    .option(
-      "--slack-config <path>",
-      "Path to slack.json (default: ./.bantai/slack.json, ~/.bantai/slack.json)",
-    )
-    .option(
-      "--slack-api-url <url>",
-      "Override the Slack Web API base URL (e.g. minislack)",
-    )
-    .action(async (subOpts: {
-      slackConfig?: string
-      slackApiUrl?: string
-    }) => {
+    // Intentionally no .option() here — `--slack-config` / `--slack-api-url`
+    // live on the parent `slackCmd` so they work for both `bantai slack` and
+    // `bantai slack doctor`. Redeclaring them on the subcommand causes
+    // commander to bind the value to the parent and leave the child's own
+    // opts empty — we use optsWithGlobals() below to read the merged view.
+    .action(async (_subOpts: unknown, cmd: Command) => {
+      const opts = cmd.optsWithGlobals() as {
+        slackConfig?: string
+        slackApiUrl?: string
+      }
       const { runSlackDoctor, formatSlackDoctorReport } = await import(
         "../frontends/slack/doctor"
       )
       try {
         const report = await runSlackDoctor({
-          ...(subOpts.slackConfig ? { configPath: subOpts.slackConfig } : {}),
-          ...(subOpts.slackApiUrl ? { slackApiUrlOverride: subOpts.slackApiUrl } : {}),
+          ...(opts.slackConfig ? { configPath: opts.slackConfig } : {}),
+          ...(opts.slackApiUrl ? { slackApiUrlOverride: opts.slackApiUrl } : {}),
         })
         // eslint-disable-next-line no-console
         console.log(formatSlackDoctorReport(report))

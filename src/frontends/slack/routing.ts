@@ -24,6 +24,10 @@ import type { createDedupCache } from "./inbox/dedup"
 import type { ThreadParticipationCache } from "./inbox/thread-participation"
 import { decideGate } from "./inbox/gate"
 import { buildInboundTurn } from "./inbox/turn-builder"
+import {
+  createInboundDebouncer,
+  type InboundDebouncer,
+} from "./inbox/debouncer"
 import { parseInteractiveReplyActionId } from "./view/interactive-replies"
 import type { AttachmentFetcher } from "./inbox/attachments"
 import {
@@ -127,10 +131,60 @@ export function parseSessionKey(
 // Main dispatch.
 // ---------------------------------------------------------------------------
 
-export function buildRoutingHandler(
-  ctx: RoutingCtx,
-): (event: InboundSlackEvent) => Promise<void> {
-  return async (event) => {
+export interface RoutingHandle {
+  onInbound: (event: InboundSlackEvent) => Promise<void>
+  /**
+   * Flush any buffered debounced entries. The launcher calls this on
+   * shutdown so in-flight rapid-message batches still reach the agent
+   * (or are dropped deliberately — if the backend is tearing down,
+   * the flush will end up posting a "shutting down" ephemeral).
+   */
+  shutdown(): Promise<void>
+}
+
+// ---------------------------------------------------------------------------
+// Inbound debouncer — groups rapid messages from the same
+// (workspace, channel, thread, sender) tuple into one agent turn. Keyed
+// on the resolved anchor ts (same anchor the session registry uses) so
+// that a user posting the mention message followed by a series of
+// thread replies all collapse into one dispatch.
+// ---------------------------------------------------------------------------
+
+interface DebouncedEntry {
+  event: Extract<InboundSlackEvent, { kind: "message" | "app_mention" }>
+  anchorTs: string
+}
+
+function buildDebouncerKey(
+  workspaceId: string,
+  entry: DebouncedEntry,
+): string {
+  return `${workspaceId}:${entry.event.channel}:${entry.anchorTs}:${entry.event.user}`
+}
+
+export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
+  const defaultDebounceMs = ctx.config.defaults.debounce_ms ?? 0
+  // Per-channel overrides may set a different debounceMs. We build a
+  // single debouncer anyway — shouldDebounce consults the project for
+  // the specific channel before enqueueing, so a channel with
+  // debounce_ms=0 takes the synchronous bypass path while a neighbour
+  // with debounce_ms=1500 still batches.
+  const debouncer: InboundDebouncer<DebouncedEntry> = createInboundDebouncer<DebouncedEntry>({
+    debounceMs: defaultDebounceMs > 0 ? defaultDebounceMs : 1500,
+    buildKey: (entry) => buildDebouncerKey(ctx.workspaceId, entry),
+    shouldDebounce: (entry) => {
+      const project = mutableProjectFor(ctx, entry.event.channel)
+      return project.debounceMs > 0
+    },
+    onFlush: async (entries) => {
+      await dispatchMessageBatch(ctx, entries)
+    },
+    onError: (err) => {
+      log.error(`slack routing: debounce flush threw: ${String(err)}`)
+    },
+  })
+
+  const handler = async (event: InboundSlackEvent): Promise<void> => {
     if (ctx.shuttingDown.value) {
       if (event.kind === "message" || event.kind === "app_mention") {
         try {
@@ -203,20 +257,14 @@ export function buildRoutingHandler(
       return
     }
 
-    // Anchor the session at the thread parent when this is a reply, else at
-    // the triggering message's own ts (the ts the bot's reply will thread
-    // under). This makes "top-level message" and "replies under it" converge
-    // onto the same session key.
     const anchorTs = event.threadTs ?? event.ts
-    const sessionParts = {
-      workspace: ctx.workspaceId,
-      channelId: event.channel,
-      threadTs: anchorTs,
-    }
-    const existing = ctx.registry.peek(sessionParts)
-
     const project = mutableProjectFor(ctx, event.channel)
 
+    // Gate the inbound on the *raw* event text — control commands
+    // (e.g. `!bantai status`) must fire immediately without sharing a
+    // debounce bucket with surrounding chatter, and a rejected message
+    // never triggers a later flush. The debouncer only sees events the
+    // gate already accepted.
     const decision = decideGate({
       channel: event.channel,
       text: event.text,
@@ -224,7 +272,11 @@ export function buildRoutingHandler(
       botUserId: ctx.botUserId,
       requireMention: project.requireMention,
       autoJoinThreads: project.autoJoinThreads,
-      threadHasActiveSession: !!existing,
+      threadHasActiveSession: !!ctx.registry.peek({
+        workspace: ctx.workspaceId,
+        channelId: event.channel,
+        threadTs: anchorTs,
+      }),
       threadHasPriorBotPost: event.threadTs
         ? ctx.threadParticipation.has(event.channel, event.threadTs)
         : false,
@@ -235,8 +287,11 @@ export function buildRoutingHandler(
       return
     }
 
+    // Control-prefix detection uses the mention-stripped turn text so
+    // `@bantai !bantai status` still parses. Commands always skip the
+    // debouncer — they're synchronous by nature.
     const displayName = await ctx.userCache.displayName(event.user)
-    const turn = buildInboundTurn({
+    const controlTurn = buildInboundTurn({
       text: event.text,
       channel: event.channel,
       ts: event.ts,
@@ -245,88 +300,151 @@ export function buildRoutingHandler(
       userDisplayName: displayName,
       botUserId: ctx.botUserId,
     })
-
-    const cmd = parseControlCommand(turn.text, { prefix: project.controlPrefix })
+    const cmd = parseControlCommand(controlTurn.text, {
+      prefix: project.controlPrefix,
+    })
     if (cmd) {
       await handleControlCommand({
         ctx,
         cmd,
         project,
         channel: event.channel,
-        threadTs: turn.parentTs,
-        sessionParts,
+        threadTs: controlTurn.parentTs,
+        sessionParts: {
+          workspace: ctx.workspaceId,
+          channelId: event.channel,
+          threadTs: anchorTs,
+        },
       })
       return
     }
 
-    const entry = ctx.registry.getOrCreate(
-      sessionParts,
+    // Everything else flows through the debouncer. When debounceMs is 0
+    // for this channel, `shouldDebounce` returns false and the entry
+    // dispatches synchronously — behaviour-preserving for callers that
+    // haven't opted in to batching.
+    await debouncer.enqueue({ event, anchorTs })
+  }
+
+  return {
+    onInbound: handler,
+    shutdown: () => debouncer.flushAll(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch — runs after the debouncer flushes (either synchronously via
+// the bypass path, or trailing-edge after debounceMs).
+// ---------------------------------------------------------------------------
+
+async function dispatchMessageBatch(
+  ctx: RoutingCtx,
+  entries: DebouncedEntry[],
+): Promise<void> {
+  if (entries.length === 0) return
+  const first = entries[0]!
+  const last = entries[entries.length - 1]!
+  const channel = first.event.channel
+  const userId = first.event.user
+  const anchorTs = first.anchorTs
+  const sessionParts = {
+    workspace: ctx.workspaceId,
+    channelId: channel,
+    threadTs: anchorTs,
+  }
+  const project = mutableProjectFor(ctx, channel)
+  const displayName = await ctx.userCache.displayName(userId)
+
+  // Combine batched texts — newline-joined, preserving order. The gate
+  // already accepted each event independently; when multiple messages
+  // batch, the combined text retains every mention so the agent sees
+  // the same signals it would in the un-batched case.
+  const combinedText = entries
+    .map((e) => e.event.text)
+    .filter((t) => t && t.length > 0)
+    .join("\n")
+
+  const turn = buildInboundTurn({
+    text: combinedText,
+    channel,
+    ts: last.event.ts,
+    threadTs: last.event.threadTs,
+    userId,
+    userDisplayName: displayName,
+    botUserId: ctx.botUserId,
+  })
+
+  const entry = ctx.registry.getOrCreate(
+    sessionParts,
+    project,
+    turn.parentTs,
+    buildSessionMcpOverlay({
       project,
-      turn.parentTs,
-      buildSessionMcpOverlay({
-        project,
+      channel: turn.channel,
+      threadTs: turn.parentTs,
+      slackUploadMcp: ctx.slackUploadMcpFor,
+    }),
+  )
+
+  let renderer = ctx.renderers.get(entry)
+  if (!renderer) {
+    renderer = createEventRenderer({
+      app: ctx.app,
+      binding: {
         channel: turn.channel,
         threadTs: turn.parentTs,
-        slackUploadMcp: ctx.slackUploadMcpFor,
+        triggerTs: turn.triggerTs,
+      },
+      verbosity: project.verbosity,
+      showCost: project.showCost,
+      interactiveReplies: project.interactiveReplies,
+      turnTimeoutS: project.turnTimeoutS,
+      onTurnTimeout: () => {
+        entry.host.backend.interrupt()
+      },
+      maxBudgetUsd: project.maxBudgetUsd,
+      onBudgetExceeded: () => {
+        entry.host.backend.interrupt()
+      },
+      approvals: ctx.approvals.bindSession({
+        sessionKey: entry.key,
+        approvers: project.approvers,
       }),
-    )
-
-    let renderer = ctx.renderers.get(entry)
-    if (!renderer) {
-      renderer = createEventRenderer({
-        app: ctx.app,
-        binding: {
-          channel: turn.channel,
-          threadTs: turn.parentTs,
-          triggerTs: turn.triggerTs,
-        },
-        verbosity: project.verbosity,
-        showCost: project.showCost,
-        interactiveReplies: project.interactiveReplies,
-        turnTimeoutS: project.turnTimeoutS,
-        onTurnTimeout: () => {
-          entry.host.backend.interrupt()
-        },
-        maxBudgetUsd: project.maxBudgetUsd,
-        onBudgetExceeded: () => {
-          entry.host.backend.interrupt()
-        },
-        approvals: ctx.approvals.bindSession({
-          sessionKey: entry.key,
-          approvers: project.approvers,
-        }),
-        elicitations: ctx.elicitations.bindSession({
-          sessionKey: entry.key,
-        }),
-      })
-      ctx.renderers.set(entry, renderer)
-      entry.subscribe(renderer.onEvent)
-      if (project.sessionBanner) {
-        attachBannerOnce(ctx, entry, project, turn.channel, turn.parentTs)
-      }
-    } else {
-      renderer.setTriggerTs(turn.triggerTs)
+      elicitations: ctx.elicitations.bindSession({
+        sessionKey: entry.key,
+      }),
+    })
+    ctx.renderers.set(entry, renderer)
+    entry.subscribe(renderer.onEvent)
+    if (project.sessionBanner) {
+      attachBannerOnce(ctx, entry, project, turn.channel, turn.parentTs)
     }
-
-    const incomingFiles = "files" in event ? event.files : undefined
-    if (incomingFiles && incomingFiles.length > 0) {
-      try {
-        const ingested = await ctx.attachments.fetch(incomingFiles, {
-          channelId: event.channel,
-          ts: event.ts,
-        })
-        entry.send({
-          text: turn.text + ingested.textHint,
-          ...(ingested.images.length > 0 ? { images: ingested.images } : {}),
-        })
-        return
-      } catch (err) {
-        log.error(`slack: attachment ingest failed: ${String(err)}. Proceeding without files.`)
-      }
-    }
-
-    entry.send({ text: turn.text })
+  } else {
+    renderer.setTriggerTs(turn.triggerTs)
   }
+
+  // Pool attachments across the batch — a user who drops two images in
+  // quick succession expects the agent to see both in the same turn.
+  const incomingFiles = entries.flatMap((e) =>
+    "files" in e.event && e.event.files ? e.event.files : [],
+  )
+  if (incomingFiles.length > 0) {
+    try {
+      const ingested = await ctx.attachments.fetch(incomingFiles, {
+        channelId: channel,
+        ts: last.event.ts,
+      })
+      entry.send({
+        text: turn.text + ingested.textHint,
+        ...(ingested.images.length > 0 ? { images: ingested.images } : {}),
+      })
+      return
+    } catch (err) {
+      log.error(`slack: attachment ingest failed: ${String(err)}. Proceeding without files.`)
+    }
+  }
+
+  entry.send({ text: turn.text })
 }
 
 // ---------------------------------------------------------------------------

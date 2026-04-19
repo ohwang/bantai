@@ -104,6 +104,15 @@ export const DefaultsSchema = z
      */
     interactive_replies: z.boolean().default(false),
     /**
+     * Milliseconds the inbox waits after the last message from a given
+     * (channel, thread, sender) triple before dispatching a turn. Rapid-
+     * fire messages within this window are combined into one agent
+     * request, so a user typing three lines sees one turn, not three.
+     * 0 or negative disables batching (every message dispatches
+     * synchronously) — matches pre-debouncer behaviour.
+     */
+    debounce_ms: z.number().int().nonnegative().default(0),
+    /**
      * Off by default per plan §6. When true, a cost footer is posted after
      * every turn_complete; verbosity ≥ normal renders a one-liner, verbose
      * renders per-category token breakdowns.
@@ -188,6 +197,7 @@ export const ChannelOverrideSchema = z
     require_mention: z.boolean().optional(),
     thread_require_explicit_mention: z.boolean().optional(),
     interactive_replies: z.boolean().optional(),
+    debounce_ms: z.number().int().nonnegative().optional(),
     permission_mode: z.string().optional(),
     turn_timeout_s: z.number().int().nonnegative().optional(),
     max_budget_usd: z.number().nonnegative().optional(),

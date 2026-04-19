@@ -271,28 +271,29 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     },
   })
 
+  const routing = buildRoutingHandler({
+    app,
+    config,
+    registry,
+    dedup,
+    userCache,
+    botUserId: auth.botUserId,
+    workspaceId,
+    launchCwd,
+    approvals,
+    elicitations,
+    attachments,
+    renderers: new WeakMap(),
+    projectOverrides: new Map(),
+    bannerPosted: new WeakSet(),
+    shuttingDown,
+    slackUploadMcpFor,
+    threadParticipation,
+  })
   registerEvents({
     app,
     botUserId: auth.botUserId,
-    onInbound: buildRoutingHandler({
-      app,
-      config,
-      registry,
-      dedup,
-      userCache,
-      botUserId: auth.botUserId,
-      workspaceId,
-      launchCwd,
-      approvals,
-      elicitations,
-      attachments,
-      renderers: new WeakMap(),
-      projectOverrides: new Map(),
-      bannerPosted: new WeakSet(),
-      shuttingDown,
-      slackUploadMcpFor,
-      threadParticipation,
-    }),
+    onInbound: routing.onInbound,
   })
 
   log.info(`slack: server ready — bot user ${auth.botUserId}, team ${workspaceId}`)
@@ -309,6 +310,16 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       // events that race the signal get an ephemeral "shutting down"
       // rather than being dispatched into a session that's about to die.
       shuttingDown.value = true
+      // Flush any in-flight debounced inbound batches BEFORE tearing
+      // down so rapid-fire messages the user just posted don't get
+      // silently dropped. Any entries that flush now will still hit a
+      // live registry; the shuttingDown flag keeps NEW inbound events
+      // at the handler's early return path.
+      try {
+        await routing.shutdown()
+      } catch (err) {
+        log.debug(`slack: routing shutdown flush threw: ${String(err)}`)
+      }
       approvals.closeAll()
       elicitations.closeAll()
       registry.closeAll()

@@ -18,6 +18,7 @@ function fakeProject(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     autoJoinThreads: true,
     threadRequireExplicitMention: false,
     interactiveReplies: false,
+    debounceMs: 0,
     turnTimeoutS: 0,
     maxBudgetUsd: 0,
     env: {},

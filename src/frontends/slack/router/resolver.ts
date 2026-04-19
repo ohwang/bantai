@@ -82,6 +82,8 @@ export interface ProjectConfig {
    * Kit interactive actions.
    */
   interactiveReplies: boolean
+  /** Inbox debounce window in ms. 0 disables batching. */
+  debounceMs: number
   /** Max seconds a single turn may run before auto-interrupt. 0 → disabled. */
   turnTimeoutS: number
   /** Max cumulative USD per session. 0 → disabled. */
@@ -157,6 +159,7 @@ export function resolveProjectForChannel(
       defaults.thread_require_explicit_mention,
     interactiveReplies:
       override?.interactive_replies ?? defaults.interactive_replies,
+    debounceMs: override?.debounce_ms ?? defaults.debounce_ms,
     turnTimeoutS: override?.turn_timeout_s ?? defaults.turn_timeout_s,
     maxBudgetUsd: override?.max_budget_usd ?? defaults.max_budget_usd,
     env: resolveEnvRefs(override?.env, env),

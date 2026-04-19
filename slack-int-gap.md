@@ -30,17 +30,17 @@ Running doc tracking everywhere bantai's Slack frontend reinvented a wheel that 
 
 | # | Gap | Priority | Status | Owner |
 |---|---|---|---|---|
-| 1 | Markdown → mrkdwn chunker uses IR-based splitter | P0 | `[ ]` | — |
-| 2 | Implicit thread mention via bot-participation cache | P0 | `[ ]` | — |
-| 3 | Interactive-reply DSL (`[[slack_buttons:…]]` / `[[slack_select:…]]`) | P0 | `[ ]` | — |
-| 4 | Native Slack streaming (`chat.startStream` / `appendStream` / `stopStream`) | P1 | `[ ]` | — |
-| 5 | Block-kit size-limit fallback (truncate + drop blocks if over cap) | P1 | `[ ]` | — |
-| 6 | Inbound debouncer + app_mention vs message race handling | P1 | `[~]` | — |
+| 1 | Markdown → mrkdwn chunker uses IR-based splitter | P0 | `[~]` | — |
+| 2 | Implicit thread mention via bot-participation cache | P0 | `[x]` | — |
+| 3 | Interactive-reply DSL (`[[slack_buttons:…]]` / `[[slack_select:…]]`) | P0 | `[x]` | — |
+| 4 | Native Slack streaming (`chat.startStream` / `appendStream` / `stopStream`) | P1 | `[x]` † | — |
+| 5 | Block-kit size-limit fallback (truncate + drop blocks if over cap) | P1 | `[x]` | — |
+| 6 | Inbound debouncer + app_mention vs message race handling | P1 | `[x]` | — |
 | 7 | Sender-name + channel-name resolution cache | P2 | `[ ]` | — |
 | 8 | Thread-status "is typing…" (`assistant.threads.setStatus`) | P2 | `[ ]` | — |
 | 9 | Inbound interaction payload sanitiser + compaction | P2 | `[ ]` | — |
-| 10 | Outbound identity override (`chat:write.customize`) | P2 | `[ ]` | — |
-| 11 | SSRF-guarded inbound file fetch | P2 | `[ ]` | — |
+| 10 | Outbound identity override (`chat:write.customize`) | P2 | `[x]` † | needs live-workspace scope check |
+| 11 | SSRF-guarded inbound file fetch | P2 | `[x]` | — |
 | 12 | Socket-mode reconnect backoff + auth-error fast-fail | P2 | `[~]` | — |
 | 13 | `thread.inheritParent` / configurable history scope | P3 | `[ ]` | — |
 

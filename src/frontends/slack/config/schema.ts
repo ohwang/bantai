@@ -1,5 +1,5 @@
 /**
- * slack.toml schema — zod validation for the Slack frontend config.
+ * slack.json schema — zod validation for the Slack frontend config.
  *
  * The file layout is described in plan-slack-integration.md §3.1.
  */
@@ -11,9 +11,9 @@ import { z } from "zod"
 // ---------------------------------------------------------------------------
 
 /**
- * A secret field: either a literal string, or `{ env = "VAR_NAME" }` indirecting
+ * A secret field: either a literal string, or `{ "env": "VAR_NAME" }` indirecting
  * to an environment variable. Env form is preferred — it keeps tokens out of
- * the TOML on disk.
+ * the config file on disk.
  */
 export const SecretRefSchema = z.union([
   z.string().min(1),
@@ -107,14 +107,14 @@ export const DefaultsSchema = z
 export type DefaultsConfig = z.infer<typeof DefaultsSchema>
 
 // ---------------------------------------------------------------------------
-// [mcp_servers.<name>]  — global registry of available MCP servers.
+// mcp_servers.<name>  — global registry of available MCP servers.
 //
 // Per-channel configs list names from this registry to opt in; an unlisted
 // channel sees the SDK's default (claude's built-in MCP set, nothing for
 // other backends). Three shapes are supported, matching the Claude SDK's
 // discriminated union: stdio (the common case), http, and sse. Every
 // secret-bearing field (env values, HTTP headers) accepts the SecretRef
-// indirection so tokens stay out of the TOML on disk.
+// indirection so tokens stay out of the config file on disk.
 // ---------------------------------------------------------------------------
 
 const McpStdioServerSchema = z
@@ -150,7 +150,7 @@ export const McpServerSpecSchema = z.union([
 export type McpServerSpec = z.infer<typeof McpServerSpecSchema>
 
 // ---------------------------------------------------------------------------
-// [[channels]]  — per-channel overrides.
+// channels[]  — per-channel overrides.
 // ---------------------------------------------------------------------------
 
 export const ChannelOverrideSchema = z
@@ -186,7 +186,7 @@ export const SlackConfigSchema = z
     channels: z.array(ChannelOverrideSchema).default([]),
     /**
      * Global MCP server registry. Channels reference these by name via
-     * `[[channels]].mcp_servers = ["git", "brave-search"]`. Empty by
+     * `channels[].mcp_servers: ["git", "brave-search"]`. Empty by
      * default — most self-hosts rely on the backend's built-in MCP set.
      */
     mcp_servers: z.record(z.string(), McpServerSpecSchema).default({}),

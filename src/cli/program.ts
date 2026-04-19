@@ -126,7 +126,7 @@ export async function runCli(argv: string[]): Promise<void> {
     .description("Run bantai as a Slack frontend server")
     .option(
       "--slack-config <path>",
-      "Path to slack.toml (default: ./.bantai/slack.toml, ~/.bantai/slack.toml)",
+      "Path to slack.json (default: ./.bantai/slack.json, ~/.bantai/slack.json)",
     )
     .option(
       "--slack-api-url <url>",
@@ -144,10 +144,10 @@ export async function runCli(argv: string[]): Promise<void> {
   })
   slackCmd
     .command("doctor")
-    .description("Verify slack.toml + workspace install without starting the server")
+    .description("Verify slack.json + workspace install without starting the server")
     .option(
       "--slack-config <path>",
-      "Path to slack.toml (default: ./.bantai/slack.toml, ~/.bantai/slack.toml)",
+      "Path to slack.json (default: ./.bantai/slack.json, ~/.bantai/slack.json)",
     )
     .option(
       "--slack-api-url <url>",

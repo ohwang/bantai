@@ -9,7 +9,7 @@ import type { ResolvedSlackConfig } from "../../../src/frontends/slack/config/sc
 describe("formatSlackDoctorReport", () => {
   it("renders a clean report when all probes pass", () => {
     const report: SlackDoctorReport = {
-      source: "/home/op/.bantai/slack.toml",
+      source: "/home/op/.bantai/slack.json",
       mode: "socket",
       persistenceEnabled: true,
       auth: {
@@ -21,7 +21,7 @@ describe("formatSlackDoctorReport", () => {
       findings: [],
     }
     const text = formatSlackDoctorReport(report)
-    expect(text).toContain("config:     /home/op/.bantai/slack.toml")
+    expect(text).toContain("config:     /home/op/.bantai/slack.json")
     expect(text).toContain("mode:       socket")
     expect(text).toContain("bot user:   U0BOT")
     expect(text).toContain("team:       T0TEAM")

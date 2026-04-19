@@ -1,0 +1,81 @@
+// bantai Slack frontend — local minislack config for interactive testing.
+//
+// Picked up automatically by `bantai slack` (first hit wins):
+//   1. ./.bantai/slack.json       ← this file
+//   2. ~/.bantai/slack.json
+//   3. --slack-config <path>
+//
+// Relies on `bantai minislack` seeding a deterministic `bantai` app on
+// boot (A00000001 on a fresh fixture, or the app rehydrated from
+// workspace.json when --persist is set). Tokens below match that app.
+{
+  "workspace": {
+    "mode": "socket",
+    "slack_api_url": "http://localhost:59088",
+    "bot_token": "xoxb-A00000001",
+    "app_token": "xapp-A00000001"
+  },
+
+  "defaults": {
+    // Real adapter — requires `codex` on PATH. Swap to "claude", "gemini",
+    // "acp", or "mock" depending on what you want to exercise.
+    "backend": "codex",
+    "verbosity": "verbose",
+    "require_mention": true,
+    "trigger_name": "bantai",
+    "control_prefix": "!bantai",
+    "session_banner": true,
+    "auto_join_threads": true,
+
+    // Cost footer lights up after every turn_complete. Useful while
+    // exercising a real backend — turn it off for headless scripted runs.
+    "show_cost": true,
+
+    // 0 = disabled. Flip these on when rehearsing S8 per-turn deadline /
+    // budget-cap guards.
+    "turn_timeout_s": 0,
+    "max_budget_usd": 0,
+
+    // Empty = anyone can approve Block-Kit prompts. Pin to specific
+    // user IDs (alice=U00000001, bob=U00000002 in the `basic` fixture)
+    // to exercise the approver allow-list.
+    "approvers": []
+  }
+
+  // Per-channel overrides — uncomment once you need one.
+  // The `basic` fixture creates #general first (C00000001) and
+  // #random second (C00000002).
+  //
+  // "channels": [
+  //   {
+  //     "id": "C00000001",
+  //     "name": "general",
+  //     "verbosity": "verbose",
+  //     "show_cost": true
+  //   },
+  //   {
+  //     "id": "C00000002",
+  //     "name": "random",
+  //     "require_mention": false
+  //   }
+  // ]
+}
+
+// ---------------------------------------------------------------------------
+// Driving it interactively:
+//
+//   # Terminal 1 — the running minislack prints the bantai tokens at boot.
+//   bun run dev -- minislack --fixture basic
+//
+//   # Terminal 2 — bantai picks up this file from .bantai/slack.json.
+//   bun run dev -- slack
+//
+//   # Post as alice via the SPA at http://localhost:<port>/ or curl:
+//   curl -X POST http://localhost:<port>/api/chat.postMessage \
+//     -H "Authorization: Bearer xoxp-U00000001" \
+//     -H "Content-Type: application/json" \
+//     -d '{"channel":"C00000001","text":"<@U00000003> ship it"}'
+//
+//   # The mention target is the bantai bot user — U00000003 after the
+//   # two seeded users on a fresh `basic` boot.
+// ---------------------------------------------------------------------------

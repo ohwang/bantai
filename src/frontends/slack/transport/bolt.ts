@@ -46,20 +46,20 @@ export function createBoltApp({ config, logLevel, customRoutes }: CreateBoltAppO
   const { workspace } = config
   if (!workspace.botToken) {
     throw new Error(
-      "slack bot_token missing — set [workspace].bot_token in slack.toml " +
+      "slack bot_token missing — set workspace.bot_token in slack.json " +
         "(or export the env var named there)",
     )
   }
   if (workspace.mode === "socket" && !workspace.appToken) {
     throw new Error(
       "slack app_token missing — required for Socket Mode. Set " +
-        "[workspace].app_token in slack.toml (or its env indirection).",
+        "workspace.app_token in slack.json (or its env indirection).",
     )
   }
   if (workspace.mode === "http" && !workspace.signingSecret) {
     throw new Error(
       "slack signing_secret missing — required for HTTP mode. Set " +
-        "[workspace].signing_secret in slack.toml (or its env indirection).",
+        "workspace.signing_secret in slack.json (or its env indirection).",
     )
   }
 

@@ -55,9 +55,9 @@ import { mkdirSync } from "node:fs"
 export { mergeCumulativeUsage } from "./usage"
 
 export interface LaunchSlackOpts extends CLIFlags {
-  /** Explicit slack.toml path — takes precedence over config search. */
+  /** Explicit slack.json path — takes precedence over config search. */
   slackConfigPath?: string
-  /** Override for [workspace].slack_api_url — the minislack URL in tests. */
+  /** Override for workspace.slack_api_url — the minislack URL in tests. */
   slackApiUrlOverride?: string
   /**
    * Inline config object — bypasses the filesystem search. Integration tests

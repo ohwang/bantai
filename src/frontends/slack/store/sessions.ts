@@ -221,7 +221,7 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
 
 /**
  * No-op store for the paths that disable persistence (tests that don't care,
- * or operators who explicitly opt out via `slack.toml`). Keeps the registry's
+ * or operators who explicitly opt out via `slack.json`). Keeps the registry's
  * plumbing uniform — every code path that consults the store can do so without
  * a `store ? …` guard.
  */

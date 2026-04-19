@@ -1,12 +1,12 @@
 /**
  * Channel-to-project resolver.
  *
- * Given an inbound Slack `channel_id`, look up the `[[channels]]` override
- * in slack.toml. If a match is found, its per-channel fields take precedence
- * over `[defaults]` and fall back to defaults where omitted. If no match is
- * found, the frontend uses `[defaults]` with the process's cwd as the
- * project_dir — handy for a single-repo self-host where slack.toml only
- * specifies `[workspace]` + `[defaults]`.
+ * Given an inbound Slack `channel_id`, look up the matching entry in
+ * `channels[]` in slack.json. If a match is found, its per-channel fields
+ * take precedence over `defaults` and fall back to defaults where omitted.
+ * If no match is found, the frontend uses `defaults` with the process's cwd
+ * as the project_dir — handy for a single-repo self-host where slack.json
+ * only specifies `workspace` + `defaults`.
  *
  * This module is pure: no I/O, no logging. The caller feeds in the
  * already-resolved slack config and receives a typed ProjectConfig back.

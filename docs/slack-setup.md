@@ -60,38 +60,47 @@ On the app's configuration page:
 4. Enable **Event Subscriptions** on that tab.
 5. Enable **Interactivity** on the **Interactivity & Shortcuts** tab (no URL needed in Socket Mode).
 
-## 5. Write `slack.toml`
+## 5. Write `slack.json`
 
-bantai looks for `./.bantai/slack.toml` first, then `~/.bantai/slack.toml`. Either works — create one of them:
+bantai looks for `./.bantai/slack.json` first, then `~/.bantai/slack.json`. Either works — create one of them. The file is JSONC (JSON + `//` and `/* */` comments + trailing commas), so you can annotate it inline:
 
-```toml
-[workspace]
-mode = "socket"
-bot_token = { env = "BANTAI_SLACK_BOT_TOKEN" }
-app_token = { env = "BANTAI_SLACK_APP_TOKEN" }
+```jsonc
+{
+  "workspace": {
+    "mode": "socket",
+    "bot_token": { "env": "BANTAI_SLACK_BOT_TOKEN" },
+    "app_token": { "env": "BANTAI_SLACK_APP_TOKEN" }
+  },
 
-[defaults]
-backend = "claude"
-model = "claude-opus-4-7"
-verbosity = "normal"
-require_mention = true
-session_banner = true
-approvers = []          # any user can approve tool use in the default config
-# approvers = ["U0123456", "U0123457"]   # recommended for production
+  "defaults": {
+    "backend": "claude",
+    "model": "claude-opus-4-7",
+    "verbosity": "normal",
+    "require_mention": true,
+    "session_banner": true,
+    // Any user can approve tool use in the default config.
+    // Recommended for production: pin to a specific allow-list, e.g.
+    //   "approvers": ["U0123456", "U0123457"]
+    "approvers": []
+  },
 
-# Persist per-session state so a process restart (crash, deploy) picks live
-# threads back up where they left off. Leave unset to disable persistence.
-store_path = "~/.bantai/slack.db"
+  // Persist per-session state so a process restart (crash, deploy) picks
+  // live threads back up where they left off. Leave unset or "" to disable.
+  "store_path": "~/.bantai/slack.db"
 
-# Optional: per-channel overrides.
-# [[channels]]
-# id = "C0123456789"
-# name = "eng-backend"
-# project_dir = "/home/me/dev/backend"
-# backend = "claude"
-# model = "claude-opus-4-7"
-# approvers = ["U0ALICE"]
-# verbosity = "verbose"
+  // Optional: per-channel overrides.
+  // "channels": [
+  //   {
+  //     "id": "C0123456789",
+  //     "name": "eng-backend",
+  //     "project_dir": "/home/me/dev/backend",
+  //     "backend": "claude",
+  //     "model": "claude-opus-4-7",
+  //     "approvers": ["U0ALICE"],
+  //     "verbosity": "verbose"
+  //   }
+  // ]
+}
 ```
 
 Export your tokens + your backend's API key:
@@ -111,7 +120,7 @@ bun run ./src/index.ts slack
 You should see (roughly):
 
 ```
-slack: loaded config from /you/.bantai/slack.toml (mode=socket)
+slack: loaded config from /you/.bantai/slack.json (mode=socket)
 slack auth ok: user=U0YOURBOT bot=B0… team=T0…
 slack: server ready — bot user U0YOURBOT, team T0…
 ```
@@ -126,31 +135,36 @@ In your Slack workspace:
 
 ## Per-channel configuration
 
-Each `[[channels]]` override scopes its fields to one channel ID:
+Each entry in `channels[]` scopes its fields to one channel ID:
 
-```toml
-[[channels]]
-id = "C_YOUR_CHANNEL"
-name = "eng-backend"
-project_dir = "/home/me/dev/backend"
-backend = "codex"                  # this channel runs Codex instead of Claude
-model = "gpt-5-codex"
-approvers = ["U0ALICE", "U0BOB"]
-verbosity = "verbose"
-allowed_tools = ["Read", "Grep", "Bash"]
-claude_config_dir = "/home/me/.claude/eng-backend"
-system_prompt_append = "Focus on the backend service; ignore the frontend subtree."
-turn_timeout_s = 300               # auto-interrupt a turn after 5 min
-max_budget_usd = 10                # stop turn streaming if the session cost exceeds $10
-
-[[channels]]
-id = "C_OTHER_CHANNEL"
-name = "mobile"
-project_dir = "/home/me/dev/mobile"
-backend = "claude"
-model = "claude-haiku-4-5"
-approvers = ["U0CAROL"]
-verbosity = "concise"
+```jsonc
+{
+  "channels": [
+    {
+      "id": "C_YOUR_CHANNEL",
+      "name": "eng-backend",
+      "project_dir": "/home/me/dev/backend",
+      "backend": "codex",                  // this channel runs Codex instead of Claude
+      "model": "gpt-5-codex",
+      "approvers": ["U0ALICE", "U0BOB"],
+      "verbosity": "verbose",
+      "allowed_tools": ["Read", "Grep", "Bash"],
+      "claude_config_dir": "/home/me/.claude/eng-backend",
+      "system_prompt_append": "Focus on the backend service; ignore the frontend subtree.",
+      "turn_timeout_s": 300,               // auto-interrupt a turn after 5 min
+      "max_budget_usd": 10                 // stop turn streaming if session cost exceeds $10
+    },
+    {
+      "id": "C_OTHER_CHANNEL",
+      "name": "mobile",
+      "project_dir": "/home/me/dev/mobile",
+      "backend": "claude",
+      "model": "claude-haiku-4-5",
+      "approvers": ["U0CAROL"],
+      "verbosity": "concise"
+    }
+  ]
+}
 ```
 
 Two different repos, two different backends, two different approver lists — one bot process, no cross-talk.
@@ -168,7 +182,7 @@ Any user in the channel can run these in-thread by typing `!bantai <cmd>`:
 - `!bantai verbosity <silent|concise|normal|verbose|debug>` — adjust output detail
 - `!bantai new` — reset this thread's session
 
-Change the prefix by setting `control_prefix = "!jarvis"` (or whatever) under `[defaults]`.
+Change the prefix by setting `"control_prefix": "!jarvis"` (or whatever) under `defaults`.
 
 ## HTTP / Events API mode (optional)
 
@@ -178,15 +192,18 @@ If you can't use Socket Mode (e.g. a hosted deploy), switch the manifest generat
 bun run ./src/index.ts slack init-manifest --http --request-url https://yourdomain.com/slack/events > slack-manifest.yaml
 ```
 
-And in `slack.toml`:
+And in `slack.json`:
 
-```toml
-[workspace]
-mode = "http"
-bot_token = { env = "BANTAI_SLACK_BOT_TOKEN" }
-signing_secret = { env = "BANTAI_SLACK_SIGNING_SECRET" }
-port = 3000
-webhook_path = "/slack/events"
+```jsonc
+{
+  "workspace": {
+    "mode": "http",
+    "bot_token": { "env": "BANTAI_SLACK_BOT_TOKEN" },
+    "signing_secret": { "env": "BANTAI_SLACK_SIGNING_SECRET" },
+    "port": 3000,
+    "webhook_path": "/slack/events"
+  }
+}
 ```
 
 You're responsible for getting HTTPS in front of the bot — Slack refuses plain HTTP request URLs. ngrok / Cloudflare Tunnels / your load balancer are all fine.
@@ -202,12 +219,12 @@ You're responsible for getting HTTPS in front of the bot — Slack refuses plain
 ### Bot doesn't reply to @mentions
 
 - Is the bot a member of the channel? `/invite @bantai`.
-- Is the channel ID in a `[[channels]]` entry (if you have per-channel overrides)? `conversations.info` in Slack's API surface will show the ID.
+- Is the channel ID in a `channels[]` entry (if you have per-channel overrides)? `conversations.info` in Slack's API surface will show the ID.
 - Run `!bantai status` in-thread — if the bot responds to that, the routing layer is working; the silence is upstream (backend / model / auth).
 
 ### `approvers.defaults_empty` warning
 
-The boot audit flags channels where any user can approve tool use. Set `approvers = ["U0YOUR_ID"]` under `[defaults]` or per-channel. Slack user IDs start with `U`; you can grab yours from the **Profile & account** → **Copy member ID** menu.
+The boot audit flags channels where any user can approve tool use. Set `"approvers": ["U0YOUR_ID"]` under `defaults` or per-channel. Slack user IDs start with `U`; you can grab yours from the **Profile & account** → **Copy member ID** menu.
 
 ### Bot posts but nothing shows up
 

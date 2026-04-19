@@ -3,7 +3,7 @@
  *
  * Spins up Bolt just long enough to run `auth.test` + the same boot-time
  * scope probes the launcher runs, prints a human-readable summary, and
- * exits. Designed for operators who want to verify their `slack.toml` +
+ * exits. Designed for operators who want to verify their `slack.json` +
  * workspace setup WITHOUT actually starting the server and accepting
  * traffic. Complements the `runBootDiagnostics` warn lines the launcher
  * emits on every start.
@@ -11,7 +11,7 @@
  * Every IO surface is injectable so tests drive the doctor without a
  * live Slack workspace:
  *   - `createApp` builds the Bolt instance (defaults to `createBoltApp`).
- *   - `loadConfig` reads slack.toml (defaults to `loadSlackConfig`).
+ *   - `loadConfig` reads slack.json (defaults to `loadSlackConfig`).
  * Minislack-backed tests override both to feed canned auth / diagnostic
  * results through.
  */
@@ -43,9 +43,9 @@ export interface SlackDoctorReport {
 }
 
 export interface RunSlackDoctorOpts {
-  /** Explicit slack.toml path (same as `bantai slack --slack-config`). */
+  /** Explicit slack.json path (same as `bantai slack --slack-config`). */
   configPath?: string
-  /** Working directory for slack.toml search. Defaults to process.cwd(). */
+  /** Working directory for slack.json search. Defaults to process.cwd(). */
   cwd?: string
   /** Override [workspace].slack_api_url — mirrors the launcher flag. */
   slackApiUrlOverride?: string

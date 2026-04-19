@@ -28,7 +28,7 @@ describe("loadSlackConfig — inline", () => {
     expect(resolved.source).toBe("<inline>")
   })
 
-  it("resolves { env = 'VAR' } indirections", async () => {
+  it("resolves { env: 'VAR' } indirections", async () => {
     const resolved = await loadSlackConfig({
       inline: {
         workspace: {
@@ -77,22 +77,27 @@ describe("loadSlackConfig — inline", () => {
 })
 
 describe("loadSlackConfig — filesystem", () => {
-  it("loads from <cwd>/.bantai/slack.toml when present", async () => {
+  it("loads from <cwd>/.bantai/slack.json when present (with JSONC comments + trailing commas)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "bantai-slack-cfg-"))
     const cfgDir = path.join(dir, ".bantai")
     await mkdir(cfgDir, { recursive: true })
-    const cfgPath = path.join(cfgDir, "slack.toml")
+    const cfgPath = path.join(cfgDir, "slack.json")
     await writeFile(
       cfgPath,
       [
-        "[workspace]",
-        'mode = "socket"',
-        'bot_token = "xoxb-file"',
-        'app_token = "xapp-file"',
-        "",
-        "[defaults]",
-        'verbosity = "verbose"',
-        'trigger_name = "jarvis"',
+        "// bantai slack config — JSONC (JSON + comments + trailing commas).",
+        "{",
+        '  "workspace": {',
+        '    "mode": "socket",',
+        '    "bot_token": "xoxb-file",',
+        '    "app_token": "xapp-file", // trailing comma tolerated',
+        "  },",
+        "  /* block comments work too */",
+        '  "defaults": {',
+        '    "verbosity": "verbose",',
+        '    "trigger_name": "jarvis",',
+        "  },",
+        "}",
         "",
       ].join("\n"),
       "utf8",
@@ -104,11 +109,23 @@ describe("loadSlackConfig — filesystem", () => {
     expect(resolved.source).toBe(cfgPath)
   })
 
-  it("throws when no slack.toml is found anywhere", async () => {
+  it("surfaces JSONC syntax errors with file + line info", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-slack-cfg-"))
+    const cfgDir = path.join(dir, ".bantai")
+    await mkdir(cfgDir, { recursive: true })
+    const cfgPath = path.join(cfgDir, "slack.json")
+    // Missing closing brace — guaranteed parse error.
+    await writeFile(cfgPath, '{ "workspace": { "mode": "socket" ', "utf8")
+    await expect(
+      loadSlackConfig({ cwd: dir, env: {} }),
+    ).rejects.toThrow(/Invalid JSONC in slack config/)
+  })
+
+  it("throws when no slack.json is found anywhere", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "bantai-slack-cfg-"))
     await expect(
       loadSlackConfig({ cwd: dir, env: { HOME: dir } }),
-    ).rejects.toThrow(/slack\.toml not found/)
+    ).rejects.toThrow(/slack\.json not found/)
   })
 })
 

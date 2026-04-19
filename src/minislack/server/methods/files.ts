@@ -16,7 +16,11 @@ import {
 } from "../../core/files"
 import { postMessage } from "../../core/messages"
 import { messageToMessageEvent } from "../../core/event-mappers"
-import { parseMultipart, pickUploadFile } from "../multipart"
+import {
+  parseMultipart,
+  pickUploadFile,
+  type MultipartFilePart,
+} from "../multipart"
 import type { EventBus } from "../../core/events"
 import type { File, Workspace } from "../../types/slack"
 import type { AuthContext } from "../auth"
@@ -31,8 +35,16 @@ export interface FilesUploadV1Response {
 }
 
 /**
- * Slack's v1 multipart `files.upload`. Accepts the raw Request so we can
- * decode the multipart body once — no JSON preparse from the caller.
+ * Slack's v1 `files.upload`. Accepts the raw Request so we can decode
+ * multipart once without forcing the caller to pre-parse it.
+ *
+ * Three body shapes, all matching real Slack:
+ *   - multipart/form-data with a `file` part (bytes + filename)
+ *   - multipart/form-data with only a `content` string field
+ *   - application/x-www-form-urlencoded (or JSON) with `content`
+ *
+ * Returns `no_file_data` when neither a file part nor `content` is set,
+ * mirroring Slack's behaviour.
  */
 export async function filesUploadV1(
   ws: Workspace,
@@ -44,39 +56,50 @@ export async function filesUploadV1(
   const userId = ctx.userId
   if (!userId) throw new MinislackError("not_authed", "files.upload requires a user or bot token")
 
-  const ct = req.headers.get("content-type") ?? ""
-  if (!ct.includes("multipart/form-data")) {
-    throw new MinislackError("invalid_arguments", "files.upload expects multipart/form-data")
-  }
+  const source = await readUploadSource(req)
 
-  const parsed = await parseMultipart(req)
-  const part = pickUploadFile(parsed)
-  if (!part) throw new MinislackError("no_file_data", "files.upload requires a file part")
-
-  const channelsCsv = parsed.fields.channels ?? ""
+  const channelsCsv = source.fields.channels ?? ""
   const channelIds = channelsCsv
     .split(",")
     .map((c) => c.trim())
     .filter(Boolean)
     .map((idOrName) => resolveChannelId(ws, idOrName))
 
-  const mimetype = parsed.fields.filetype
-    ? normaliseMime(parsed.fields.filetype, part.mimetype)
-    : part.mimetype
-  const filename = parsed.fields.filename || part.filename
-  const title = parsed.fields.title
+  const filetypeHint = source.fields.filetype
+  const filenameField = source.fields.filename
+
+  let bytes: Uint8Array
+  let filename: string
+  let mimetype: string
+  if (source.part) {
+    bytes = source.part.bytes
+    filename = filenameField || source.part.filename
+    mimetype = filetypeHint
+      ? normaliseMime(filetypeHint, source.part.mimetype)
+      : source.part.mimetype
+  } else if (source.fields.content !== undefined) {
+    bytes = new TextEncoder().encode(source.fields.content)
+    filename = filenameField || defaultContentFilename(filetypeHint)
+    // Pass "" as fallback so the filetype hint drives the MIME — real Slack
+    // treats `content` as a text-body primitive and derives type from hint.
+    mimetype = filetypeHint ? normaliseMime(filetypeHint, "") : "text/plain"
+  } else {
+    throw new MinislackError("no_file_data", "files.upload requires a file part or content field")
+  }
+
+  const title = source.fields.title
 
   const file = createFileRecord(ws, baseHttp, {
     user: userId,
     name: filename,
     title,
     mimetype,
-    bytes: part.bytes,
+    bytes,
     channels: [],
   })
 
-  const initialComment = parsed.fields.initial_comment?.trim()
-  const threadTs = parsed.fields.thread_ts?.trim() || undefined
+  const initialComment = source.fields.initial_comment?.trim()
+  const threadTs = source.fields.thread_ts?.trim() || undefined
 
   // Attach to each channel. If an initial_comment is set, post a message per
   // channel with the file attached (Slack's v1 behaviour). Otherwise, create
@@ -99,6 +122,73 @@ export async function filesUploadV1(
   }
 
   return { ok: true, file }
+}
+
+/**
+ * Normalised source for the v1 upload pipeline. Either a multipart file
+ * part (bytes + filename) is present, or the caller passed `content` in
+ * the fields map — both paths feed the same downstream create + attach
+ * logic.
+ */
+interface UploadSource {
+  fields: Record<string, string>
+  part?: MultipartFilePart
+}
+
+async function readUploadSource(req: Request): Promise<UploadSource> {
+  const ct = req.headers.get("content-type") ?? ""
+  if (ct.includes("multipart/form-data")) {
+    const parsed = await parseMultipart(req)
+    const part = pickUploadFile(parsed)
+    return part ? { fields: parsed.fields, part } : { fields: parsed.fields }
+  }
+
+  if (ct.includes("application/json")) {
+    const body = await safeJson(req)
+    return { fields: stringifyFields(body) }
+  }
+
+  if (ct.includes("application/x-www-form-urlencoded")) {
+    const form = await req.formData()
+    const fields: Record<string, string> = {}
+    for (const [k, v] of form.entries()) {
+      if (typeof v === "string") fields[k] = v
+    }
+    return { fields }
+  }
+
+  // Real Slack tolerates raw querystring bodies too (legacy clients).
+  const text = await req.text()
+  if (text) {
+    const params = new URLSearchParams(text)
+    const fields: Record<string, string> = {}
+    for (const [k, v] of params.entries()) fields[k] = v
+    return { fields }
+  }
+  return { fields: {} }
+}
+
+async function safeJson(req: Request): Promise<Record<string, unknown>> {
+  try {
+    const body = (await req.json()) as unknown
+    return body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function stringifyFields(body: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(body)) {
+    if (v === undefined || v === null) continue
+    out[k] = typeof v === "string" ? v : String(v)
+  }
+  return out
+}
+
+function defaultContentFilename(filetypeHint: string | undefined): string {
+  const ext = filetypeHint?.trim().toLowerCase()
+  return ext ? `upload.${ext}` : "upload.txt"
 }
 
 // ---------------------------------------------------------------------------

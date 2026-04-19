@@ -104,6 +104,78 @@ describe("files.upload v1 (multipart)", () => {
     const res = await fetch(`${handle.url}/files/F99999999`)
     expect(res.status).toBe(404)
   })
+
+  test("content-inline body (form-urlencoded) uploads as a text file", async () => {
+    const alice = handle.asUser("alice")
+    const body = new URLSearchParams({
+      channels: "general",
+      filename: "note.md",
+      filetype: "md",
+      content: "# hello\n\ninline body",
+      initial_comment: "see attached",
+    })
+    const res = await fetch(`${handle.url}/api/files.upload`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${alice.token}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    })
+    const out = (await res.json()) as {
+      ok: boolean
+      file: { name: string; mimetype: string; size: number; url_private: string }
+    }
+    expect(out.ok).toBe(true)
+    expect(out.file.name).toBe("note.md")
+    expect(out.file.mimetype).toBe("text/markdown")
+    expect(out.file.size).toBe(
+      new TextEncoder().encode("# hello\n\ninline body").byteLength,
+    )
+    const served = await fetch(out.file.url_private)
+    expect(await served.text()).toBe("# hello\n\ninline body")
+
+    const history = await alice.history("general")
+    expect(history[0]?.text).toBe("see attached")
+  })
+
+  test("content-inline body (JSON) defaults filename + mimetype", async () => {
+    const alice = handle.asUser("alice")
+    const res = await fetch(`${handle.url}/api/files.upload`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${alice.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        channels: "general",
+        content: "plain-text-body",
+      }),
+    })
+    const out = (await res.json()) as {
+      ok: boolean
+      file: { name: string; mimetype: string }
+    }
+    expect(out.ok).toBe(true)
+    expect(out.file.name).toBe("upload.txt")
+    expect(out.file.mimetype).toBe("text/plain")
+  })
+
+  test("no file part and no content → no_file_data", async () => {
+    const alice = handle.asUser("alice")
+    const body = new URLSearchParams({ channels: "general", filename: "empty.txt" })
+    const res = await fetch(`${handle.url}/api/files.upload`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${alice.token}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    })
+    const out = (await res.json()) as { ok: boolean; error?: string }
+    expect(out.ok).toBe(false)
+    expect(out.error).toBe("no_file_data")
+  })
 })
 
 describe("files v2 (getUploadURLExternal + completeUploadExternal)", () => {

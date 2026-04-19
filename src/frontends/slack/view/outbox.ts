@@ -26,7 +26,7 @@
  */
 
 import type { KnownBlock } from "@slack/types"
-import { markdownToSlackMrkdwnChunks } from "./format"
+import { markdownToSlackMrkdwn, markdownToSlackMrkdwnChunks } from "./format"
 import { log } from "../../../utils/logger"
 
 // ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       const res = await opts.adapter.postMessage({
         channel: opts.channel,
         threadTs: opts.threadTs,
-        text: visibleHead(accumulator, maxChunkLen) || placeholderText(),
+        text: markdownToSlackMrkdwn(visibleHead(accumulator, maxChunkLen)) || placeholderText(),
         ...(opts.identity ? { identity: opts.identity } : {}),
       })
       draftTs = res.ts
@@ -217,7 +217,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       return
     }
     if (!draftTs) return
-    const body = visibleHead(accumulator, maxChunkLen)
+    const body = markdownToSlackMrkdwn(visibleHead(accumulator, maxChunkLen))
     if (body.length === 0) return
     try {
       await opts.adapter.updateMessage({
@@ -356,16 +356,35 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
         return
       }
       if (draftTs) {
-        const body = visibleHead(accumulator, maxChunkLen)
+        const chunks = markdownToSlackMrkdwnChunks(accumulator, { maxLen: maxChunkLen })
+        const firstChunk = chunks.length > 0 ? chunks[0]! : placeholderText()
+        const overflowChunks = chunks.slice(1)
         try {
           await opts.adapter.updateMessage({
             channel: opts.channel,
             ts: draftTs,
-            text: body,
-            ...(finalBlocks ? { blocks: finalBlocks } : {}),
+            text: firstChunk,
+            ...(overflowChunks.length === 0 && finalBlocks ? { blocks: finalBlocks } : {}),
           })
         } catch (err) {
           log.error(`slack outbox (tier-2 final update): ${String(err)}`)
+        }
+        // Flush any overflow chunks as additional thread messages — matches
+        // the behaviour documented in visibleHead's JSDoc (overflow promised
+        // at stop() time, not silently truncated with a trailing ellipsis).
+        for (let i = 0; i < overflowChunks.length; i++) {
+          const isLast = i === overflowChunks.length - 1
+          try {
+            await opts.adapter.postMessage({
+              channel: opts.channel,
+              threadTs: opts.threadTs,
+              text: overflowChunks[i]!,
+              ...(isLast && finalBlocks != null ? { blocks: finalBlocks } : {}),
+              ...(opts.identity ? { identity: opts.identity } : {}),
+            })
+          } catch (err) {
+            log.error(`slack outbox (tier-2 overflow): postMessage chunk failed: ${String(err)}`)
+          }
         }
       }
       stopped = true

@@ -267,6 +267,175 @@ export function editMessage(ws: Workspace, opts: EditMessageOpts): EditMessageRe
   return { message: msg, previous }
 }
 
+// ---------------------------------------------------------------------------
+// Streaming — chat.startStream / chat.appendStream / chat.stopStream.
+//
+// A streaming message is an ordinary Message with `streaming: true` set at
+// creation time. Appends mutate `text` in place; stop clears the flag and
+// may overwrite with authoritative content. Events emitted by the server
+// layer follow the regular message / message_changed shape so clients that
+// already render those events see streamed content without special-casing.
+// ---------------------------------------------------------------------------
+
+export interface StartStreamOpts {
+  channelId: string
+  userId: string
+  thread_ts?: string
+  bot_id?: string
+  app_id?: string
+  recipient_team_id?: string
+  recipient_user_id?: string
+  now?: () => number
+}
+
+export interface StartStreamResult {
+  message: Message
+  /** When the stream is a thread reply, the parent with reply counters already bumped. */
+  threadParent?: Message
+}
+
+/**
+ * Create an empty placeholder message flagged `streaming: true`. Thread
+ * parent bookkeeping matches postMessage — reply_count / reply_users /
+ * latest_reply all tick when a stream is opened in a thread, so clients
+ * can show "bot is replying" immediately instead of waiting for the first
+ * append.
+ */
+export function startStream(ws: Workspace, opts: StartStreamOpts): StartStreamResult {
+  const ch = ws.channels.get(opts.channelId)
+  if (!ch) throw new MinislackError("channel_not_found", opts.channelId)
+  assertMember(ch, opts.userId)
+
+  let parent: Message | undefined
+  if (opts.thread_ts) {
+    const candidate = ch.messages.get(opts.thread_ts)
+    if (!candidate || candidate.tombstone) {
+      throw new MinislackError("message_not_found", `parent message ${opts.thread_ts} missing`)
+    }
+    parent = candidate.thread_ts && candidate.thread_ts !== candidate.ts
+      ? ch.messages.get(candidate.thread_ts)
+      : candidate
+    if (!parent) {
+      throw new MinislackError("message_not_found", `root of ${opts.thread_ts} missing`)
+    }
+  }
+
+  const ts = nextTs(ws, ch.id, opts.now)
+  const isReply = !!parent && parent.ts !== ts
+  const effectiveThreadTs = parent ? parent.ts : undefined
+
+  const msg: Message = {
+    type: "message",
+    ts,
+    channel: ch.id,
+    user: opts.userId,
+    text: "",
+    team: ws.team.id,
+    streaming: true,
+    ...(opts.bot_id ? { bot_id: opts.bot_id, subtype: "bot_message" } : {}),
+    ...(opts.app_id ? { app_id: opts.app_id } : {}),
+    ...(effectiveThreadTs ? { thread_ts: effectiveThreadTs } : {}),
+    ...(isReply && parent ? { parent_user_id: parent.user } : {}),
+    ...(opts.recipient_team_id || opts.recipient_user_id
+      ? {
+          streaming_recipient: {
+            ...(opts.recipient_team_id ? { team_id: opts.recipient_team_id } : {}),
+            ...(opts.recipient_user_id ? { user_id: opts.recipient_user_id } : {}),
+          },
+        }
+      : {}),
+  }
+  ch.messages.set(ts, msg)
+
+  let threadParent: Message | undefined
+  if (isReply && parent) {
+    parent.is_thread_parent = true
+    parent.reply_count = (parent.reply_count ?? 0) + 1
+    const users = parent.reply_users ?? []
+    if (!users.includes(opts.userId)) users.push(opts.userId)
+    parent.reply_users = users
+    parent.reply_users_count = users.length
+    parent.latest_reply = ts
+    threadParent = parent
+  }
+
+  return { message: msg, threadParent }
+}
+
+export interface AppendStreamOpts {
+  channelId: string
+  ts: string
+  userId: string
+  markdown_text: string
+}
+
+export interface AppendStreamResult {
+  message: Message
+  previous: Message
+}
+
+/**
+ * Append text to a streaming message. Append-only: concatenates onto the
+ * current body and publishes the new composite state. Rejects with
+ * `message_not_streaming` when the target isn't live, so a racey appender
+ * can't keep writing into a finalised message.
+ */
+export function appendStream(ws: Workspace, opts: AppendStreamOpts): AppendStreamResult {
+  const ch = ws.channels.get(opts.channelId)
+  if (!ch) throw new MinislackError("channel_not_found", opts.channelId)
+  const msg = ch.messages.get(opts.ts)
+  if (!msg || msg.tombstone) throw new MinislackError("message_not_found", opts.ts)
+  if (msg.user !== opts.userId) {
+    throw new MinislackError("cant_update_message", "only the streaming author can append")
+  }
+  if (!msg.streaming) {
+    throw new MinislackError("message_not_streaming", `message ${opts.ts} is not streaming`)
+  }
+  const previous: Message = { ...msg }
+  msg.text = `${msg.text}${opts.markdown_text}`
+  return { message: msg, previous }
+}
+
+export interface StopStreamOpts {
+  channelId: string
+  ts: string
+  userId: string
+  /** When provided, replaces the accumulated text with this canonical body. */
+  text?: string
+  blocks?: (KnownBlock | Block)[]
+  attachments?: MessageAttachment[]
+}
+
+export interface StopStreamResult {
+  message: Message
+  previous: Message
+}
+
+/**
+ * Finalise a streaming message. Clears `streaming`; optionally overwrites
+ * text / blocks / attachments with authoritative content. Idempotent on
+ * repeated calls once cleared — returns `message_not_streaming` so callers
+ * can tell an attempted-double-stop apart from a normal close.
+ */
+export function stopStream(ws: Workspace, opts: StopStreamOpts): StopStreamResult {
+  const ch = ws.channels.get(opts.channelId)
+  if (!ch) throw new MinislackError("channel_not_found", opts.channelId)
+  const msg = ch.messages.get(opts.ts)
+  if (!msg || msg.tombstone) throw new MinislackError("message_not_found", opts.ts)
+  if (msg.user !== opts.userId) {
+    throw new MinislackError("cant_update_message", "only the streaming author can stop")
+  }
+  if (!msg.streaming) {
+    throw new MinislackError("message_not_streaming", `message ${opts.ts} is not streaming`)
+  }
+  const previous: Message = { ...msg }
+  if (opts.text !== undefined) msg.text = opts.text
+  if (opts.blocks !== undefined) msg.blocks = opts.blocks
+  if (opts.attachments !== undefined) msg.attachments = opts.attachments
+  msg.streaming = false
+  return { message: msg, previous }
+}
+
 export interface DeleteMessageOpts {
   channelId: string
   ts: string

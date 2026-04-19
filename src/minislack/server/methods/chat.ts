@@ -7,9 +7,12 @@
  */
 
 import {
+  appendStream,
   deleteMessage,
   editMessage,
   postMessageDetailed,
+  startStream,
+  stopStream,
 } from "../../core/messages"
 import { nextTs } from "../../core/ts"
 import { MinislackError } from "../../core/channels"
@@ -283,6 +286,123 @@ export function chatPostEphemeral(
   }
   bus.publish(evt)
   return { ok: true, message_ts: ts }
+}
+
+// ---------------------------------------------------------------------------
+// chat.startStream / chat.appendStream / chat.stopStream — Assistant API
+// streaming surface. A streaming message is an ordinary Message flagged
+// `streaming: true`; appends mutate in place and publish message_changed
+// so any client that already handles edits renders the stream naturally.
+// ---------------------------------------------------------------------------
+
+export interface ChatStartStreamArgs {
+  channel: string
+  thread_ts?: string
+  recipient_team_id?: string
+  recipient_user_id?: string
+}
+
+export interface ChatStartStreamResponse {
+  ok: true
+  channel: string
+  ts: string
+  message: Message
+}
+
+export function chatStartStream(
+  ws: Workspace,
+  bus: EventBus,
+  ctx: AuthContext,
+  args: ChatStartStreamArgs,
+): ChatStartStreamResponse {
+  const ch = resolve(ws, args.channel)
+  if (ctx.kind === "app") {
+    throw new MinislackError("not_authed", "chat.startStream requires a user or bot token")
+  }
+  const userId = ctx.userId
+  if (!userId) throw new MinislackError("not_authed")
+  const { message: msg, threadParent } = startStream(ws, {
+    channelId: ch.id,
+    userId,
+    thread_ts: args.thread_ts,
+    ...(ctx.kind === "bot"
+      ? { bot_id: ctx.botId, app_id: ctx.appId }
+      : {}),
+    ...(args.recipient_team_id ? { recipient_team_id: args.recipient_team_id } : {}),
+    ...(args.recipient_user_id ? { recipient_user_id: args.recipient_user_id } : {}),
+  })
+  bus.publish(messageToMessageEvent(msg, ch))
+  if (threadParent) {
+    bus.publish(buildThreadParentChanged(threadParent, ch))
+  }
+  return { ok: true, channel: ch.id, ts: msg.ts, message: msg }
+}
+
+export interface ChatAppendStreamArgs {
+  channel: string
+  ts: string
+  markdown_text: string
+}
+
+export interface ChatAppendStreamResponse {
+  ok: true
+  channel: string
+  ts: string
+}
+
+export function chatAppendStream(
+  ws: Workspace,
+  bus: EventBus,
+  ctx: AuthContext,
+  args: ChatAppendStreamArgs,
+): ChatAppendStreamResponse {
+  const ch = resolve(ws, args.channel)
+  const userId = ctx.userId
+  if (!userId) throw new MinislackError("not_authed")
+  const { message, previous } = appendStream(ws, {
+    channelId: ch.id,
+    ts: args.ts,
+    userId,
+    markdown_text: args.markdown_text,
+  })
+  bus.publish(buildMessageChanged(message, previous, ch))
+  return { ok: true, channel: ch.id, ts: message.ts }
+}
+
+export interface ChatStopStreamArgs {
+  channel: string
+  ts: string
+  text?: string
+  blocks?: (KnownBlock | Block)[]
+  attachments?: MessageAttachment[]
+}
+
+export interface ChatStopStreamResponse {
+  ok: true
+  channel: string
+  ts: string
+  message: Message
+}
+
+export function chatStopStream(
+  ws: Workspace,
+  bus: EventBus,
+  ctx: AuthContext,
+  args: ChatStopStreamArgs,
+): ChatStopStreamResponse {
+  const ch = resolve(ws, args.channel)
+  const userId = ctx.userId
+  if (!userId) throw new MinislackError("not_authed")
+  const { message, previous } = stopStream(ws, {
+    channelId: ch.id,
+    ts: args.ts,
+    userId,
+    ...(args.text !== undefined ? { text: args.text } : {}),
+    ...(args.blocks !== undefined ? { blocks: args.blocks } : {}),
+    ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
+  })
+  bus.publish(buildMessageChanged(message, previous, ch))
+  return { ok: true, channel: ch.id, ts: message.ts, message }
 }
 
 // ---------------------------------------------------------------------------

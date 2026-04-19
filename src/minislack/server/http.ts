@@ -20,10 +20,13 @@ import {
   type SocketRegistry,
 } from "./methods/apps"
 import {
+  chatAppendStream,
   chatDelete,
   chatMeMessage,
   chatPostEphemeral,
   chatPostMessage,
+  chatStartStream,
+  chatStopStream,
   chatUpdate,
 } from "./methods/chat"
 import {
@@ -436,6 +439,33 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
           chatMeMessage(ctx.ws, ctx.bus, auth, {
             channel: str(args.channel),
             text: str(args.text),
+          }),
+        )
+      case "chat.startStream":
+        return slackOk(
+          chatStartStream(ctx.ws, ctx.bus, auth, {
+            channel: str(args.channel),
+            thread_ts: args.thread_ts as string | undefined,
+            recipient_team_id: args.recipient_team_id as string | undefined,
+            recipient_user_id: args.recipient_user_id as string | undefined,
+          }),
+        )
+      case "chat.appendStream":
+        return slackOk(
+          chatAppendStream(ctx.ws, ctx.bus, auth, {
+            channel: str(args.channel),
+            ts: str(args.ts),
+            markdown_text: str(args.markdown_text),
+          }),
+        )
+      case "chat.stopStream":
+        return slackOk(
+          chatStopStream(ctx.ws, ctx.bus, auth, {
+            channel: str(args.channel),
+            ts: str(args.ts),
+            text: args.text as string | undefined,
+            blocks: args.blocks as chatBlocks,
+            attachments: args.attachments as chatAttachments,
           }),
         )
       case "reactions.add":

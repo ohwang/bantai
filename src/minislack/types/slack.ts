@@ -284,6 +284,27 @@ export interface Message {
   parent_user_id?: string
   /** Whether the author is subscribed to the thread (mirror of a bolt client flag). */
   subscribed?: boolean
+  /**
+   * True while a chat.startStream placeholder is accepting chat.appendStream
+   * appends. Cleared by chat.stopStream. Appends on a message with
+   * streaming === false are rejected with `message_not_streaming`.
+   */
+  streaming?: boolean
+  /**
+   * Recipient of a streamed response — mirrors Slack's Assistant API args.
+   * Informational only; not used for delivery routing.
+   */
+  streaming_recipient?: { team_id?: string; user_id?: string }
+  /**
+   * Assistant API per-thread state. Populated on the thread parent by
+   * assistant.threads.setStatus / setSuggestedPrompts / setTitle. SSE-only
+   * visibility to match real Slack (these don't fan out over Events API).
+   */
+  assistant_state?: {
+    status?: string
+    suggested_prompts?: { prompts: Array<{ title: string; message: string }>; title?: string }
+    title?: string
+  }
 }
 
 export interface Reaction {

@@ -7,14 +7,28 @@ async function makeConfig(inline: unknown, env: NodeJS.ProcessEnv = {}) {
 }
 
 describe("auditSlackConfig", () => {
-  it("flags an empty defaults.approvers with permission_mode=default", async () => {
+  it("flags an empty defaults.approvers with permission_mode=default as info-level", async () => {
     const cfg = await makeConfig({
       workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
       // default permission_mode is "default" and default approvers is []
     })
     const findings = auditSlackConfig(cfg, { launchCwd: "/tmp" })
-    const codes = findings.map((f) => f.code)
-    expect(codes).toContain("approvers.defaults_empty")
+    const finding = findings.find((f) => f.code === "approvers.defaults_empty")
+    // Stock config: finding is present for `bantai slack audit` but downgraded
+    // to info so it doesn't log.warn on every boot.
+    expect(finding).toBeDefined()
+    expect(finding?.severity).toBe("info")
+  })
+
+  it("warns when permission_mode=acceptEdits and approvers is empty", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { permission_mode: "acceptEdits" },
+    })
+    const findings = auditSlackConfig(cfg, { launchCwd: "/tmp" })
+    const finding = findings.find((f) => f.code === "approvers.defaults_empty")
+    expect(finding).toBeDefined()
+    expect(finding?.severity).toBe("warn")
   })
 
   it("silent when defaults.permission_mode=plan (read-only)", async () => {

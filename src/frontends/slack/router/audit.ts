@@ -47,17 +47,31 @@ export function auditSlackConfig(
   const findings: AuditFinding[] = []
 
   // Defaults audit — every "inherit from defaults" channel picks these up,
-  // so warn once against the defaults rather than once per channel.
+  // so flag once against the defaults rather than once per channel.
+  //
+  // Severity is tiered deliberately:
+  //   - permission_mode="default" + empty approvers → info. This is the stock
+  //     minimal config; every approval still requires a live human click, so
+  //     the blast radius is "anyone in the channel can click Allow" — real,
+  //     but not worth a boot-time warn on every launch. The finding stays
+  //     visible to `bantai slack audit` so CI can still tighten it.
+  //   - permission_mode="acceptEdits" + empty approvers → warn. The operator
+  //     has deliberately widened the trust boundary without listing anyone
+  //     to vouch for the agent. That combination deserves a loud hint.
   const defaultMode = config.defaults.permission_mode
   const defaultApprovers = config.defaults.approvers
   if (
     PERMISSION_GATED_MODES.has(defaultMode) &&
     defaultApprovers.length === 0
   ) {
+    const severity: AuditSeverity = defaultMode === "default" ? "info" : "warn"
     findings.push({
-      severity: "warn",
+      severity,
       code: "approvers.defaults_empty",
-      message: `defaults.approvers is empty with permission_mode="${defaultMode}" — any user in a gated channel can approve tool use; set defaults.approvers or per-channel approvers`,
+      message:
+        severity === "warn"
+          ? `defaults.approvers is empty with permission_mode="${defaultMode}" — any user in a gated channel can approve tool use; set defaults.approvers or per-channel approvers`
+          : `defaults.approvers is empty with permission_mode="default" — stock config; any channel member can approve tool use. Populate defaults.approvers or per-channel approvers once you open it up to more people.`,
     })
   }
 

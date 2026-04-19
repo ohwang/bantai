@@ -97,7 +97,11 @@ describe("event-renderer — streaming", () => {
 })
 
 describe("event-renderer — reactions", () => {
-  it("transitions queued-style emojis through the turn", async () => {
+  it("collapses a synchronous event batch to only the final state", async () => {
+    // All events land in the same 16ms EventBatcher window.  The reaction
+    // controller coalesces them into a single API transition: initial prime
+    // (working/cyclone) + final done.  Intermediate states (reading etc.) are
+    // never applied — saving the 4 Slack API calls they would have cost.
     const h = harness("t1")
     h.push([
       { type: "turn_start" },
@@ -108,9 +112,8 @@ describe("event-renderer — reactions", () => {
     ])
     await drain(100)
     const adds = h.reacts.filter((r) => r.op === "add").map((r) => r.name)
-    // initial: working (primed on construct). Then tool_use_start → reading.
-    // turn_complete → done. text_delta keeps the reading state.
-    expect(adds).toEqual(["cyclone", "eyes", "white_check_mark"])
+    // initial: working (primed on construct); all intermediates coalesced to done.
+    expect(adds).toEqual(["cyclone", "white_check_mark"])
   })
 
   it("omits reactions entirely when no triggerTs is provided", async () => {

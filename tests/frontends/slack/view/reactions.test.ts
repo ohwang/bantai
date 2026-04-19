@@ -113,7 +113,11 @@ describe("StatusReactionController", () => {
     expect(calls).toEqual(expected)
   })
 
-  it("progresses working → reading → thinking → done for a read+reply turn", async () => {
+  it("rapid-fire events coalesce: only the final state hits the API", async () => {
+    // Simulates a 16ms event batch from the renderer: turn_start → tool →
+    // tool_end → text_delta → turn_complete all arrive synchronously.
+    // Only the last state change ("done") should generate API calls; the
+    // intermediate working/reading transitions are skipped entirely.
     const { adapter, calls } = makeAdapter()
     const ctrl = createStatusReactionController({
       adapter,
@@ -128,11 +132,33 @@ describe("StatusReactionController", () => {
     ctrl.apply({ type: "turn_complete" })
     await drain(50)
     const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
+    // All intermediate states (working, reading) are coalesced; only the
+    // initial prime and the final "done" generate API calls.
+    expect(adds).toEqual([STATE_TO_SHORTCODE.queued, STATE_TO_SHORTCODE.done])
+    expect(ctrl.current()).toBe("done")
+  })
+
+  it("sequential transitions (awaited between events) apply each state individually", async () => {
+    // When events are separated by async gaps (real agent behaviour: each
+    // tool call is async), each state transition is applied in full.
+    const { adapter, calls } = makeAdapter()
+    const ctrl = createStatusReactionController({
+      adapter,
+      channel: "C1",
+      triggerTs: "t1",
+    })
+    await drain()
+    ctrl.apply({ type: "turn_start" })
+    await drain()
+    ctrl.apply({ type: "tool_use_start", id: "1", tool: "Read", input: {} })
+    await drain()
+    ctrl.apply({ type: "turn_complete" })
+    await drain(50)
+    const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
     expect(adds).toEqual([
       STATE_TO_SHORTCODE.queued,
       STATE_TO_SHORTCODE.working,
       STATE_TO_SHORTCODE.reading,
-      // text_delta while in reading state is a no-op; turn_complete → done.
       STATE_TO_SHORTCODE.done,
     ])
     expect(ctrl.current()).toBe("done")

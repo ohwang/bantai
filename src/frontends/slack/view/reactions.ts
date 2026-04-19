@@ -182,12 +182,20 @@ export function createStatusReactionController(
   let state: ReactionState = opts.initial ?? "queued"
   let applied: string | undefined = undefined // the emoji currently on the message
   let inflight: Promise<void> = Promise.resolve()
+  // When true, exactly one syncReaction call is already queued on `inflight`.
+  // Further state changes just update `state`; the pending call will read
+  // the latest value when it runs, collapsing all intermediate transitions.
+  let flushScheduled = false
   const minMs = opts.minTransitionMs ?? 0
   const now = opts.now ?? Date.now
   let lastTransitionAt = 0
 
-  async function syncReaction(target: ReactionState): Promise<void> {
-    const shortcode = STATE_TO_SHORTCODE[target]
+  // Reads `state` at execution time — NOT the value captured at schedule time.
+  // This is intentional: if multiple apply() calls fire before this runs, they
+  // all update `state` but only one API round-trip is made for the final value.
+  async function syncReaction(): Promise<void> {
+    flushScheduled = false
+    const shortcode = STATE_TO_SHORTCODE[state]
     if (shortcode === applied) return
     const elapsed = now() - lastTransitionAt
     if (elapsed < minMs) {
@@ -219,19 +227,30 @@ export function createStatusReactionController(
     }
   }
 
+  // Enqueue a single syncReaction if one isn't already pending. Multiple
+  // state changes before the flush runs will all be collapsed into one call.
+  function scheduleFlush(): void {
+    if (flushScheduled) return
+    flushScheduled = true
+    inflight = inflight.then(syncReaction)
+  }
+
   // Prime the initial reaction asynchronously — callers don't need to await.
-  inflight = inflight.then(() => syncReaction(state))
+  scheduleFlush()
 
   return {
     apply(event) {
       const next = nextReactionState(state, event)
       if (next === undefined || next === state) return
       state = next
-      inflight = inflight.then(() => syncReaction(next))
+      scheduleFlush()
     },
     async terminate(terminal) {
       state = terminal
-      inflight = inflight.then(() => syncReaction(terminal))
+      // scheduleFlush is a no-op if a flush is already queued; that flush will
+      // read `state = terminal` when it executes, so the terminal state is
+      // guaranteed to be applied before the await resolves.
+      scheduleFlush()
       await inflight
     },
     current() {

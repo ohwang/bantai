@@ -947,6 +947,15 @@ export class AcpAdapter extends BaseAdapter {
       // 5c. Apply system prompt via config option if the agent exposes one
       await this.applySystemPromptViaConfigOption()
 
+      // 5d. Apply the caller-requested permission mode. Without this the
+      //     agent sits in its default "ask before every tool" state even
+      //     when the operator explicitly configured bypassPermissions in
+      //     slack.json. `setPermissionMode` is best-effort: agents that
+      //     don't advertise a matching mode just log.warn and move on.
+      if (config.permissionMode && config.permissionMode !== "default") {
+        await this.setPermissionMode(config.permissionMode)
+      }
+
       // 6a. Replay context from /switch is stashed, not sent as a turn —
       //     it'll prepend to the next real user message inside sendPrompt().
       if (config.replayContext) {

@@ -58,6 +58,7 @@ describe("slack frontend S3 — banner + !bantai commands", () => {
           require_mention: true,
           session_banner: true,
         },
+        store_path: "",
       },
     })) as SlackLaunchHandle
     botUserId = slack.botUserId

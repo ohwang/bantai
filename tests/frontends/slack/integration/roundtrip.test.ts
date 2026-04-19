@@ -81,6 +81,7 @@ describe("slack frontend S1 — mock backend round-trip against minislack", () =
           require_mention: true,
           auto_join_threads: true,
         },
+        store_path: "",
       },
     })) as SlackLaunchHandle
     botUserId = slack.botUserId

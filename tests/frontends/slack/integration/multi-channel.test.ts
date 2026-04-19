@@ -166,6 +166,7 @@ describe("slack frontend S7 — per-channel isolation", () => {
           require_mention: true,
           session_banner: false,
         },
+        store_path: "",
         channels: [
           {
             id: engineeringId,

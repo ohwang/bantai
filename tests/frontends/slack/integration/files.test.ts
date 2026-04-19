@@ -195,6 +195,7 @@ describe("slack frontend S6 — file round-trip", () => {
           require_mention: true,
           session_banner: false,
         },
+        store_path: "",
       },
       buildHost: ({ project, sessionConfig }) => {
         void project

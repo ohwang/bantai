@@ -162,6 +162,7 @@ describe("slack /metrics — registry + approval counters", () => {
           require_mention: true,
           session_banner: false,
         },
+        store_path: "",
       },
       buildHost: ({ project, sessionConfig }) => {
         void project

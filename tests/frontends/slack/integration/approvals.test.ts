@@ -83,6 +83,7 @@ describe("slack frontend S4 — approval + elicitation round-trip", () => {
           require_mention: true,
           session_banner: false,
         },
+        store_path: "",
       },
     })) as SlackLaunchHandle
     botUserId = slack.botUserId

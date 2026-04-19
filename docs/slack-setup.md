@@ -257,9 +257,15 @@ When `workspace.mode = "http"`, the launcher exposes a Prometheus-compatible `/m
 
 ## Session persistence
 
-With `store_path` set, bantai writes a small SQLite row per live (channel, thread) pair tracking the backend session id + cumulative turn count + USD cost. A process restart (deploy, crash, `kill -9`) rehydrates each thread's session on the next inbound message — the backend resumes instead of starting fresh, and `!bantai cost` continues to report totals across restarts. `!bantai new` explicitly forgets the row for its thread.
+bantai writes a small SQLite row per live (channel, thread) pair tracking the backend session id + cumulative turn count + USD cost. A process restart (deploy, crash, `kill -9`) rehydrates each thread's session on the next inbound message — the backend resumes instead of starting fresh, and `!bantai cost` continues to report totals across restarts. `!bantai new` explicitly forgets the row for its thread.
 
-Leave `store_path` unset (or set it to `""`) to disable persistence. Threads start fresh after every restart in that mode.
+Three `store_path` modes:
+
+- **Omit the key** (recommended) → defaults to `~/.bantai/slack.db`. Persistence on, no config required.
+- **Explicit absolute path** → bantai writes there. The parent directory is auto-created.
+- **Explicit `""`** → persistence disabled. Threads start fresh after every restart. Use this only when you genuinely want that (e.g. integration tests that don't want on-disk side effects).
+
+The example at the top of this doc sets `store_path: "~/.bantai/slack.db"` explicitly — that's equivalent to omitting the key today, but kept in the sample so operators who want to move the file know which knob to change.
 
 ## What's next
 

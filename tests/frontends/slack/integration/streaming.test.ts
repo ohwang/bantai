@@ -78,6 +78,7 @@ describe("slack frontend S2 — streaming + reactions", () => {
           // one visible message, so we opt out of the banner here.
           session_banner: false,
         },
+        store_path: "",
       },
     })) as SlackLaunchHandle
     botUserId = slack.botUserId

@@ -428,14 +428,23 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
 
 /**
  * Resolve the config's `storePath` into a live `SessionStore`. Empty path
- * → no-op store (persistence disabled). Non-empty path → bun:sqlite, with
- * the parent directory auto-created if needed. Any construction error
- * falls back to the no-op store + log.warn so a broken path never blocks
- * the launcher.
+ * → no-op store (persistence disabled via explicit `store_path: ""` in
+ * slack.json). Non-empty path → bun:sqlite, with the parent directory
+ * auto-created if needed. Any construction error falls back to the no-op
+ * store + log.warn so a broken path never blocks the launcher.
+ *
+ * Note: the empty-string branch here is reached only when slack.json
+ * explicitly opts out of persistence. An absent `store_path` key is
+ * resolved by the schema to `~/.bantai/slack.db` (default-on).
  */
 function openSessionStore(path: string): SessionStore {
   if (!path) {
-    log.info("slack: session persistence disabled (empty store_path)")
+    log.warn(
+      "slack: session persistence DISABLED (slack.json set store_path to \"\"). " +
+        "Slack threads will NOT survive a bantai slack restart — each restart " +
+        "spins up fresh sessions even for existing threads. Remove the key or " +
+        "set a path to re-enable.",
+    )
     return createNoopSessionStore()
   }
   try {

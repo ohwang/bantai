@@ -255,11 +255,18 @@ export const SlackConfigSchema = z
     mcp_servers: z.record(z.string(), McpServerSpecSchema).default({}),
     /**
      * SQLite path for per-session persistence (plan §S8 crash recovery).
-     * Tilde-expansion and default resolution happen in the loader. An
-     * empty string disables persistence — restarts start every thread
-     * fresh.
+     * Tilde-expansion and default resolution happen in the loader.
+     *
+     * Three cases:
+     *   - Key omitted entirely → default to `~/.bantai/slack.db`
+     *     (persistence on — the common case, so threads survive
+     *     restarts without any explicit config).
+     *   - Explicit `""` → persistence disabled (restarts start every
+     *     thread fresh). Required for tests that want in-memory-only
+     *     behaviour.
+     *   - Any other string → used verbatim (with `~` expansion).
      */
-    store_path: z.string().default(""),
+    store_path: z.string().optional(),
   })
   .strict()
 export type SlackConfig = z.infer<typeof SlackConfigSchema>
@@ -322,16 +329,25 @@ export function resolveSlackConfig(
 
 /**
  * Resolve the session-store path:
- *   - Empty string (`""` — explicit) → persistence disabled.
- *   - `~/...` → expanded against `$HOME` (or /tmp fallback on odd envs).
- *   - Any other absolute or relative path is returned verbatim.
+ *   - `undefined` (key absent from JSON) → default `~/.bantai/slack.db`,
+ *     tilde-expanded. Persistence-on is the intended default so Slack
+ *     threads survive a `bantai slack` restart without opt-in config.
+ *   - Empty string (`""` — explicit) → persistence disabled. Used by
+ *     tests that want no on-disk side effects, and by operators who
+ *     genuinely want fresh-every-restart behaviour.
+ *   - `~/...` → expanded against `$HOME` (or returned verbatim on odd
+ *     envs without `HOME`).
+ *   - Any other absolute or relative path → returned verbatim.
  */
-function resolveStorePath(raw: string, env: NodeJS.ProcessEnv): string {
-  if (!raw) return ""
-  if (raw.startsWith("~")) {
-    const home = env.HOME ?? env.USERPROFILE ?? ""
-    if (!home) return raw
-    return `${home}${raw.slice(1)}`
-  }
-  return raw
+function resolveStorePath(raw: string | undefined, env: NodeJS.ProcessEnv): string {
+  if (raw === undefined) return expandHome("~/.bantai/slack.db", env)
+  if (raw === "") return ""
+  return expandHome(raw, env)
+}
+
+function expandHome(p: string, env: NodeJS.ProcessEnv): string {
+  if (!p.startsWith("~")) return p
+  const home = env.HOME ?? env.USERPROFILE ?? ""
+  if (!home) return p
+  return `${home}${p.slice(1)}`
 }

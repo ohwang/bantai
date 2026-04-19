@@ -79,6 +79,7 @@ async function bootFixture(opts: {
         session_banner: false,
         ...(opts.showCost ? { show_cost: true } : {}),
       },
+      store_path: "",
     },
   })) as SlackLaunchHandle
   slack.userCache.seed(aliceId, "alice")

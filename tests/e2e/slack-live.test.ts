@@ -67,6 +67,7 @@ describe("Slack frontend — live workspace smoke test", () => {
           turn_timeout_s: 60,
           max_budget_usd: 0.5,
         },
+        store_path: "",
       },
     })) as SlackLaunchHandle
 

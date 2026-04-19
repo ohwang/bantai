@@ -38,7 +38,7 @@ Running doc tracking everywhere bantai's Slack frontend reinvented a wheel that 
 | 6 | Inbound debouncer + app_mention vs message race handling | P1 | `[x]` | — |
 | 7 | Sender-name + channel-name resolution cache | P2 | `[x]` | — |
 | 8 | Thread-status "is typing…" (`assistant.threads.setStatus`) | P2 | `[x]` † | needs live-workspace validation |
-| 9 | Inbound interaction payload sanitiser + compaction | P2 | `[ ]` | — |
+| 9 | Inbound interaction payload sanitiser + compaction | P2 | `[x]` | — |
 | 10 | Outbound identity override (`chat:write.customize`) | P2 | `[x]` † | needs live-workspace scope check |
 | 11 | SSRF-guarded inbound file fetch | P2 | `[x]` | — |
 | 12 | Socket-mode reconnect backoff + auth-error fast-fail | P2 | `[x]` | — |
@@ -373,7 +373,7 @@ Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's d
 
 ## 9. Inbound interaction payload sanitiser
 
-**P2. Medium port.**
+**P2. Shipped as defensive library. Consumer wiring deferred — see below.**
 
 ### OpenClaw approach
 
@@ -390,13 +390,15 @@ Approval / elicitation surfaces still render resolvers as `<@Uxxx>` — that's d
 
 ### Port plan
 
-- [ ] Port `sanitizeSlackInteractionPayload` + the redact list verbatim.
-- [ ] Wire it into `transport/events.ts`'s `block_actions` / `view_submission` handler, emitting a system-turn to the backend.
-- [ ] Unit test coverage: unknown fields passthrough, redaction complete, size cap enforced.
+- [x] `transport/interaction-sanitizer.ts`: `sanitizeSlackInteractionPayload(payload, opts?)` + `renderSlackInteractionMessage(payload)` — recursive redact of the short-lived credential keys, string truncation (maxStringLen=160), array truncation (maxArrayLen=64), depth-limited walk (MAX_DEPTH=8), compact fallback when the serialised payload exceeds 2400 chars.
+- [x] Redact list: `trigger_id`, `response_url`, `response_urls`, `workflow_trigger_url`, `private_metadata`, `view_hash` / `viewHash` / `hash`, `bot_access_token`, `app_installed_team`. Caller-overridable via `opts.redactKeys`.
+- [x] Test coverage: redaction (shallow + deeply nested), string/array truncation + overflow markers, compact-form trigger, primitives passthrough, depth-limit cycle safety.
+- [ ] **Consumer wiring deferred.** Bantai's current block_action / view_submission handlers route to purpose-built coordinators (approvals, elicitations, interactive-replies) — none forward raw payloads to the agent as text today, so nothing leaks. The sanitiser is ready for the future \"forward unknown interactions to the agent\" path; plumb it in alongside the feature that needs it. Future consumers should call `renderSlackInteractionMessage(body)` rather than JSON.stringify'ing `body` directly.
 
 ### Acceptance
 
-- A modal submission produces a turn with a structured `Slack interaction: {…}` payload the agent can act on; no `response_url` / `private_metadata` leaks.
+- A payload containing `trigger_id` / `response_url` / `private_metadata` — even in deeply nested positions — comes out with each of those fields replaced by `"[redacted]"` (`tests/frontends/slack/transport/interaction-sanitizer.test.ts` — "redacts trigger_id / response_url / private_metadata").
+- A modal submission with 50 input blocks × 200-char values over the 2400-char budget is compact-formed down to `{ type, callback_id, actions, view.state.values, user.id, channel.id, _compacted: true }` (same file — "compact-forms when serialised payload exceeds compactBudget").
 
 ---
 

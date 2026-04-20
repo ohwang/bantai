@@ -11,6 +11,7 @@
  * and session management subcommands (resume/continue).
  */
 
+import { existsSync, statSync } from "node:fs"
 import type { CLIFlags } from "../../cli/options"
 import type { AgentBackend, SessionOrigin } from "../../protocol/types"
 import { createBackend } from "../../subagents/backend-factory"
@@ -83,8 +84,10 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
     // The actual FollowBackend is wired up once the feature lands end-to-end;
     // this early-exit skeleton is the validation path.
     const { detectSessionOrigin } = await import("../../session/cross-backend")
-    const cwd = flags.config.cwd ?? process.cwd()
-    const origin = detectSessionOrigin(flags.follow.sessionId, cwd)
+    const { findClaudeSessionFileAnywhere, readClaudeSessionCwd } =
+      await import("../../backends/follow/find-session")
+    const callerCwd = flags.config.cwd ?? process.cwd()
+    const origin = detectSessionOrigin(flags.follow.sessionId, callerCwd)
     if (!origin) {
       console.error(
         `No local session found with ID ${flags.follow.sessionId}. ` +
@@ -98,6 +101,58 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
       )
       process.exit(1)
     }
+
+    // Locate the session on disk so we can chdir the bantai process into the
+    // originating repo. This only affects the bantai process — the invoking
+    // shell stays wherever it was, so `exit` returns the user to their
+    // original dir. Reads the authoritative `cwd` from the JSONL itself
+    // (Claude writes it on every entry); the decoded project-key fallback
+    // handles the rare case where the JSONL is empty or unreadable.
+    const found = findClaudeSessionFileAnywhere(flags.follow.sessionId, callerCwd)
+    if (!found) {
+      // detectSessionOrigin said "claude" so this is theoretically
+      // unreachable — belt-and-braces since both helpers can race against
+      // a session being deleted between the two calls.
+      console.error(
+        `No Claude session file found on disk for ID ${flags.follow.sessionId}.`,
+      )
+      process.exit(2)
+    }
+    const recordedCwd = readClaudeSessionCwd(found.path) ?? found.cwd
+    let resolvedCwd = callerCwd
+    if (
+      existsSync(recordedCwd) &&
+      statSync(recordedCwd).isDirectory()
+    ) {
+      try {
+        if (recordedCwd !== callerCwd) {
+          process.chdir(recordedCwd)
+          log.info("bantai follow: chdir into session's originating cwd", {
+            sessionId: flags.follow.sessionId,
+            from: callerCwd,
+            to: recordedCwd,
+          })
+        }
+        resolvedCwd = recordedCwd
+      } catch (err) {
+        log.warn("bantai follow: chdir failed — staying in caller's cwd", {
+          sessionId: flags.follow.sessionId,
+          target: recordedCwd,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    } else {
+      log.warn(
+        "bantai follow: originating cwd no longer exists — staying in caller's cwd",
+        {
+          sessionId: flags.follow.sessionId,
+          recordedCwd,
+          callerCwd,
+        },
+      )
+    }
+    flags.config.cwd = resolvedCwd
+
     // FollowBackend is resolved dynamically so the skeleton landed in commit
     // 1 (CLI + guard only) can validate the session origin without the
     // adapter implementation existing yet. Later commits wire this up.
@@ -115,7 +170,7 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
     try {
       backend = adapterModule.createFollowBackend({
         sessionId: flags.follow.sessionId,
-        cwd,
+        cwd: resolvedCwd,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

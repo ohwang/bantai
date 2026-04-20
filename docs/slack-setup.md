@@ -81,7 +81,11 @@ bantai looks for `./.bantai/slack.json` first, then `~/.bantai/slack.json`. Eith
     // Any user can approve tool use in the default config.
     // Recommended for production: pin to a specific allow-list, e.g.
     //   "approvers": ["U0123456", "U0123457"]
-    "approvers": []
+    "approvers": [],
+    // Seconds of inactivity before a thread's session is evicted from
+    // memory. The on-disk store is untouched, so the next message in
+    // the thread rehydrates it. Default 3600 (60 min). 0 disables.
+    "idle_timeout_s": 3600
   },
 
   // Persist per-session state so a process restart (crash, deploy) picks

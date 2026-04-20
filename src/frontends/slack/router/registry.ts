@@ -94,7 +94,11 @@ export interface SessionEntry {
 
 export interface CreateRegistryOpts {
   workspace: string
-  /** Idle timeout in ms. Default: 10 min. */
+  /**
+   * Idle timeout in ms — no inbound user turn within this window evicts
+   * the session from memory (the on-disk store is untouched, so the
+   * next message rehydrates it). Default: 60 min. 0 disables eviction.
+   */
   idleTimeoutMs?: number
   /** For tests — override the host-factory. */
   buildHost?: (opts: BuildHostOpts) => HostPair
@@ -164,13 +168,15 @@ export interface SessionRegistry {
 
 export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry {
   const entries = new Map<string, SessionEntry>()
-  const idleMs = opts.idleTimeoutMs ?? 10 * 60 * 1000
+  const idleMs = opts.idleTimeoutMs ?? 60 * 60 * 1000
   const buildHost = opts.buildHost ?? defaultBuildHost
   const store: SessionStore = opts.store ?? createNoopSessionStore()
   const metrics: RegistryMetricsHook = opts.metrics ?? noopMetricsHook()
 
   function touchIdle(entry: SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> }) {
     if (entry._idleTimer) clearTimeout(entry._idleTimer)
+    // 0 (or negative) disables idle eviction — sessions live forever in-process.
+    if (idleMs <= 0) return
     entry._idleTimer = setTimeout(() => {
       log.info(`slack: idle-closing session ${entry.key} after ${idleMs}ms`)
       entry.close()

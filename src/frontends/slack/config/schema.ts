@@ -165,6 +165,14 @@ export const DefaultsSchema = z
      */
     max_budget_usd: z.number().nonnegative().default(0),
     /**
+     * Seconds of inactivity (no inbound user turn) before the registry
+     * idle-closes a session and evicts it from memory. The on-disk
+     * store is NOT touched, so the next inbound message in the thread
+     * rehydrates the session transparently. Default: 3600 (60 minutes).
+     * 0 disables idle eviction — sessions live forever in-process.
+     */
+    idle_timeout_s: z.number().int().nonnegative().default(60 * 60),
+    /**
      * Per-post identity override fields. When set, every `chat.postMessage`
      * the bot makes rides with a custom username + icon — useful when a
      * channel hosts multiple bantai agents backed by the same bot user

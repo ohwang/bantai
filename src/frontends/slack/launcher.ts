@@ -210,6 +210,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   const registry = createSessionRegistry({
     workspace: workspaceId,
     store,
+    idleTimeoutMs: config.defaults.idle_timeout_s * 1000,
     metrics: {
       onSessionOpened: (active) =>
         metrics.setGauge("bantai_slack_sessions_active", active),

@@ -187,12 +187,13 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
   // Spinner label — fallback order matches Claude Code (spec §5.1):
   //   1. In-progress todo's activeForm (if any)
   //   2. Last running tool from blocks
-  //   3. "Thinking..."
+  //   3. "Thinking…"
+  // Uses the single-char ellipsis (U+2026) to match Claude Code's Spinner.
   const spinnerLabel = () => {
     const todos = state.todos
     for (const t of todos) {
       if (t.status === "in_progress" && t.activeForm && t.activeForm.length > 0) {
-        return `${t.activeForm}...`
+        return `${t.activeForm}\u2026`
       }
     }
     const blocks = state.blocks
@@ -201,12 +202,12 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
       if (b !== undefined && b.type === "tool" && b.status === "running") {
         if (isMcpTool(b.tool)) {
           const parsed = parseMcpToolName(b.tool)
-          return `Running ${parsed.server} \u203A ${parsed.tool.replace(/_/g, " ")}...`
+          return `Running ${parsed.server} \u203A ${parsed.tool.replace(/_/g, " ")}\u2026`
         }
-        return `Running ${b.tool}...`
+        return `Running ${b.tool}\u2026`
       }
     }
-    return "Thinking..."
+    return "Thinking\u2026"
   }
 
   // Auto-scroll to bottom when permission/elicitation dialog appears

@@ -174,6 +174,131 @@ describe("createNoopSessionStore", () => {
   })
 })
 
+describe("createSessionStore — clearBackendSessionId", () => {
+  it("drops backend_session_id without deleting the row", () => {
+    // Used by the stale-resume coordinator's "Start fresh" path: the user
+    // decided to abandon the prior backend session, but we still want to
+    // keep turn/cost counters and the row itself so the next message reuses
+    // the same row.
+    const s = mk()
+    s.upsert({
+      key: "clear",
+      workspace: "W",
+      channelId: "C",
+      threadTs: "t",
+      backendId: "gemini",
+    })
+    s.setBackendSessionId("clear", "gemini-old")
+    s.recordTurn("clear", 0.5)
+    expect(s.get("clear")!.backendSessionId).toBe("gemini-old")
+
+    s.clearBackendSessionId("clear")
+    const row = s.get("clear")!
+    expect(row.backendSessionId).toBeNull()
+    // Row + counters preserved.
+    expect(row.backendId).toBe("gemini")
+    expect(row.turns).toBe(1)
+    expect(row.totalCostUsd).toBeCloseTo(0.5, 5)
+    s.close()
+  })
+})
+
+describe("createSessionStore — pending_resume_prompts", () => {
+  function samplePrompt(id: string): import(
+    "../../../../src/frontends/slack/store/sessions"
+  ).PendingResumePrompt {
+    return {
+      id,
+      sessionKey: "slack:W1:C1:main",
+      channelId: "C1",
+      threadTs: "main",
+      messageTs: "1234.5678",
+      backendId: "gemini",
+      staleBackendId: "codex",
+      staleSessionId: "codex-thread-uuid",
+      reason: "backend_mismatch",
+      queuedTurnJson: JSON.stringify({
+        channel: "C1",
+        parentTs: "main",
+        triggerTs: "1234.5678",
+        text: "hello",
+        author: { userId: "U1", displayName: "alice" },
+      }),
+      createdAt: Date.now(),
+    }
+  }
+
+  it("put → get round-trip", () => {
+    const s = mk()
+    const p = samplePrompt("prompt-1")
+    s.putPendingResumePrompt(p)
+    const got = s.getPendingResumePrompt("prompt-1")
+    expect(got).toEqual(p)
+    s.close()
+  })
+
+  it("get returns undefined for unknown ids", () => {
+    const s = mk()
+    expect(s.getPendingResumePrompt("nope")).toBeUndefined()
+    s.close()
+  })
+
+  it("delete removes the row", () => {
+    const s = mk()
+    s.putPendingResumePrompt(samplePrompt("x"))
+    s.deletePendingResumePrompt("x")
+    expect(s.getPendingResumePrompt("x")).toBeUndefined()
+    s.close()
+  })
+
+  it("list returns prompts oldest-first", () => {
+    const s = mk()
+    const a = { ...samplePrompt("a"), createdAt: 1000 }
+    const b = { ...samplePrompt("b"), createdAt: 2000 }
+    const c = { ...samplePrompt("c"), createdAt: 3000 }
+    // Insert out of order to verify ORDER BY created_at ASC, not insertion
+    // order.
+    s.putPendingResumePrompt(b)
+    s.putPendingResumePrompt(a)
+    s.putPendingResumePrompt(c)
+    expect(s.listPendingResumePrompts().map((p) => p.id)).toEqual([
+      "a",
+      "b",
+      "c",
+    ])
+    s.close()
+  })
+
+  it("re-putting the same id replaces the row (idempotent on retry)", () => {
+    const s = mk()
+    s.putPendingResumePrompt(samplePrompt("dup"))
+    s.putPendingResumePrompt({ ...samplePrompt("dup"), messageTs: "9999.0" })
+    const got = s.getPendingResumePrompt("dup")
+    expect(got?.messageTs).toBe("9999.0")
+    s.close()
+  })
+
+  it("persists across database reopens", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    const dir = mkdtempSync(join(tmpdir(), "bantai-pending-"))
+    try {
+      const dbPath = join(dir, "slack.db")
+      const s1 = createSessionStore({ path: dbPath })
+      s1.putPendingResumePrompt(samplePrompt("persist"))
+      s1.close()
+
+      const s2 = createSessionStore({ path: dbPath })
+      const got = s2.getPendingResumePrompt("persist")
+      expect(got?.id).toBe("persist")
+      s2.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("createSessionStore — on-disk persistence", () => {
   it("sessions written by one instance are visible to a fresh instance at the same path", async () => {
     const { mkdtempSync, rmSync } = await import("node:fs")

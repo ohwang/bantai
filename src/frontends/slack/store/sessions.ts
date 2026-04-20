@@ -47,6 +47,38 @@ export interface PersistedSession {
   createdAt: number
 }
 
+/**
+ * A user turn that's been intercepted by the stale-resume coordinator and is
+ * waiting for the user to pick a recovery strategy. Serialised to SQLite so
+ * a crash/restart doesn't lose it — the click that resolves the card might
+ * land hours later, and we can't store it in process memory.
+ */
+export interface PendingResumePrompt {
+  /** Stable id — used as the suffix in the Block Kit action id. */
+  id: string
+  /** Slack session key this turn was routed to. */
+  sessionKey: string
+  channelId: string
+  /** The actual thread we posted the card into. */
+  threadTs: string
+  /** The Block Kit card's ts (for `chat.update`). */
+  messageTs: string
+  /** Current project backend (what the turn will run on if approved). */
+  backendId: string
+  /**
+   * The backend id of the *persisted* (stale) session — used to drive
+   * cross-backend history injection. May equal `backendId` when the reason
+   * is `session_file_missing`.
+   */
+  staleBackendId: string
+  /** The persisted session id we would have blindly resumed. */
+  staleSessionId: string
+  reason: "backend_mismatch" | "session_file_missing"
+  /** JSON-serialised `InboundTurn` replay payload. */
+  queuedTurnJson: string
+  createdAt: number
+}
+
 export interface SessionStore {
   /** Upsert the session row at creation time (before the first turn). */
   upsert(opts: {
@@ -68,6 +100,26 @@ export interface SessionStore {
   delete(key: string): void
   /** Snapshot of every row — diagnostic / admin. */
   list(): PersistedSession[]
+  /**
+   * Clear the backend-issued session id without dropping the row. Used by
+   * the stale-resume coordinator's "Start fresh" path — the next turn will
+   * run `session/new` instead of `session/load`.
+   */
+  clearBackendSessionId(key: string): void
+
+  // --- Pending stale-resume prompts --------------------------------------
+  /**
+   * Insert a pending prompt. Fails silently if the id already exists (the
+   * caller should generate fresh uuids per prompt).
+   */
+  putPendingResumePrompt(prompt: PendingResumePrompt): void
+  /** Read a pending prompt by id, or undefined. */
+  getPendingResumePrompt(id: string): PendingResumePrompt | undefined
+  /** Delete a resolved prompt. */
+  deletePendingResumePrompt(id: string): void
+  /** Diagnostic: every outstanding prompt, oldest first. */
+  listPendingResumePrompts(): PendingResumePrompt[]
+
   /** Release the underlying database handle. Safe to call multiple times. */
   close(): void
 }
@@ -107,6 +159,22 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
       created_at         INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS sessions_last_active_idx ON sessions(last_active_at);
+
+    CREATE TABLE IF NOT EXISTS pending_resume_prompts (
+      id                 TEXT PRIMARY KEY,
+      session_key        TEXT NOT NULL,
+      channel_id         TEXT NOT NULL,
+      thread_ts          TEXT NOT NULL,
+      message_ts         TEXT NOT NULL,
+      backend_id         TEXT NOT NULL,
+      stale_backend_id   TEXT NOT NULL,
+      stale_session_id   TEXT NOT NULL,
+      reason             TEXT NOT NULL,
+      queued_turn_json   TEXT NOT NULL,
+      created_at         INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS pending_resume_prompts_created_at_idx
+      ON pending_resume_prompts(created_at);
   `)
 
   // NOTE: the `backend_session_id = CASE …` clause is load-bearing. Without
@@ -155,6 +223,54 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
   const getStmt = db.prepare(`SELECT * FROM sessions WHERE key = $key`)
   const deleteStmt = db.prepare(`DELETE FROM sessions WHERE key = $key`)
   const listStmt = db.prepare(`SELECT * FROM sessions ORDER BY last_active_at DESC`)
+  const clearBackendIdStmt = db.prepare(
+    `UPDATE sessions SET backend_session_id = NULL, last_active_at = $now WHERE key = $key`,
+  )
+
+  const putPendingStmt = db.prepare(
+    `INSERT OR REPLACE INTO pending_resume_prompts
+       (id, session_key, channel_id, thread_ts, message_ts,
+        backend_id, stale_backend_id, stale_session_id,
+        reason, queued_turn_json, created_at)
+     VALUES ($id, $sessionKey, $channel, $thread, $messageTs,
+             $backend, $staleBackend, $staleSession,
+             $reason, $turnJson, $createdAt)`,
+  )
+  const getPendingStmt = db.prepare(
+    `SELECT * FROM pending_resume_prompts WHERE id = $id`,
+  )
+  const deletePendingStmt = db.prepare(
+    `DELETE FROM pending_resume_prompts WHERE id = $id`,
+  )
+  const listPendingStmt = db.prepare(
+    `SELECT * FROM pending_resume_prompts ORDER BY created_at ASC`,
+  )
+
+  function rowToPending(
+    row: Record<string, unknown> | null | undefined,
+  ): PendingResumePrompt | undefined {
+    if (!row) return undefined
+    const reason = String(row.reason)
+    if (reason !== "backend_mismatch" && reason !== "session_file_missing") {
+      log.warn(
+        `slack store: pending_resume_prompts row ${String(row.id)} has unknown reason=${reason}; skipping`,
+      )
+      return undefined
+    }
+    return {
+      id: String(row.id),
+      sessionKey: String(row.session_key),
+      channelId: String(row.channel_id),
+      threadTs: String(row.thread_ts),
+      messageTs: String(row.message_ts),
+      backendId: String(row.backend_id),
+      staleBackendId: String(row.stale_backend_id),
+      staleSessionId: String(row.stale_session_id),
+      reason,
+      queuedTurnJson: String(row.queued_turn_json),
+      createdAt: Number(row.created_at ?? 0),
+    }
+  }
 
   function rowToSession(row: Record<string, unknown> | null | undefined): PersistedSession | undefined {
     if (!row) return undefined
@@ -227,6 +343,45 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
       }
       return out
     },
+    clearBackendSessionId(key) {
+      if (closed) return
+      clearBackendIdStmt.run({ $key: key, $now: Date.now() })
+    },
+    putPendingResumePrompt(prompt) {
+      if (closed) return
+      putPendingStmt.run({
+        $id: prompt.id,
+        $sessionKey: prompt.sessionKey,
+        $channel: prompt.channelId,
+        $thread: prompt.threadTs,
+        $messageTs: prompt.messageTs,
+        $backend: prompt.backendId,
+        $staleBackend: prompt.staleBackendId,
+        $staleSession: prompt.staleSessionId,
+        $reason: prompt.reason,
+        $turnJson: prompt.queuedTurnJson,
+        $createdAt: prompt.createdAt,
+      })
+    },
+    getPendingResumePrompt(id) {
+      if (closed) return undefined
+      const row = getPendingStmt.get({ $id: id }) as Record<string, unknown> | null
+      return rowToPending(row)
+    },
+    deletePendingResumePrompt(id) {
+      if (closed) return
+      deletePendingStmt.run({ $id: id })
+    },
+    listPendingResumePrompts() {
+      if (closed) return []
+      const rows = listPendingStmt.all() as Array<Record<string, unknown>>
+      const out: PendingResumePrompt[] = []
+      for (const r of rows) {
+        const p = rowToPending(r)
+        if (p) out.push(p)
+      }
+      return out
+    },
     close() {
       if (closed) return
       closed = true
@@ -254,6 +409,11 @@ export function createNoopSessionStore(): SessionStore {
     get() { return undefined },
     delete() {},
     list() { return [] },
+    clearBackendSessionId() {},
+    putPendingResumePrompt() {},
+    getPendingResumePrompt() { return undefined },
+    deletePendingResumePrompt() {},
+    listPendingResumePrompts() { return [] },
     close() {},
   }
 }

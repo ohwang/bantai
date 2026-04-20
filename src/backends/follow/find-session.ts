@@ -21,7 +21,14 @@
  * feed back into `getSessionFilePath` or for header/display purposes.
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs"
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readSync,
+  readdirSync,
+  statSync,
+} from "node:fs"
 import { join } from "node:path"
 import { getSessionFilePath } from "../claude/session-reader"
 import { log } from "../../utils/logger"
@@ -131,4 +138,98 @@ export function findClaudeSessionFileAnywhere(
     },
   )
   return { path: picked.path, cwd: picked.cwd }
+}
+
+/**
+ * Read the authoritative `cwd` recorded in a Claude session JSONL.
+ *
+ * The `cwd` returned by `findClaudeSessionFileAnywhere` is derived from the
+ * project directory key, whose encoding (`/` → `-`) is lossy for paths that
+ * contain legitimate hyphens. Claude Code writes an explicit `cwd` field on
+ * user/assistant entries; that's the source of truth whenever we need an
+ * actual filesystem path (e.g. `process.chdir()` for `bantai follow`).
+ *
+ * Streams the file in 64 KiB chunks so a large session log doesn't force a
+ * full read — we only need the first entry that carries a `cwd` field,
+ * which is typically within the first few lines.
+ *
+ * @returns the first non-empty `cwd` string, or `null` if none is found.
+ */
+export function readClaudeSessionCwd(filePath: string): string | null {
+  let fd: number
+  try {
+    fd = openSync(filePath, "r")
+  } catch (err) {
+    log.debug("readClaudeSessionCwd: could not open session file", {
+      filePath,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return null
+  }
+
+  try {
+    const buf = Buffer.alloc(64 * 1024)
+    let offset = 0
+    let remainder = ""
+    // Cap total bytes examined so a pathological file (no cwd anywhere)
+    // can't read indefinitely. 4 MiB is far more than any reasonable
+    // session's header.
+    const hardLimit = 4 * 1024 * 1024
+    while (offset < hardLimit) {
+      const bytesRead = readSync(fd, buf, 0, buf.length, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+      const chunk = remainder + buf.subarray(0, bytesRead).toString("utf-8")
+      const lines = chunk.split("\n")
+      remainder = lines.pop() ?? ""
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        let entry: unknown
+        try {
+          entry = JSON.parse(trimmed)
+        } catch {
+          continue
+        }
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as { cwd?: unknown }).cwd === "string" &&
+          (entry as { cwd: string }).cwd.length > 0
+        ) {
+          return (entry as { cwd: string }).cwd
+        }
+      }
+    }
+    // Try the trailing remainder too, in case the file doesn't end with \n.
+    const trimmed = remainder.trim()
+    if (trimmed) {
+      try {
+        const entry = JSON.parse(trimmed)
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as { cwd?: unknown }).cwd === "string" &&
+          (entry as { cwd: string }).cwd.length > 0
+        ) {
+          return (entry as { cwd: string }).cwd
+        }
+      } catch {
+        // fall through
+      }
+    }
+    return null
+  } catch (err) {
+    log.warn("readClaudeSessionCwd: error while scanning session file", {
+      filePath,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return null
+  } finally {
+    try {
+      closeSync(fd)
+    } catch {
+      /* best-effort */
+    }
+  }
 }

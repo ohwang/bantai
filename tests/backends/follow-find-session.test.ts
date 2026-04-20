@@ -1,11 +1,14 @@
 /**
- * Tests for `findClaudeSessionFileAnywhere`.
+ * Tests for `findClaudeSessionFileAnywhere` and `readClaudeSessionCwd`.
  *
  * Covers:
  *   - found in current cwd (fast path)
  *   - found in a sibling project dir (scan path)
  *   - not found → returns null
  *   - name collision → prefers most-recent mtime + warns
+ *   - readClaudeSessionCwd: pulls authoritative cwd from JSONL,
+ *     skips leading entries without cwd, handles hyphenated paths
+ *     that the project-key decoder can't round-trip.
  *
  * Each test points HOME at a fresh tmpdir so the helper's
  * `~/.claude/projects/...` lookups are hermetic.
@@ -21,7 +24,10 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { findClaudeSessionFileAnywhere } from "../../src/backends/follow/find-session"
+import {
+  findClaudeSessionFileAnywhere,
+  readClaudeSessionCwd,
+} from "../../src/backends/follow/find-session"
 
 let tmpHome: string
 let originalHome: string | undefined
@@ -102,5 +108,83 @@ describe("findClaudeSessionFileAnywhere", () => {
     const result = findClaudeSessionFileAnywhere(id, "/tmp/unrelated")
     expect(result).not.toBeNull()
     expect(result?.path).toBe(newer)
+  })
+})
+
+describe("readClaudeSessionCwd", () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "bantai-read-cwd-"))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  function writeJsonl(lines: unknown[]): string {
+    const file = join(dir, "session.jsonl")
+    writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n")
+    return file
+  }
+
+  it("returns the cwd from the first entry that carries one", () => {
+    const file = writeJsonl([
+      { type: "permission-mode", permissionMode: "default" },
+      { type: "file-history-snapshot", snapshot: {} },
+      {
+        type: "user",
+        cwd: "/Users/odin/dev/repos/bantai-slack-monitor",
+        message: { role: "user", content: "hi" },
+      },
+      {
+        type: "assistant",
+        cwd: "/Users/odin/dev/repos/bantai-slack-monitor",
+        message: { role: "assistant", content: "hello" },
+      },
+    ])
+    expect(readClaudeSessionCwd(file)).toBe(
+      "/Users/odin/dev/repos/bantai-slack-monitor",
+    )
+  })
+
+  it("recovers hyphenated paths that the project-key decoder mangles", () => {
+    // The project-key encoding `/` → `-` is lossy: decoding gives back
+    // `/Users/odin/dev/repos/bantai/slack/monitor`, which is wrong. The
+    // JSONL-embedded cwd is the source of truth.
+    const file = writeJsonl([
+      {
+        type: "user",
+        cwd: "/Users/odin/dev/repos/bantai-slack-monitor",
+        message: { role: "user", content: "hi" },
+      },
+    ])
+    expect(readClaudeSessionCwd(file)).toBe(
+      "/Users/odin/dev/repos/bantai-slack-monitor",
+    )
+  })
+
+  it("returns null when no entry has a cwd field", () => {
+    const file = writeJsonl([
+      { type: "permission-mode", permissionMode: "default" },
+      { type: "system", text: "nothing here" },
+    ])
+    expect(readClaudeSessionCwd(file)).toBeNull()
+  })
+
+  it("returns null for a non-existent file", () => {
+    expect(readClaudeSessionCwd(join(dir, "missing.jsonl"))).toBeNull()
+  })
+
+  it("ignores unparseable lines and keeps scanning", () => {
+    const file = join(dir, "mixed.jsonl")
+    writeFileSync(
+      file,
+      [
+        "not json at all",
+        JSON.stringify({ type: "user", cwd: "/opt/project", message: {} }),
+      ].join("\n") + "\n",
+    )
+    expect(readClaudeSessionCwd(file)).toBe("/opt/project")
   })
 })

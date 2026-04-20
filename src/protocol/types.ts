@@ -219,6 +219,31 @@ export type TaskUpdatedEvent = {
   }
 }
 
+/** A single todo entry surfaced by the agent's TodoWrite tool.
+ *
+ *  V1 semantics (matches Claude Code's TodoWrite): in-memory, full-list
+ *  replacement on each call, no owner / blocking / file-backed state.
+ *  `content` is the imperative form shown when the todo is not in progress
+ *  ("Run tests"); `activeForm` is the present-continuous form shown while
+ *  the todo is actively being worked on ("Running tests"). */
+export interface TodoItem {
+  /** Imperative form — e.g. "Run tests" */
+  content: string
+  /** Present-continuous form — e.g. "Running tests" */
+  activeForm: string
+  status: "pending" | "in_progress" | "completed"
+}
+
+/** Todo list replaced (TodoWrite V1). `todos` is the FULL new list — the
+ *  reducer replaces state.todos with this payload. An empty array is a
+ *  valid "clear" signal. When every item is `completed`, the reducer stores
+ *  `[]` instead (matches Claude Code's TodoWrite auto-clear behavior). */
+export type TodosUpdatedEvent = {
+  type: "todos_updated"
+  /** Full replacement list. Empty array is valid (means "clear"). */
+  todos: TodoItem[]
+}
+
 /** Errors */
 export type ErrorEvent = {
   type: "error"
@@ -473,6 +498,7 @@ export type AgentEvent =
   | TaskProgressEvent
   | TaskCompleteEvent
   | TaskUpdatedEvent
+  | TodosUpdatedEvent
   | ErrorEvent
   | CostUpdateEvent
   | ModelChangedEvent
@@ -710,6 +736,11 @@ export interface ConversationState {
 
   /** Active background tasks */
   activeTasks: Map<string, TaskInfo>
+
+  /** Agent's current todo list (V1 TodoWrite — in-memory, full replacement
+   *  on each update, auto-cleared when all items are completed). Persists
+   *  across turns by design; reset on session_init and backend switch. */
+  todos: TodoItem[]
 
   /** Current model name (updated by /model command, overrides session default) */
   currentModel: string | null
@@ -1223,6 +1254,7 @@ export function createInitialState(): ConversationState {
     pendingPermission: null,
     pendingElicitation: null,
     activeTasks: new Map(),
+    todos: [],
     currentModel: null,
     currentEffort: null,
     session: null,
@@ -1296,5 +1328,9 @@ export function resetVolatileSessionState(
     streamingOutputTokens: fresh.streamingOutputTokens,
     turnNumber: fresh.turnNumber,
     lastTurnFiles: fresh.lastTurnFiles,
+    // Todos are the current backend's working state, not a cross-backend
+    // observable — clear on switch so the new backend starts fresh rather
+    // than inheriting the old agent's in-flight task list.
+    todos: fresh.todos,
   }
 }

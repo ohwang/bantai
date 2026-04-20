@@ -117,6 +117,10 @@ export function reduce(
           sessionId: event.sessionId,
         },
         currentModel: event.models?.[0]?.name ?? next.currentModel,
+        // Todos are per-session in-memory state — a new session_init always
+        // starts from an empty list, even if the prior session left a
+        // partial TodoWrite around (e.g. after resetSession / /new).
+        todos: [],
       }
 
     // ----- Turn lifecycle -----
@@ -708,6 +712,27 @@ export function reduce(
         log.debug("task_updated for unknown task", { taskId: event.taskId })
       }
       return { ...next, activeTasks }
+    }
+
+    // ----- Todos (V1 TodoWrite) -----
+
+    case "todos_updated": {
+      // Full replacement semantics — mirrors Claude Code's TodoWrite tool,
+      // which rewrites the entire list on every invocation. V1 is in-memory
+      // only; no persistence, no owner/blocking metadata.
+      //
+      // Auto-clear: when every item is `completed`, the agent is done with
+      // its current task breakdown. Store `[]` so the UI can hide the panel
+      // cleanly instead of showing a stale "all done" list (matches
+      // Claude Code's TodoWriteTool behavior — see task-view.md §3.1).
+      // An already-empty payload means "clear" and is stored as-is.
+      const incoming = event.todos
+      const allCompleted =
+        incoming.length > 0 && incoming.every(t => t.status === "completed")
+      return {
+        ...next,
+        todos: allCompleted ? [] : incoming,
+      }
     }
 
     // ----- Plan updates (ACP structured plan) -----

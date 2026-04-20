@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from "bun:test"
 import { testRender } from "@opentui/solid"
+import stringWidth from "string-width"
 import {
   TaskChecklist,
   computeMaxDisplay,
@@ -54,12 +55,53 @@ describe("computeMaxSubjectWidth", () => {
 describe("truncateSubject", () => {
   it("returns unchanged when within budget", () => {
     expect(truncateSubject("short", 20)).toBe("short")
+    expect(truncateSubject("Hello", 10)).toBe("Hello")
   })
 
-  it("truncates with ellipsis when over budget", () => {
+  it("truncates ASCII with ellipsis when over budget (display width <= maxWidth)", () => {
     const out = truncateSubject("this is a long subject line", 10)
-    expect(out.length).toBe(10)
+    expect(stringWidth(out)).toBeLessThanOrEqual(10)
     expect(out.endsWith("\u2026")).toBe(true)
+  })
+
+  it("produces a 15-column result for ASCII input at maxWidth=15", () => {
+    const out = truncateSubject("Very long subject line here", 15)
+    expect(stringWidth(out)).toBeLessThanOrEqual(15)
+    expect(out.endsWith("\u2026")).toBe(true)
+  })
+
+  it("respects display width for CJK (each ideograph = 2 columns)", () => {
+    // "部署到生产环境" is 7 CJK chars = 14 display columns. Capping at 10
+    // cols should drop enough chars for stringWidth(out) <= 10, ending
+    // in the ellipsis. The pre-fix code-unit truncation would keep 9 CJK
+    // chars (9 code units) = 18 columns, overflowing the terminal.
+    const subject = "部署到生产环境"
+    expect(stringWidth(subject)).toBe(14)
+    const out = truncateSubject(subject, 10)
+    expect(stringWidth(out)).toBeLessThanOrEqual(10)
+    expect(out.endsWith("\u2026")).toBe(true)
+  })
+
+  it("respects display width for emoji (astral-plane characters)", () => {
+    // Each 🎉 is typically rendered 2 columns wide. Must iterate by code
+    // points so we don't split surrogate pairs mid-character.
+    const subject = "🎉🎉🎉🎉"
+    const out = truncateSubject(subject, 5)
+    expect(stringWidth(out)).toBeLessThanOrEqual(5)
+    expect(out.endsWith("\u2026")).toBe(true)
+    // Must not contain a stray lone surrogate (would show as mojibake).
+    for (const ch of out) {
+      const cp = ch.codePointAt(0)!
+      expect(cp < 0xd800 || cp > 0xdfff).toBe(true)
+    }
+  })
+
+  it("returns just the ellipsis when maxWidth is 1 and truncation is needed", () => {
+    expect(truncateSubject("abcdef", 1)).toBe("\u2026")
+  })
+
+  it("returns empty string when maxWidth is <= 0", () => {
+    expect(truncateSubject("abcdef", 0)).toBe("")
   })
 })
 

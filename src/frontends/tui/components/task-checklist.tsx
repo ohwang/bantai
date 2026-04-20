@@ -22,6 +22,7 @@ import type { JSX } from "solid-js"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
+import stringWidth from "string-width"
 import type { TodoItem } from "../../../protocol/types"
 import { colors } from "../theme/tokens"
 
@@ -87,10 +88,36 @@ export function computeMaxSubjectWidth(columns: number): number {
   return Math.max(15, columns - 15)
 }
 
+/**
+ * Truncate `subject` so its terminal display width is at most `maxWidth`
+ * columns, appending a single-column ellipsis when anything was dropped.
+ *
+ * Uses `string-width` to measure columns, which correctly accounts for
+ * CJK ideographs and most emoji rendering as double-wide. Iterates by
+ * code points (via `[...subject]`) rather than code units so that
+ * astral-plane characters (surrogate pairs) aren't split mid-character.
+ *
+ * Edge cases:
+ *  - `maxWidth <= 0`  → empty string.
+ *  - `maxWidth === 1` → the ellipsis alone if truncation is needed.
+ *  - A single code point whose width already exceeds `maxWidth - 1`
+ *    budget is omitted (the caller gets just the ellipsis).
+ */
 export function truncateSubject(subject: string, maxWidth: number): string {
-  if (subject.length <= maxWidth) return subject
-  if (maxWidth <= 1) return subject.slice(0, maxWidth)
-  return subject.slice(0, maxWidth - 1) + "\u2026"
+  if (maxWidth <= 0) return ""
+  if (stringWidth(subject) <= maxWidth) return subject
+  if (maxWidth === 1) return "\u2026"
+
+  const budget = maxWidth - 1 // reserve 1 column for the ellipsis
+  let out = ""
+  let used = 0
+  for (const ch of subject) {
+    const w = stringWidth(ch)
+    if (used + w > budget) break
+    out += ch
+    used += w
+  }
+  return out + "\u2026"
 }
 
 /**

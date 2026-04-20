@@ -54,7 +54,7 @@ export const WorkspaceSchema = z
      * minislack instance instead of api.slack.com. Must end with `/api/`
      * when set (matches WebClientOptions.slackApiUrl).
      */
-    slack_api_url: z.string().url().optional(),
+    slack_api_url: z.url().optional(),
   })
   .strict()
 export type WorkspaceConfig = z.infer<typeof WorkspaceSchema>
@@ -156,7 +156,7 @@ export const DefaultsSchema = z
      * identity and logs one warning per process lifetime.
      */
     agent_username: z.string().optional(),
-    agent_icon_url: z.string().url().optional(),
+    agent_icon_url: z.url().optional(),
     agent_icon_emoji: z.string().optional(),
   })
   .strict()
@@ -185,7 +185,7 @@ const McpStdioServerSchema = z
 const McpHttpServerSchema = z
   .object({
     type: z.literal("http"),
-    url: z.string().url(),
+    url: z.url(),
     headers: z.record(z.string(), SecretRefSchema).optional(),
   })
   .strict()
@@ -193,7 +193,7 @@ const McpHttpServerSchema = z
 const McpSseServerSchema = z
   .object({
     type: z.literal("sse"),
-    url: z.string().url(),
+    url: z.url(),
     headers: z.record(z.string(), SecretRefSchema).optional(),
   })
   .strict()
@@ -231,7 +231,7 @@ export const ChannelOverrideSchema = z
     turn_timeout_s: z.number().int().nonnegative().optional(),
     max_budget_usd: z.number().nonnegative().optional(),
     agent_username: z.string().optional(),
-    agent_icon_url: z.string().url().optional(),
+    agent_icon_url: z.url().optional(),
     agent_icon_emoji: z.string().optional(),
     env: z.record(z.string(), SecretRefSchema).optional(),
   })
@@ -245,7 +245,10 @@ export type ChannelOverride = z.infer<typeof ChannelOverrideSchema>
 export const SlackConfigSchema = z
   .object({
     workspace: WorkspaceSchema,
-    defaults: DefaultsSchema.optional().default({}),
+    // `prefault` (zod 4) replaces `.optional().default({})` (zod 3) —
+    // supplies the missing-key default to the INPUT so every field-level
+    // default inside DefaultsSchema fires during parse.
+    defaults: DefaultsSchema.prefault({}),
     channels: z.array(ChannelOverrideSchema).default([]),
     /**
      * Global MCP server registry. Channels reference these by name via

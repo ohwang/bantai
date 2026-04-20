@@ -17,10 +17,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join, basename } from "node:path"
 import { log } from "../utils/logger"
-import {
-  getSessionFilePath,
-  readSessionHistory,
-} from "../backends/claude/session-reader"
+import { readSessionHistory } from "../backends/claude/session-reader"
+import { findClaudeSessionFileAnywhere } from "../backends/follow/find-session"
 import type {
   Block,
   ParsedSession,
@@ -194,14 +192,20 @@ export function findGeminiSessionFile(sessionId: string): string | null {
  *
  * Checks session storage on disk for Claude, Codex, and Gemini.
  * Returns null if the session ID doesn't match any known backend's files.
+ *
+ * For Claude the caller's `cwd` is used only as a fast-path hint: the lookup
+ * falls back to scanning every directory under `~/.claude/projects/` so a
+ * session created in one repo can be addressed from any other shell (this is
+ * the expected usage for `bantai follow <session-id>`). Codex and Gemini are
+ * already globally indexed, so they need no cwd coupling.
  */
 export function detectSessionOrigin(
   sessionId: string,
   cwd: string,
 ): SessionOrigin {
-  // Check if it's a Claude session (JSONL file on disk)
-  const claudePath = getSessionFilePath(sessionId, cwd)
-  if (existsSync(claudePath)) {
+  // Check if it's a Claude session (JSONL file on disk). Scan all project
+  // dirs — `cwd` is only a fast-path hint.
+  if (findClaudeSessionFileAnywhere(sessionId, cwd)) {
     return "claude"
   }
 

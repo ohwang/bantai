@@ -1,5 +1,6 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, afterEach, beforeEach } from "bun:test"
 import {
+  detectSessionOrigin,
   formatHistoryAsContext,
   formatFullHistory,
   parseCodexSession,
@@ -8,7 +9,7 @@ import {
   parseGeminiSessionWithSummary,
 } from "../../src/session/cross-backend"
 import type { Block } from "../../src/protocol/types"
-import { writeFileSync, mkdtempSync, rmSync } from "fs"
+import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 
@@ -711,6 +712,58 @@ describe("cross-backend session resume", () => {
       expect(summary.usage!.contextTokens).toBe(12_000)
 
       rmSync(dir, { recursive: true })
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // detectSessionOrigin — session origin lookup
+  //
+  // Regression guard for the `bantai follow <session-id>` cross-cwd bug:
+  // the caller shouldn't need to be in the session's original cwd for the
+  // origin probe to locate a Claude session on disk.
+  // -------------------------------------------------------------------------
+  describe("detectSessionOrigin", () => {
+    let tmpHome: string
+    let originalHome: string | undefined
+
+    beforeEach(() => {
+      tmpHome = mkdtempSync(join(tmpdir(), "bantai-origin-"))
+      originalHome = process.env.HOME
+      process.env.HOME = tmpHome
+    })
+
+    afterEach(() => {
+      if (originalHome === undefined) delete process.env.HOME
+      else process.env.HOME = originalHome
+      rmSync(tmpHome, { recursive: true, force: true })
+    })
+
+    function seedClaudeSession(projectCwd: string, sessionId: string): void {
+      const encoded = projectCwd.replace(/\//g, "-")
+      const projectDir = join(tmpHome, ".claude", "projects", encoded)
+      mkdirSync(projectDir, { recursive: true })
+      writeFileSync(
+        join(projectDir, `${sessionId}.jsonl`),
+        `{"type":"user","uuid":"u1"}\n`,
+      )
+    }
+
+    it("finds a Claude session whose project dir differs from the caller's cwd", () => {
+      seedClaudeSession("/tmp/original-project", "sess-xyz")
+      // Caller is in a completely unrelated cwd — the scan should still find it.
+      expect(detectSessionOrigin("sess-xyz", "/tmp/some-other-cwd")).toBe("claude")
+    })
+
+    it("still finds a Claude session under the caller's own cwd (fast path)", () => {
+      seedClaudeSession("/tmp/matching-project", "sess-abc")
+      expect(detectSessionOrigin("sess-abc", "/tmp/matching-project")).toBe(
+        "claude",
+      )
+    })
+
+    it("returns null when the session ID does not match any backend", () => {
+      seedClaudeSession("/tmp/some-project", "sess-present")
+      expect(detectSessionOrigin("sess-missing", "/tmp/anywhere")).toBeNull()
     })
   })
 })

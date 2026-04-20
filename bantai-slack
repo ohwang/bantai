@@ -8,7 +8,6 @@ while [ -L "$SOURCE" ]; do
   SOURCE="$(readlink "$SOURCE")"
   [[ "$SOURCE" != /* ]] && SOURCE="$LINK_DIR/$SOURCE"
 done
-DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 
-exec bun run --conditions=browser "$DIR/src/index.ts" slack \
-  --slack-config "$DIR/.bantai/slack.real.json" "$@"
+bantai slack --slack-config "$DIR/.bantai/slack.real.json" "$@"

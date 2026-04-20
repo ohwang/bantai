@@ -1,33 +1,29 @@
 /**
  * Status-reaction state machine.
  *
- * Per plan §4, the bot communicates its live status via a single emoji
- * reaction on the triggering user message. Transitions remove the previous
- * emoji and add the next one; on error the reaction falls back to ❌.
+ * Per-turn lifecycle, drastically simplified (prior revisions tracked 15
+ * states and burned reactions.add / reactions.remove on every tool, thinking
+ * pulse, and permission request — we consistently hit Slack's reaction
+ * rate limit). The contract now is:
+ *
+ *   1. On the first event of a turn we react with a single "working" emoji
+ *      (:cyclone:) on the user's trigger message.
+ *   2. Intermediate state changes (tool calls, thinking, permission /
+ *      elicitation waits, compaction, rate-limit blips) do NOT retouch the
+ *      reaction. The thread-status banner (view/thread-status.ts) already
+ *      carries that detail via `assistant.threads.setStatus` — no reason
+ *      to double up on the reaction API.
+ *   3. On `turn_complete` we REMOVE the working emoji and add nothing —
+ *      :white_check_mark: is reserved for humans marking work as reviewed,
+ *      not for the bot announcing its own completion. A clean trigger
+ *      message signals "done" implicitly.
+ *   4. On interrupt / fatal error we swap to :octagonal_sign: / :x:.
+ *
+ * Budget: at most 2 emoji-surface transitions per turn (add + remove on
+ * happy path; add + remove + add on interrupt/error). Never :white_check_mark:.
  *
  * This module is pure of Bolt types — it uses a narrow `ReactionAdapter`
  * surface so tests wire in a fake (same pattern as the outbox).
- *
- * Mapping (Unicode emoji → Slack shortcode):
- *   🕐  :clock3:                  → queued
- *   🌀  :cyclone:                 → accepted, starting
- *   🧠  :brain:                   → thinking / first text
- *   👀  :eyes:                    → Read / Grep / Glob
- *   ✏️  :pencil2:                  → Edit / Write
- *   🛠️  :hammer_and_wrench:       → Bash / shell
- *   🌐  :globe_with_meridians:    → WebFetch / WebSearch
- *   🤖  :robot_face:              → subagent / task
- *   🔐  :lock:                    → permission_request
- *   ❓  :question:                → elicitation_request
- *   🧹  :broom:                   → compact
- *   ✅  :white_check_mark:         → turn_complete
- *   🛑  :octagonal_sign:          → interrupted
- *   ❌  :x:                       → error (fatal)
- *   ⏳  :hourglass_flowing_sand:  → rate-limited
- *
- * Callers instantiate one StatusReactionController per triggering message
- * and feed it AgentEvents. The controller debounces so a burst of
- * tool_use_start events doesn't thrash the reactions API.
  */
 
 import type { ConversationEvent } from "../../../protocol/types"
@@ -46,50 +42,29 @@ export interface ReactionAdapter {
 // State derivation
 // ---------------------------------------------------------------------------
 
-export type ReactionState =
-  | "queued"
-  | "working"
-  | "thinking"
-  | "reading"
-  | "editing"
-  | "shell"
-  | "web"
-  | "subagent"
-  | "awaiting_approval"
-  | "awaiting_answer"
-  | "compacting"
-  | "rate_limited"
-  | "done"
-  | "interrupted"
-  | "error"
+export type ReactionState = "working" | "done" | "interrupted" | "error"
 
+/**
+ * Map from state → Slack shortcode. An empty string means "no emoji" — the
+ * controller clears the prior reaction without adding a new one. We use
+ * this for `done` so the happy path ends with a clean trigger message
+ * (never :white_check_mark: — reserved for humans).
+ */
 export const STATE_TO_SHORTCODE: Record<ReactionState, string> = {
-  queued: "clock3",
   working: "cyclone",
-  thinking: "brain",
-  reading: "eyes",
-  editing: "pencil2",
-  shell: "hammer_and_wrench",
-  web: "globe_with_meridians",
-  subagent: "robot_face",
-  awaiting_approval: "lock",
-  awaiting_answer: "question",
-  compacting: "broom",
-  rate_limited: "hourglass_flowing_sand",
-  done: "white_check_mark",
+  done: "",
   interrupted: "octagonal_sign",
   error: "x",
 }
 
-const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"])
-const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit"])
-const SHELL_TOOLS = new Set(["Bash", "Shell", "KillBash", "BashOutput"])
-const WEB_TOOLS = new Set(["WebFetch", "WebSearch"])
-
 /**
  * Pure state-transition function: given the current state and an AgentEvent,
- * return the next state (or `undefined` to leave unchanged). This lets the
- * controller decide whether to hit the API at all.
+ * return the next state (or `undefined` to leave unchanged).
+ *
+ * The machine intentionally ignores tool_use_*, thinking_delta, text_delta,
+ * permission_*, elicitation_*, compact, and rate_limit_update. Those used
+ * to flip the emoji in older revisions and were the primary cause of
+ * rate-limit pain on long turns.
  */
 export function nextReactionState(
   current: ReactionState,
@@ -97,57 +72,20 @@ export function nextReactionState(
 ): ReactionState | undefined {
   switch (event.type) {
     case "session_init":
-      return current === "queued" ? "working" : undefined
     case "turn_start":
-      // Reset to "working" for each new turn so tool-specific reactions apply
-      // only to the current turn.
-      return "working"
-    case "thinking_delta":
-      return current === "thinking" ? undefined : "thinking"
-    case "text_delta":
-    case "text_complete":
-      // When the model starts producing text, we're in the "thinking → reply"
-      // phase. Only flip from the prep states, not from tool states — we want
-      // the tool emoji to persist while the user can still see its output.
-      if (current === "working" || current === "thinking") return "thinking"
-      return undefined
-    case "tool_use_start": {
-      const next = classifyTool(event.tool)
-      return next === current ? undefined : next
-    }
-    case "permission_request":
-      return "awaiting_approval"
-    case "permission_response":
-      return "working"
-    case "elicitation_request":
-      return "awaiting_answer"
-    case "elicitation_response":
-      return "working"
-    case "compact":
-      return "compacting"
+      // Reset to working at the start of every turn (also handles a fresh
+      // controller whose initial state is something other than "working").
+      return current === "working" ? undefined : "working"
     case "turn_complete":
       return "done"
-    case "rate_limit_update":
-      if ("blocked" in event && event.blocked === true) return "rate_limited"
-      if (current === "rate_limited" && "blocked" in event && event.blocked === false) return "working"
-      return undefined
+    case "interrupt":
+      return "interrupted"
     case "error":
       if (event.severity === "fatal") return "error"
       return undefined
-    case "interrupt":
-      return "interrupted"
     default:
       return undefined
   }
-}
-
-function classifyTool(tool: string): ReactionState {
-  if (READ_TOOLS.has(tool)) return "reading"
-  if (WRITE_TOOLS.has(tool)) return "editing"
-  if (SHELL_TOOLS.has(tool)) return "shell"
-  if (WEB_TOOLS.has(tool)) return "web"
-  if (tool.startsWith("mcp__")) return "working" // MCP tools: keep generic
-  return "working"
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +97,7 @@ export interface StatusReactionOpts {
   channel: string
   /** ts of the user message the reaction lives on. */
   triggerTs: string
-  /** Initial state (default: "queued"). */
+  /** Initial state (default: "working"). */
   initial?: ReactionState
   /** Minimum ms between reaction transitions — throttles flapping. */
   minTransitionMs?: number
@@ -179,8 +117,13 @@ export interface StatusReactionController {
 export function createStatusReactionController(
   opts: StatusReactionOpts,
 ): StatusReactionController {
-  let state: ReactionState = opts.initial ?? "queued"
-  let applied: string | undefined = undefined // the emoji currently on the message
+  let state: ReactionState = opts.initial ?? "working"
+  /**
+   * The shortcode currently attached to the trigger message. `""` means
+   * no emoji is applied — either we haven't added one yet or the `done`
+   * state cleared it.
+   */
+  let applied = ""
   let inflight: Promise<void> = Promise.resolve()
   // When true, exactly one syncReaction call is already queued on `inflight`.
   // Further state changes just update `state`; the pending call will read
@@ -213,6 +156,13 @@ export function createStatusReactionController(
       } catch (err) {
         log.warn(`slack reactions: removeReaction(${applied}) failed: ${String(err)}`)
       }
+      applied = ""
+    }
+    if (!shortcode) {
+      // Terminal clear (e.g. `done`) — nothing to add, just stamp the clock
+      // so a follow-on throttled call still waits the right amount.
+      lastTransitionAt = now()
+      return
     }
     try {
       await opts.adapter.addReaction({

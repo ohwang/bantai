@@ -97,11 +97,13 @@ describe("event-renderer — streaming", () => {
 })
 
 describe("event-renderer — reactions", () => {
-  it("collapses a synchronous event batch to only the final state", async () => {
-    // All events land in the same 16ms EventBatcher window.  The reaction
-    // controller coalesces them into a single API transition: initial prime
-    // (working/cyclone) + final done.  Intermediate states (reading etc.) are
-    // never applied — saving the 4 Slack API calls they would have cost.
+  it("collapses a synchronous event batch to a single working + clear cycle", async () => {
+    // All events land in the same 16ms EventBatcher window. The reaction
+    // controller coalesces them into at most two API calls: initial prime
+    // (:cyclone:) and a terminal remove on turn_complete. Tool / text
+    // events are intentionally silent — intermediate reactions used to burn
+    // through the Slack rate limit on long turns. `done` never emits
+    // :white_check_mark: (reserved for humans).
     const h = harness("t1")
     h.push([
       { type: "turn_start" },
@@ -112,8 +114,10 @@ describe("event-renderer — reactions", () => {
     ])
     await drain(100)
     const adds = h.reacts.filter((r) => r.op === "add").map((r) => r.name)
-    // initial: working (primed on construct); all intermediates coalesced to done.
-    expect(adds).toEqual(["cyclone", "white_check_mark"])
+    const removes = h.reacts.filter((r) => r.op === "remove").map((r) => r.name)
+    expect(adds).toEqual(["cyclone"])
+    expect(removes).toEqual(["cyclone"])
+    expect(h.reacts.some((r) => r.name === "white_check_mark")).toBe(false)
   })
 
   it("omits reactions entirely when no triggerTs is provided", async () => {

@@ -8,61 +8,68 @@ import {
 } from "../../../../src/frontends/slack/view/reactions"
 
 describe("nextReactionState (pure)", () => {
-  it("session_init flips queued → working", () => {
-    expect(nextReactionState("queued", { type: "session_init", tools: [], models: [] })).toBe("working")
-  })
-
-  it("turn_start always returns working", () => {
+  it("turn_start resets to working when we're past the initial state", () => {
     expect(nextReactionState("done", { type: "turn_start" })).toBe("working")
+    expect(nextReactionState("error", { type: "turn_start" })).toBe("working")
   })
 
-  it("tool_use_start classifies by tool family", () => {
-    expect(
-      nextReactionState("working", { type: "tool_use_start", id: "1", tool: "Read", input: {} }),
-    ).toBe("reading")
-    expect(
-      nextReactionState("working", { type: "tool_use_start", id: "1", tool: "Bash", input: {} }),
-    ).toBe("shell")
-    expect(
-      nextReactionState("working", { type: "tool_use_start", id: "1", tool: "Edit", input: {} }),
-    ).toBe("editing")
-    expect(
-      nextReactionState("working", { type: "tool_use_start", id: "1", tool: "WebSearch", input: {} }),
-    ).toBe("web")
-  })
-
-  it("tool_use_start returns undefined when already in that state", () => {
-    expect(
-      nextReactionState("reading", { type: "tool_use_start", id: "1", tool: "Grep", input: {} }),
-    ).toBeUndefined()
-  })
-
-  it("permission_request → awaiting_approval; permission_response → working", () => {
-    expect(
-      nextReactionState("reading", { type: "permission_request", id: "p1", tool: "Bash", input: {} }),
-    ).toBe("awaiting_approval")
-    expect(
-      nextReactionState("awaiting_approval", { type: "permission_response", id: "p1", behavior: "allow" }),
-    ).toBe("working")
+  it("turn_start on a fresh working controller is a no-op", () => {
+    expect(nextReactionState("working", { type: "turn_start" })).toBeUndefined()
   })
 
   it("turn_complete → done", () => {
-    expect(nextReactionState("thinking", { type: "turn_complete" })).toBe("done")
+    expect(nextReactionState("working", { type: "turn_complete" })).toBe("done")
   })
 
-  it("fatal error → error", () => {
+  it("fatal error → error; recoverable error stays put", () => {
     expect(
       nextReactionState("working", { type: "error", code: "rate", message: "x", severity: "fatal" }),
     ).toBe("error")
+    expect(
+      nextReactionState("working", {
+        type: "error",
+        code: "flaky",
+        message: "retry",
+        severity: "recoverable",
+      }),
+    ).toBeUndefined()
   })
 
   it("interrupt → interrupted", () => {
     expect(nextReactionState("working", { type: "interrupt" } as ConversationEvent)).toBe("interrupted")
   })
 
-  it("text_delta keeps tool states (shows tool work continued)", () => {
-    expect(nextReactionState("reading", { type: "text_delta", text: "..." })).toBeUndefined()
-    expect(nextReactionState("working", { type: "text_delta", text: "..." })).toBe("thinking")
+  it("intermediate tool / thinking / permission events are ignored", () => {
+    // Every one of these used to flip the emoji; they now map to no change
+    // so the rate-limit budget stays at 1-2 reactions per turn.
+    expect(
+      nextReactionState("working", { type: "tool_use_start", id: "1", tool: "Read", input: {} }),
+    ).toBeUndefined()
+    expect(
+      nextReactionState("working", { type: "tool_use_start", id: "1", tool: "Bash", input: {} }),
+    ).toBeUndefined()
+    expect(
+      nextReactionState("working", { type: "tool_use_end", id: "1", output: "ok" }),
+    ).toBeUndefined()
+    expect(
+      nextReactionState("working", { type: "thinking_delta", text: "…" }),
+    ).toBeUndefined()
+    expect(
+      nextReactionState("working", { type: "text_delta", text: "reply" }),
+    ).toBeUndefined()
+    expect(
+      nextReactionState("working", { type: "permission_request", id: "p1", tool: "Bash", input: {} }),
+    ).toBeUndefined()
+    expect(
+      nextReactionState("working", { type: "permission_response", id: "p1", behavior: "allow" }),
+    ).toBeUndefined()
+    expect(
+      nextReactionState("working", { type: "compact" } as ConversationEvent),
+    ).toBeUndefined()
+  })
+
+  it("done is never :white_check_mark: — the shortcode is empty", () => {
+    expect(STATE_TO_SHORTCODE.done).toBe("")
   })
 })
 
@@ -86,38 +93,36 @@ describe("StatusReactionController", () => {
       adapter,
       channel: "C1",
       triggerTs: "t1",
-      initial: "queued",
     })
     await drain()
     expect(calls.length).toBe(1)
-    expect(calls[0]).toEqual({ op: "add", name: STATE_TO_SHORTCODE.queued })
+    expect(calls[0]).toEqual({ op: "add", name: STATE_TO_SHORTCODE.working })
   })
 
-  it("removes the prior emoji before adding the new one", async () => {
+  it("turn_complete removes the working emoji and adds nothing (no :white_check_mark:)", async () => {
     const { adapter, calls } = makeAdapter()
     const ctrl = createStatusReactionController({
       adapter,
       channel: "C1",
       triggerTs: "t1",
-      initial: "queued",
     })
     await drain()
-    ctrl.apply({ type: "turn_start" })
+    ctrl.apply({ type: "turn_complete" })
     await drain()
-    // queued-add, queued-remove, working-add
-    const expected: Array<{ op: "add" | "remove"; name: string }> = [
-      { op: "add", name: STATE_TO_SHORTCODE.queued },
-      { op: "remove", name: STATE_TO_SHORTCODE.queued },
+    // Exactly one add (the initial :cyclone:) and one remove of the same —
+    // the trigger message ends clean.
+    expect(calls).toEqual([
       { op: "add", name: STATE_TO_SHORTCODE.working },
-    ]
-    expect(calls).toEqual(expected)
+      { op: "remove", name: STATE_TO_SHORTCODE.working },
+    ])
+    expect(ctrl.current()).toBe("done")
   })
 
-  it("rapid-fire events coalesce: only the final state hits the API", async () => {
+  it("rapid-fire intermediate events do not call the reactions API", async () => {
     // Simulates a 16ms event batch from the renderer: turn_start → tool →
     // tool_end → text_delta → turn_complete all arrive synchronously.
-    // Only the last state change ("done") should generate API calls; the
-    // intermediate working/reading transitions are skipped entirely.
+    // Only the initial :cyclone: and the final remove should hit the API;
+    // tool / text events are silent.
     const { adapter, calls } = makeAdapter()
     const ctrl = createStatusReactionController({
       adapter,
@@ -132,15 +137,15 @@ describe("StatusReactionController", () => {
     ctrl.apply({ type: "turn_complete" })
     await drain(50)
     const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
-    // All intermediate states (working, reading) are coalesced; only the
-    // initial prime and the final "done" generate API calls.
-    expect(adds).toEqual([STATE_TO_SHORTCODE.queued, STATE_TO_SHORTCODE.done])
+    const removes = calls.filter((c) => c.op === "remove").map((c) => c.name)
+    expect(adds).toEqual([STATE_TO_SHORTCODE.working])
+    expect(removes).toEqual([STATE_TO_SHORTCODE.working])
     expect(ctrl.current()).toBe("done")
   })
 
-  it("sequential transitions (awaited between events) apply each state individually", async () => {
-    // When events are separated by async gaps (real agent behaviour: each
-    // tool call is async), each state transition is applied in full.
+  it("sequential turns (await between events) still only touch the API at start + end", async () => {
+    // Even when events are separated by async gaps (real agent behaviour),
+    // intermediate tool-use events don't generate reaction transitions.
     const { adapter, calls } = makeAdapter()
     const ctrl = createStatusReactionController({
       adapter,
@@ -155,16 +160,65 @@ describe("StatusReactionController", () => {
     ctrl.apply({ type: "turn_complete" })
     await drain(50)
     const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
-    expect(adds).toEqual([
-      STATE_TO_SHORTCODE.queued,
-      STATE_TO_SHORTCODE.working,
-      STATE_TO_SHORTCODE.reading,
-      STATE_TO_SHORTCODE.done,
-    ])
+    const removes = calls.filter((c) => c.op === "remove").map((c) => c.name)
+    expect(adds).toEqual([STATE_TO_SHORTCODE.working])
+    expect(removes).toEqual([STATE_TO_SHORTCODE.working])
     expect(ctrl.current()).toBe("done")
   })
 
-  it("terminate() forces the final state even after other events", async () => {
+  it("terminate('interrupted') swaps working → octagonal_sign (at most 2 emojis total)", async () => {
+    const { adapter, calls } = makeAdapter()
+    const ctrl = createStatusReactionController({
+      adapter,
+      channel: "C1",
+      triggerTs: "t1",
+    })
+    // Let the initial :cyclone: land before we interrupt, otherwise the
+    // coalescer collapses both transitions into the terminal state.
+    await drain()
+    ctrl.apply({ type: "turn_start" })
+    await ctrl.terminate("interrupted")
+    const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
+    expect(adds).toEqual([STATE_TO_SHORTCODE.working, STATE_TO_SHORTCODE.interrupted])
+    expect(adds.length).toBeLessThanOrEqual(2)
+    expect(ctrl.current()).toBe("interrupted")
+  })
+
+  it("synchronous interrupt coalesces to just :octagonal_sign: (1 emoji)", async () => {
+    // When there's no async gap between priming and terminate, the
+    // controller skips the intermediate :cyclone: — which is fine:
+    // the budget is "at most 2 emojis per turn," and 1 is ≤ 2.
+    const { adapter, calls } = makeAdapter()
+    const ctrl = createStatusReactionController({
+      adapter,
+      channel: "C1",
+      triggerTs: "t1",
+    })
+    await ctrl.terminate("interrupted")
+    const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
+    expect(adds).toEqual([STATE_TO_SHORTCODE.interrupted])
+  })
+
+  it("fatal error swaps working → x", async () => {
+    const { adapter, calls } = makeAdapter()
+    const ctrl = createStatusReactionController({
+      adapter,
+      channel: "C1",
+      triggerTs: "t1",
+    })
+    await drain()
+    ctrl.apply({
+      type: "error",
+      code: "rate",
+      message: "x",
+      severity: "fatal",
+    })
+    await drain()
+    const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
+    expect(adds).toEqual([STATE_TO_SHORTCODE.working, STATE_TO_SHORTCODE.error])
+  })
+
+  it("never emits :white_check_mark: across any lifecycle", async () => {
     const { adapter, calls } = makeAdapter()
     const ctrl = createStatusReactionController({
       adapter,
@@ -172,10 +226,14 @@ describe("StatusReactionController", () => {
       triggerTs: "t1",
     })
     ctrl.apply({ type: "turn_start" })
-    await ctrl.terminate("interrupted")
-    const adds = calls.filter((c) => c.op === "add").map((c) => c.name)
-    expect(adds).toContain(STATE_TO_SHORTCODE.interrupted)
-    expect(ctrl.current()).toBe("interrupted")
+    ctrl.apply({ type: "tool_use_start", id: "1", tool: "Bash", input: {} })
+    ctrl.apply({ type: "permission_request", id: "p1", tool: "Bash", input: {} })
+    ctrl.apply({ type: "permission_response", id: "p1", behavior: "allow" })
+    ctrl.apply({ type: "turn_complete" })
+    await ctrl.terminate("done")
+    for (const c of calls) {
+      expect(c.name).not.toBe("white_check_mark")
+    }
   })
 
   it("swallows adapter errors without crashing the pipeline", async () => {

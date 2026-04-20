@@ -133,18 +133,23 @@ async function driveToolTurn(fix: Fixture): Promise<{ parentTs: string }> {
   const parent = await fix.mini
     .asUser(fix.aliceId)
     .sendMessage(fix.generalId, `<@${fix.botUserId}> can you read the file please`)
-  // Wait until the final reaction (:white_check_mark:) lands on the trigger
-  // message — that fires only after turn_complete, so at this point the
-  // renderer will have emitted tool cards, concise summaries, and cost
-  // footers. Without that anchor, a naive 1s wait can race the mock's
-  // ~2-3 s word-streaming sim.
+  // Wait until the working :cyclone: reaction has been seen AND then cleared
+  // from the trigger message. The bot adds :cyclone: on turn_start and
+  // removes it on turn_complete — so a transition "cyclone seen → no
+  // reactions" anchors us past turn_complete, which is when tool cards,
+  // concise summaries, and cost footers have all landed. We never wait
+  // for :white_check_mark: — the bot no longer emits it (reserved for
+  // humans).
+  let workingSeen = false
   await waitFor(
     () => {
       const p = fix.mini.workspace.channels.get(fix.generalId)?.messages.get(parent.ts)
       const reactions = (p as { reactions?: Array<{ name: string }> } | undefined)?.reactions
-      return !!reactions?.some((r) => r.name === "white_check_mark")
+      if (reactions?.some((r) => r.name === "cyclone")) workingSeen = true
+      const cleared = !reactions || reactions.length === 0
+      return workingSeen && cleared
     },
-    { timeoutMs: 15_000, message: "expected :white_check_mark: on trigger message" },
+    { timeoutMs: 15_000, message: "expected :cyclone: to appear then clear on trigger message" },
   )
   // Small buffer for postPerTurnAnnotations' chained posts.
   await new Promise((r) => setTimeout(r, 250))

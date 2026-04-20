@@ -7,8 +7,9 @@
  *      "read + reply" simulation ("can you read the file?").
  *   2. Assert: the bot's thread accumulates a single message (the streamed
  *      draft), not a chain of posts. Updates land in place.
- *   3. Assert: at least one status reaction is applied to alice's trigger
- *      message and the final reaction is :white_check_mark: (done).
+ *   3. Assert: the status reaction cycles through :cyclone: (working) and
+ *      lands clean (removed) once the turn completes. The bot never uses
+ *      :white_check_mark: — that's reserved for humans marking review.
  *
  * Streaming is inherently asynchronous — we use a generous wait window and
  * polling rather than deterministic timing assertions. What matters for S2
@@ -118,19 +119,40 @@ describe("slack frontend S2 — streaming + reactions", () => {
     expect((replies[0]?.text ?? "").length).toBeGreaterThan(0)
   })
 
-  it("lands at least one reaction on the trigger message and finishes on :white_check_mark:", async () => {
+  it("lands a :cyclone: while working and removes it on turn_complete (never :white_check_mark:)", async () => {
     const parent = await mini
       .asUser(aliceId)
       .sendMessage(generalId, `<@${botUserId}> just reply`)
-    await waitFor(
-      () => replyCountIn(mini, generalId, parent.ts) >= 1,
-      { timeoutMs: 10_000, message: "expected reply" },
-    )
-    // Wait for the terminal reaction to land.
-    await waitFor(
-      () => finalReactionFor(mini, generalId, parent.ts) === "white_check_mark",
-      { timeoutMs: 5000, message: "expected final :white_check_mark: reaction" },
-    )
+    // Snapshot reactions at every poll tick so we can observe the working
+    // emoji even though it's removed once the turn finishes. Minislack's
+    // reactions store is live-state only (removes actually delete), so
+    // end-of-turn queries alone can't see a transient emoji.
+    const history = new Set<string>()
+    const stopObserver = observeReactions(mini, generalId, parent.ts, (names) => {
+      for (const n of names) history.add(n)
+    })
+    try {
+      await waitFor(
+        () => replyCountIn(mini, generalId, parent.ts) >= 1,
+        { timeoutMs: 10_000, message: "expected reply" },
+      )
+      // The working reaction must have landed at some point.
+      await waitFor(() => history.has("cyclone"), {
+        timeoutMs: 5000,
+        message: "expected :cyclone: reaction while working",
+      })
+      // Then wait for the trigger message to end up clean — :cyclone: is
+      // removed on turn_complete and nothing replaces it (the new reaction
+      // system never emits :white_check_mark: as a bot reaction).
+      await waitFor(
+        () => finalReactionFor(mini, generalId, parent.ts) === undefined,
+        { timeoutMs: 5000, message: "expected working reaction to be cleared" },
+      )
+    } finally {
+      stopObserver()
+    }
+    // Paranoia check: :white_check_mark: must never appear across the turn.
+    expect(history.has("white_check_mark")).toBe(false)
   })
 })
 
@@ -191,4 +213,29 @@ async function waitFor(
     await new Promise((r) => setTimeout(r, step))
   }
   throw new Error(`waitFor timed out after ${opts.timeoutMs}ms: ${opts.message}`)
+}
+
+/**
+ * Poll the parent message's reactions every 20ms and invoke `onSample`
+ * with every emoji name currently present. Returns a stop fn that
+ * cancels the interval. Used by tests that need to observe transient
+ * reactions — minislack's store only keeps the CURRENT set, so any
+ * emoji that's added and then removed is invisible after the fact.
+ */
+function observeReactions(
+  mini: MinislackHandle,
+  channelId: string,
+  parentTs: string,
+  onSample: (names: string[]) => void,
+): () => void {
+  const timer = setInterval(() => {
+    const ch = mini.workspace.channels.get(channelId)
+    if (!ch) return
+    const parent = ch.messages.get(parentTs)
+    if (!parent) return
+    const reactions =
+      (parent as { reactions?: Array<{ name: string }> }).reactions ?? []
+    onSample(reactions.map((r) => r.name))
+  }, 20)
+  return () => clearInterval(timer)
 }

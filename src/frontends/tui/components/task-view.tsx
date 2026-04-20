@@ -14,6 +14,11 @@ import { BlinkingDot } from "./primitives"
 
 const MAX_VISIBLE_TASKS = 10
 
+export function isRedundantOutput(description: string, output: string | undefined): boolean {
+  if (!output) return true
+  return description.trim().toLowerCase() === output.trim().toLowerCase()
+}
+
 export function TaskView(props: { tasks: [string, TaskInfo][] }) {
   const [tick, setTick] = createSignal(0)
   const timer = setInterval(() => setTick((t) => t + 1), 1000)
@@ -62,7 +67,7 @@ export function TaskView(props: { tasks: [string, TaskInfo][] }) {
                     </text>
                   </Show>
                 </box>
-                <Show when={task.status === "completed" && task.output}>
+                <Show when={task.status === "completed" && task.output && !isRedundantOutput(task.description, task.output)}>
                   <box flexDirection="row" paddingLeft={3}>
                     <text fg={colors.text.secondary}>{isLast() ? "     " : "\u2502    "}</text>
                     <text fg={colors.text.muted}>

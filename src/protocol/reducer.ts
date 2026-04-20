@@ -721,17 +721,14 @@ export function reduce(
       // which rewrites the entire list on every invocation. V1 is in-memory
       // only; no persistence, no owner/blocking metadata.
       //
-      // Auto-clear: when every item is `completed`, the agent is done with
-      // its current task breakdown. Store `[]` so the UI can hide the panel
-      // cleanly instead of showing a stale "all done" list (matches
-      // Claude Code's TodoWriteTool behavior — see task-view.md §3.1).
-      // An already-empty payload means "clear" and is stored as-is.
-      const incoming = event.todos
-      const allCompleted =
-        incoming.length > 0 && incoming.every(t => t.status === "completed")
+      // Auto-hide is handled in the UI layer (see TaskChecklist component),
+      // which keeps the all-completed list visible for a short delay before
+      // hiding the panel — matching Claude Code's V2 hide timer
+      // (see team/backlog/done/task-view.md §6.3). The reducer simply stores
+      // whatever the agent sent, including all-completed lists.
       return {
         ...next,
-        todos: allCompleted ? [] : incoming,
+        todos: event.todos,
       }
     }
 

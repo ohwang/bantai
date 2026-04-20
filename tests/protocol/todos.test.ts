@@ -2,9 +2,11 @@
  * Reducer tests for V1 TodoWrite semantics (`todos_updated` event).
  *
  * Scope:
- *  - Full-list replacement on each event.
- *  - Auto-clear to [] when every incoming item is `completed` (matches
- *    Claude Code's TodoWriteTool behavior — see team/backlog/task-view.md §3.1).
+ *  - Full-list replacement on each event (the reducer stores what the agent
+ *    sent — no auto-clear).
+ *  - All-completed payloads ARE stored as-is; the UI handles auto-hide with
+ *    a delay (see TaskChecklist component, matching Claude Code's V2 timer
+ *    described in team/backlog/done/task-view.md §6.3).
  *  - Reset to [] on `session_init` (new session == fresh todo list).
  *  - Persistence across `turn_start` (todos deliberately survive turn
  *    boundaries, unlike activeTasks which is pruned).
@@ -73,7 +75,11 @@ describe("todos_updated", () => {
     expect(state.todos[0]!.content).toBe("Only one")
   })
 
-  test("auto-clears to [] when every incoming item is completed", () => {
+  test("stores an all-completed list as-is (auto-hide is UI-only)", () => {
+    // The reducer no longer auto-clears when every item is completed.
+    // Auto-hide with a 5s delay is handled in the TaskChecklist component,
+    // matching Claude Code's V2 hide timer. Keeping the data in state lets
+    // the UI render the "all done" moment before it fades out.
     const state = applyEvents([
       { type: "session_init", tools: [], models: [] },
       {
@@ -85,7 +91,27 @@ describe("todos_updated", () => {
         ],
       },
     ])
-    expect(state.todos).toEqual([])
+    expect(state.todos).toHaveLength(3)
+    expect(state.todos.every((t) => t.status === "completed")).toBe(true)
+  })
+
+  test("a subsequent all-completed payload replaces prior list as-is", () => {
+    // Regression guard for the reducer behavior flip: previously this would
+    // auto-clear to []. Now it must store the incoming list verbatim.
+    const state = applyEvents([
+      { type: "session_init", tools: [], models: [] },
+      {
+        type: "todos_updated",
+        todos: [T("A", "in_progress", "Aing"), T("B", "pending")],
+      },
+      {
+        type: "todos_updated",
+        todos: [T("A", "completed"), T("B", "completed")],
+      },
+    ])
+    expect(state.todos).toHaveLength(2)
+    expect(state.todos[0]!.status).toBe("completed")
+    expect(state.todos[1]!.status).toBe("completed")
   })
 
   test("does NOT auto-clear when at least one item is not completed", () => {

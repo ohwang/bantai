@@ -236,8 +236,9 @@ export interface TodoItem {
 
 /** Todo list replaced (TodoWrite V1). `todos` is the FULL new list — the
  *  reducer replaces state.todos with this payload. An empty array is a
- *  valid "clear" signal. When every item is `completed`, the reducer stores
- *  `[]` instead (matches Claude Code's TodoWrite auto-clear behavior). */
+ *  valid "clear" signal. All-completed lists are stored as-is; the UI layer
+ *  handles the short auto-hide delay (matches Claude Code's TaskListV2
+ *  5-second hide timer — see team/backlog/done/task-view.md §6.3). */
 export type TodosUpdatedEvent = {
   type: "todos_updated"
   /** Full replacement list. Empty array is valid (means "clear"). */
@@ -738,8 +739,10 @@ export interface ConversationState {
   activeTasks: Map<string, TaskInfo>
 
   /** Agent's current todo list (V1 TodoWrite — in-memory, full replacement
-   *  on each update, auto-cleared when all items are completed). Persists
-   *  across turns by design; reset on session_init and backend switch. */
+   *  on each update). All-completed lists stay in state; the TUI layer
+   *  hides them after a short delay to match Claude Code's V2 behavior.
+   *  Persists across turns by design; reset on session_init and backend
+   *  switch. */
   todos: TodoItem[]
 
   /** Current model name (updated by /model command, overrides session default) */

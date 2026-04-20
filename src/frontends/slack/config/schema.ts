@@ -194,6 +194,15 @@ export const DefaultsSchema = z
      * separator. Omit to leave the backend's own default in effect.
      */
     system_prompt: z.string().optional(),
+    /**
+     * Optional Slack channel id (e.g. `C0ABCDEF`) that receives a one-line
+     * diff summary after every non-noop config reload and the zod error
+     * card on every reload rejection. When absent, the operator has no
+     * in-Slack feedback surface — only `~/.bantai/logs/<session>.log`
+     * and `bantai slack doctor` reflect reload outcomes. Set this to an
+     * ops channel you already monitor.
+     */
+    reload_notify_channel: z.string().optional(),
   })
   .strict()
 export type DefaultsConfig = z.infer<typeof DefaultsSchema>

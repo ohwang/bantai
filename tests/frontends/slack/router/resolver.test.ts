@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test"
 import { loadSlackConfig } from "../../../../src/frontends/slack/config/loader"
 import {
   composeSystemPrompt,
+  detectModelFamily,
   isChannelConfigured,
+  isModelIncompatibleWithBackend,
   resolveMcpServersForChannel,
   resolveProjectForChannel,
 } from "../../../../src/frontends/slack/router/resolver"
@@ -227,6 +229,130 @@ describe("isChannelConfigured", () => {
       channels: [{ id: "C0MAPPED", project_dir: "/tmp/repo" }],
     })
     expect(isChannelConfigured(cfg, "C0OTHER")).toBe(false)
+  })
+})
+
+describe("detectModelFamily", () => {
+  it("classifies Claude api ids", () => {
+    expect(detectModelFamily("claude-opus-4-7")).toBe("claude")
+    expect(detectModelFamily("claude-sonnet-4-6")).toBe("claude")
+    expect(detectModelFamily("claude-haiku-4-5-20251001")).toBe("claude")
+  })
+
+  it("classifies Claude Code aliases (incl. context-window suffix)", () => {
+    expect(detectModelFamily("opus")).toBe("claude")
+    expect(detectModelFamily("sonnet")).toBe("claude")
+    expect(detectModelFamily("haiku")).toBe("claude")
+    expect(detectModelFamily("opus[1m]")).toBe("claude")
+    expect(detectModelFamily("sonnet[200k]")).toBe("claude")
+  })
+
+  it("classifies OpenAI / Codex ids", () => {
+    expect(detectModelFamily("gpt-5-codex")).toBe("openai")
+    expect(detectModelFamily("gpt-5-mini")).toBe("openai")
+    expect(detectModelFamily("gpt-4.1")).toBe("openai")
+    expect(detectModelFamily("o3")).toBe("openai")
+    expect(detectModelFamily("codex-mini")).toBe("openai")
+  })
+
+  it("classifies Gemini ids", () => {
+    expect(detectModelFamily("gemini-2.5-pro")).toBe("gemini")
+    expect(detectModelFamily("gemini-3.1-pro-preview")).toBe("gemini")
+    expect(detectModelFamily("auto-gemini-3")).toBe("gemini")
+  })
+
+  it("falls through to other for unknown ids (don't false-positive)", () => {
+    expect(detectModelFamily("custom-llama-7b")).toBe("other")
+    expect(detectModelFamily("mistral-large")).toBe("other")
+    expect(detectModelFamily("")).toBe("other")
+  })
+})
+
+describe("isModelIncompatibleWithBackend", () => {
+  it("flags Claude model into codex/gemini", () => {
+    expect(isModelIncompatibleWithBackend("claude-opus-4-7", "codex")).toBe(true)
+    expect(isModelIncompatibleWithBackend("opus[1m]", "codex")).toBe(true)
+    expect(isModelIncompatibleWithBackend("claude-sonnet-4-6", "gemini")).toBe(true)
+  })
+
+  it("flags openai model into claude/gemini", () => {
+    expect(isModelIncompatibleWithBackend("gpt-5-codex", "claude")).toBe(true)
+    expect(isModelIncompatibleWithBackend("gpt-4.1", "gemini")).toBe(true)
+  })
+
+  it("flags gemini model into claude/codex", () => {
+    expect(isModelIncompatibleWithBackend("gemini-2.5-pro", "claude")).toBe(true)
+    expect(isModelIncompatibleWithBackend("gemini-2.5-pro", "codex")).toBe(true)
+  })
+
+  it("passes when model and backend match", () => {
+    expect(isModelIncompatibleWithBackend("claude-opus-4-7", "claude")).toBe(false)
+    expect(isModelIncompatibleWithBackend("gpt-5-codex", "codex")).toBe(false)
+    expect(isModelIncompatibleWithBackend("gemini-2.5-pro", "gemini")).toBe(false)
+  })
+
+  it("has no opinion on copilot / acp / mock backends", () => {
+    expect(isModelIncompatibleWithBackend("claude-opus-4-7", "copilot")).toBe(false)
+    expect(isModelIncompatibleWithBackend("gpt-5-codex", "copilot")).toBe(false)
+    expect(isModelIncompatibleWithBackend("claude-opus-4-7", "acp")).toBe(false)
+    expect(isModelIncompatibleWithBackend("gpt-5-codex", "mock")).toBe(false)
+  })
+
+  it("has no opinion on unknown model schemes", () => {
+    expect(isModelIncompatibleWithBackend("custom-llama-7b", "claude")).toBe(false)
+    expect(isModelIncompatibleWithBackend("custom-llama-7b", "codex")).toBe(false)
+  })
+})
+
+describe("resolveProjectForChannel — model/backend mismatch guard", () => {
+  it("drops a Claude defaults.model when channel switches to codex backend", async () => {
+    // The exact bug from .bantai/slack.json: defaults.model is a Claude id,
+    // a channel sets backend: codex but no model override → without the guard
+    // the Claude id would reach the Codex API and 400.
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { backend: "claude", model: "claude-opus-4-7" },
+      channels: [{ id: "C0CDX", backend: "codex" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0CDX", { launchCwd: "/cwd" })
+    expect(proj.backend).toBe("codex")
+    expect(proj.model).toBeUndefined()
+  })
+
+  it("drops an explicit channel.model that doesn't match the channel backend", async () => {
+    // The reverse shape: defaults are codex, the channel inherits backend
+    // but explicitly mis-sets `model: claude-opus-4-7` (literally what the
+    // user's .bantai/slack.json had on the proj-cringle-ai channel).
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { backend: "codex" },
+      channels: [{ id: "C0MIX", model: "claude-opus-4-7" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0MIX", { launchCwd: "/cwd" })
+    expect(proj.backend).toBe("codex")
+    expect(proj.model).toBeUndefined()
+  })
+
+  it("keeps the model when it matches the resolved backend", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { backend: "codex", model: "gpt-5-codex" },
+      channels: [{ id: "C0OK" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0OK", { launchCwd: "/cwd" })
+    expect(proj.backend).toBe("codex")
+    expect(proj.model).toBe("gpt-5-codex")
+  })
+
+  it("keeps an unknown-family model id (no false-positives)", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { backend: "acp", model: "custom-llama-7b" },
+      channels: [{ id: "C0UNK" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0UNK", { launchCwd: "/cwd" })
+    expect(proj.backend).toBe("acp")
+    expect(proj.model).toBe("custom-llama-7b")
   })
 })
 

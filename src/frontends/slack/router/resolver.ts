@@ -129,6 +129,69 @@ export interface ResolveProjectOpts {
 }
 
 /**
+ * Coarse "model family" classifier — used to detect cross-backend
+ * misconfigurations (e.g. a Claude model id leaking into the codex backend
+ * via `defaults.model` inheritance, which surfaces as a 400 from the
+ * Codex API instead of a useful error).
+ *
+ * Returns `"other"` when we can't confidently classify the id — keeps the
+ * check conservative so brand-new model schemes / vendored ACP models /
+ * copilot's mixed catalogue pass through without spurious warnings.
+ */
+export type ModelFamily = "claude" | "openai" | "gemini" | "other"
+
+export function detectModelFamily(model: string): ModelFamily {
+  // Claude Code aliases carry a context-window suffix like `opus[1m]`. Strip
+  // it before pattern-matching so the family detection doesn't miss them.
+  const m = model.toLowerCase().trim().replace(/\[\d+[mk]\]$/, "")
+  if (
+    m.startsWith("claude") ||
+    m === "opus" ||
+    m === "sonnet" ||
+    m === "haiku"
+  ) {
+    return "claude"
+  }
+  if (m.startsWith("gemini") || m.startsWith("auto-gemini")) return "gemini"
+  if (
+    m.startsWith("gpt") ||
+    m.startsWith("o1") ||
+    m.startsWith("o3") ||
+    m.startsWith("o4") ||
+    m.startsWith("codex")
+  ) {
+    return "openai"
+  }
+  return "other"
+}
+
+/**
+ * Strict-incompatibility check. Returns true ONLY when we're confident the
+ * given backend will reject the model id. Used by `resolveProjectForChannel`
+ * to drop a misaligned model with a `log.warn` rather than forwarding it to
+ * the backend and letting it surface as an opaque 400.
+ *
+ * Rules:
+ *   - claude backend ⇄ claude family
+ *   - codex backend  ⇄ openai family
+ *   - gemini backend ⇄ gemini family
+ *   - copilot / acp / mock — no opinion (mixed or pluggable catalogue)
+ *   - "other"-family model ids — no opinion (don't false-positive on
+ *     custom or future model schemes)
+ */
+export function isModelIncompatibleWithBackend(
+  model: string,
+  backend: BackendId,
+): boolean {
+  const fam = detectModelFamily(model)
+  if (fam === "other") return false
+  if (backend === "claude") return fam !== "claude"
+  if (backend === "codex") return fam !== "openai"
+  if (backend === "gemini") return fam !== "gemini"
+  return false
+}
+
+/**
  * Is the channel explicitly declared in `config.channels`?
  *
  * The routing layer uses this to distinguish two cases that
@@ -172,7 +235,25 @@ export function resolveProjectForChannel(
 
   const projectDir = override?.project_dir ?? opts.launchCwd
   const backend = (override?.backend ?? defaults.backend) as BackendId
-  const model = override?.model ?? defaults.model
+
+  // Cross-backend model leak guard. When `defaults.model` is a Claude id and
+  // a channel sets `backend: codex` (or vice versa), the inherited model id
+  // would reach the wrong backend's API and surface as an opaque 400 — we
+  // hit this exact bug in the TUI before (commit 799a04d). Drop the model
+  // and warn so the backend uses its own default. Also catches the case of
+  // an explicit per-channel `model` that doesn't match its `backend`.
+  const rawModel = override?.model ?? defaults.model
+  let model: string | undefined = rawModel
+  if (rawModel && isModelIncompatibleWithBackend(rawModel, backend)) {
+    const source = override?.model ? "channel-override" : "defaults"
+    log.warn(
+      `slack: dropping ${source} model "${rawModel}" for channel ${channelId} ` +
+        `— backend=${backend} doesn't accept this model family. ` +
+        `Falling back to backend default.`,
+    )
+    model = undefined
+  }
+
   const approvers = override?.approvers ?? defaults.approvers
   const verbosity = override?.verbosity ?? defaults.verbosity
   const requireMention = override?.require_mention ?? defaults.require_mention

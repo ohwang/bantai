@@ -9,9 +9,9 @@
  * features (owner column, blocked indicators, activity description).
  * See team/backlog/task-view.md §4 for the rendering spec.
  *
- *  ✓ Completed task      (green check, strikethrough + dim)
- *  ■ In-progress task    (claude orange, bold)
- *  □ Pending task        (default color, normal)
+ *  ✔ Completed task      (green check, strikethrough + dim)
+ *  ◼ In-progress task    (claude orange, bold)
+ *  ◻ Pending task        (default color, normal)
  *   … +1 in progress, 2 pending, 5 completed   (dim hidden-summary)
  *
  * Standalone mode wraps the list in an indented container with a header
@@ -25,9 +25,9 @@ import { useTerminalDimensions } from "@opentui/solid"
 import type { TodoItem } from "../../../protocol/types"
 import { colors } from "../theme/tokens"
 
-const ICON_COMPLETED = "\u2713" // ✓
-const ICON_IN_PROGRESS = "\u25A0" // ■
-const ICON_PENDING = "\u25A1" // □
+const ICON_COMPLETED = "\u2714" // ✔
+const ICON_IN_PROGRESS = "\u25FC" // ◼
+const ICON_PENDING = "\u25FB" // ◻
 
 const DEFAULT_COLUMNS = 80
 const DEFAULT_ROWS = 24

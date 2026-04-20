@@ -153,9 +153,9 @@ describe("TaskChecklist rendering", () => {
     await setup.renderOnce()
     const frame = setup.captureCharFrame()
     // No icons should appear.
-    expect(frame).not.toContain("\u2713")
-    expect(frame).not.toContain("\u25A0")
-    expect(frame).not.toContain("\u25A1")
+    expect(frame).not.toContain("\u2714")
+    expect(frame).not.toContain("\u25FC")
+    expect(frame).not.toContain("\u25FB")
     setup.renderer.destroy()
   })
 
@@ -171,9 +171,9 @@ describe("TaskChecklist rendering", () => {
     })
     await setup.renderOnce()
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("\u2713") // completed check
-    expect(frame).toContain("\u25A0") // in-progress filled square
-    expect(frame).toContain("\u25A1") // pending empty square
+    expect(frame).toContain("\u2714") // completed check
+    expect(frame).toContain("\u25FC") // in-progress filled square
+    expect(frame).toContain("\u25FB") // pending empty square
     // Subject text — in-progress uses activeForm, others use content.
     expect(frame).toContain("Finish the refactor")
     expect(frame).toContain("Running the tests")

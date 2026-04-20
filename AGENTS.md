@@ -16,6 +16,7 @@ bun test                          # run all tests
 bun run ./src/index.ts slack init-manifest > slack-manifest.yaml   # create app
 bun run ./src/index.ts slack doctor                                # verify config
 bun run ./src/index.ts slack                                       # start server
+bun run ./src/index.ts slack monitor                               # observability TUI over the admin API
 
 # Dev-only fake Slack (integration tests + local Slack dev)
 bun run ./src/index.ts minislack --fixture basic
@@ -154,6 +155,17 @@ src/
       metrics/              # Prometheus-style counters (for HTTP mode)
       doctor.ts             # `bantai slack doctor` diagnostic
       manifest.ts           # `bantai slack init-manifest` generator
+      admin/                # HTTP + WebSocket admin surface (bus, ring,
+                            # server, protocol schemas) — feeds `slack-monitor/`
+    slack-monitor/
+      launcher.tsx          # launchSlackMonitor(flags) — resolves URL+token,
+                            # bootstraps context, mounts the OpenTUI app
+      app.tsx               # Root SolidJS component (panes + keybinds)
+      context/              # Monitor store (reactive) + admin-context glue
+      transport/            # Typed REST + WebSocket client (token-auth,
+                            # reconnect w/ exponential backoff)
+      panes/                # session-list, event-stream, metadata, approvals
+      theme.ts              # Self-contained hex palette (Zig-FFI safe)
   minislack/                # Dev/test-only fake Slack server + web UI
   commands/                 # Slash-command registry + built-ins
   mcp/                      # Built-in MCP servers (state-bridge, tools)

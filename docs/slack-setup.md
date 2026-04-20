@@ -301,6 +301,94 @@ Scope — this is an experiment:
 
 If the experiment pays off, we'll promote it into the `AGENTS.md` CLI table and the main README. Until then, treat it as scratch infrastructure and expect the UX to shift.
 
+## Admin HTTP + `bantai slack monitor`
+
+The Slack server optionally exposes a small admin surface over HTTP +
+WebSocket so you can run a terminal observability dashboard (`bantai
+slack monitor`) against a live bot — see what sessions are running,
+tail the event stream, and approve / deny / interrupt from the terminal
+without hunting through threads.
+
+### Enable it
+
+Add an `admin` block to your `slack.json`:
+
+```jsonc
+{
+  // …the rest of your slack.json…
+  "admin": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8787,
+    "read_only": false,
+    "token_path": "~/.bantai/slack/admin-token",
+    "session_ring_size": 200
+  }
+}
+```
+
+Or flip everything on the CLI without editing the file:
+
+```bash
+bun run ./src/index.ts slack --admin --admin-port 8787 --admin-read-only
+```
+
+On first boot the server generates a random bearer token at `token_path`
+(mode `0600`). **Don't commit this file.** The admin surface binds to
+127.0.0.1 by default — keep it on loopback unless you really want
+cross-host access, in which case front it with TLS.
+
+Use `--admin-read-only` when you want a hands-off viewer — GET / WS
+still work but POSTs (approve, deny, interrupt) return HTTP 403. This
+is the recommended posture for anyone who's not the operator.
+
+### Connect the monitor
+
+Once the Slack bot is running with admin enabled:
+
+```bash
+bun run ./src/index.ts slack monitor
+```
+
+With no flags it reads the same `slack.json` the server did, so it
+finds the URL + token file automatically. Override as needed:
+
+```bash
+# Explicit URL + token file
+bun run ./src/index.ts slack monitor \
+  --url http://127.0.0.1:8787 \
+  --token-path ~/.bantai/slack/admin-token
+
+# One-shot attach with a literal token (handy for remote debugging)
+bun run ./src/index.ts slack monitor --url http://box.internal:8787 --token "$TOKEN"
+```
+
+Keyboard shortcuts inside the monitor:
+
+- `↑` / `↓` / `j` / `k` / `g` / `G`: navigate the session list
+- `[` / `]`: cycle through pending approvals
+- `a` / `A`: approve (`A` = allow always)
+- `d`: deny
+- `i`: interrupt the currently-selected session
+- `R`: refresh the REST snapshot (useful after a network blip)
+- `?`: toggle help overlay
+- `q` / Ctrl-C: quit
+
+All write actions hit the admin REST API and honour the server's
+`read_only` mode — if the server was started with `--admin-read-only`
+the monitor surfaces the 403 as a warning banner and flashes a
+"blocked: read-only mode" hint instead of silently dropping the press.
+
+### What the monitor DOES NOT do
+
+- **Full transcript rendering.** The Slack UI is the transcript. The
+  monitor is a skim-the-stream operator view — one line per event.
+- **Cross-server attach.** One monitor attaches to one `bantai slack`
+  process.
+- **History replay.** The monitor sees whatever's in the ring buffer
+  plus everything live from the moment it connects; older events have
+  been evicted.
+
 ## What's next
 
 - `!bantai status` and `!bantai settings` are your debugging primitives — run them in a channel when something looks wrong.

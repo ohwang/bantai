@@ -25,10 +25,12 @@ export interface RenderedPlan {
   blocks: KnownBlock[]
 }
 
+// :heavy_check_mark: (not :white_check_mark:) for completed — ✅ is
+// reserved for humans marking work as reviewed.
 const STATUS_EMOJI: Record<NonNullable<PlanEntry["status"]>, string> = {
   pending: ":hourglass_flowing_sand:",
   in_progress: ":arrows_counterclockwise:",
-  completed: ":white_check_mark:",
+  completed: ":heavy_check_mark:",
 }
 
 const PRIORITY_TAG: Record<NonNullable<PlanEntry["priority"]>, string> = {

@@ -132,7 +132,7 @@ describe("resolved approval card", () => {
     // header + section
     expect(blocks.length).toBe(2)
     const header = blocks[0] as { text: { text: string } }
-    expect(header.text.text).toContain("white_check_mark")
+    expect(header.text.text).toContain("heavy_check_mark")
     expect(header.text.text).toContain("Bash")
     expect(header.text.text).toContain("allowed by")
     expect(header.text.text).toContain("U01")

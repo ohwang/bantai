@@ -65,7 +65,7 @@ describe("resolved card", () => {
       resolverUserId: "U01",
     })
     const section = blocks[0] as { text: { text: string } }
-    expect(section.text.text).toContain(":white_check_mark:")
+    expect(section.text.text).toContain(":heavy_check_mark:")
     expect(section.text.text).toContain("<@U01>")
     expect(section.text.text).toContain("answered")
     expect(text).toContain("answered")

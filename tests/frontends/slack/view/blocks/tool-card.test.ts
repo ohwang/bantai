@@ -120,7 +120,7 @@ describe("buildToolCompletedCard", () => {
       verbosity: "normal",
     })!
     expect(card.blocks).toHaveLength(2)
-    expect(sectionText(card.blocks[0])).toContain(":white_check_mark:")
+    expect(sectionText(card.blocks[0])).toContain(":heavy_check_mark:")
     const preview = sectionText(card.blocks[1])
     expect(preview).toContain("```")
     expect(preview).toContain("line 6") // 6th line lands

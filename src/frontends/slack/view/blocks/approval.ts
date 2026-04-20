@@ -126,11 +126,14 @@ export function buildResolvedApprovalBlocks(args: {
       ? serialized.slice(0, MAX_INPUT_CHARS - 1) + "…"
       : serialized
   const outcomeText = decisionText(decision, resolver.userId)
+  // :heavy_check_mark: (not :white_check_mark:) — ✅ is reserved for
+  // humans marking work as reviewed, not for the bot announcing its
+  // own tool-call approval.
   const badge = decision === "deny"
     ? ":no_entry_sign:"
     : decision === "timeout"
       ? ":hourglass:"
-      : ":white_check_mark:"
+      : ":heavy_check_mark:"
   const blocks: KnownBlock[] = [
     {
       type: "header",

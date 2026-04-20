@@ -148,7 +148,7 @@ describe("approval coordinator — hook + block-action round-trip", () => {
     expect(u.channel).toBe("C01")
     expect(u.text).toContain("allowed")
     // Block content reflects the resolved card
-    expect(JSON.stringify(u.blocks)).toContain("white_check_mark")
+    expect(JSON.stringify(u.blocks)).toContain("heavy_check_mark")
 
     expect(backend.approved).toEqual([{ id: "p1" }])
     expect(backend.denied).toEqual([])

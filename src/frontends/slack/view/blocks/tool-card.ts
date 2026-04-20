@@ -19,7 +19,7 @@
  *   * `buildToolRunningCard` — rendered on `tool_use_start`. Shows a hint
  *     "(running…)" next to the tool name; no output yet.
  *   * `buildToolCompletedCard` — rendered on `tool_use_end`. Shows the
- *     outcome (:white_check_mark: / :no_entry_sign:), truncated output, an
+ *     outcome (:heavy_check_mark: / :no_entry_sign:), truncated output, an
  *     elapsed hint when known, and — at `verbose`+ — the full input + output
  *     fences.
  *
@@ -124,7 +124,9 @@ export function buildToolCompletedCard(input: ToolCompletedCardInput): RenderedC
   if (input.verbosity === "silent" || input.verbosity === "concise") return null
 
   const emoji = TOOL_EMOJI[input.tool] ?? ":tools:"
-  const badge = input.error ? ":no_entry_sign:" : ":white_check_mark:"
+  // :heavy_check_mark: (not :white_check_mark:) — the latter is reserved
+  // for humans marking work as reviewed / approved.
+  const badge = input.error ? ":no_entry_sign:" : ":heavy_check_mark:"
   const arg = summarizeInput(input.input)
 
   const headlineNormal = `${badge} ${emoji} *${input.tool}* — ${truncate(arg, MAX_ONE_LINER_ARG)}`

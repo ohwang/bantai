@@ -216,7 +216,7 @@ describe("slack frontend S5 verbosity=normal", () => {
     const toolCard = replies.find((r) => (r.text ?? "").includes("— done"))
     expect(toolCard).toBeTruthy()
     const txt = blocksText(toolCard!)
-    expect(txt).toContain(":white_check_mark:")
+    expect(txt).toContain(":heavy_check_mark:")
     // Normal verbosity only shows the one-line preview, not a full input fence.
     // The mock's Read tool input has file_path.
     expect(txt).toContain("file_path")

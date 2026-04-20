@@ -104,7 +104,10 @@ export function buildResolvedElicitationCard(args: {
   resolverUserId: string
 }): ElicitationCard {
   const { previous, answered, resolverUserId } = args
-  const icon = answered ? ":white_check_mark:" : ":no_entry_sign:"
+  // :heavy_check_mark: (not :white_check_mark:) — ✅ is reserved for
+  // humans marking work as reviewed, not for the bot confirming a
+  // resolved elicitation.
+  const icon = answered ? ":heavy_check_mark:" : ":no_entry_sign:"
   const verbSummary = answered
     ? `answered by <@${resolverUserId}>`
     : `cancelled by <@${resolverUserId}>`

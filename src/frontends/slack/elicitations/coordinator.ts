@@ -18,7 +18,7 @@
  *      └─ view_submission
  *         └─ coordinator.handleViewSubmission
  *              └─ parse values → backend.respondToElicitation
- *              └─ chat.update card → ":white_check_mark: answered by @user"
+ *              └─ chat.update card → ":heavy_check_mark: answered by @user"
  *
  *   shutdown / session close
  *      └─ closeAll / onCancel → cancel backend, update card

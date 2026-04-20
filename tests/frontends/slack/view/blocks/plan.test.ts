@@ -24,7 +24,7 @@ describe("buildPlanBlocks", () => {
     expect(textAt(blocks, 0)).toContain("1 of 3 done")
 
     const body = textAt(blocks, 1)
-    expect(body).toContain(":white_check_mark:")
+    expect(body).toContain(":heavy_check_mark:")
     expect(body).toContain(":arrows_counterclockwise:")
     expect(body).toContain(":hourglass_flowing_sand:")
     expect(body).toContain("~Read the config~") // completed is strikethrough

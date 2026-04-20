@@ -19,7 +19,7 @@
  */
 
 import type { JSX } from "solid-js"
-import { createMemo, For, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import type { TodoItem } from "../../../protocol/types"
@@ -31,6 +31,48 @@ const ICON_PENDING = "\u25FB" // ◻
 
 const DEFAULT_COLUMNS = 80
 const DEFAULT_ROWS = 24
+
+/**
+ * Delay before auto-hiding an all-completed list. Gives the user a brief
+ * "all done" moment before the panel vanishes — matches Claude Code's
+ * TaskListV2 hide timer (see team/backlog/done/task-view.md §6.3).
+ */
+export const AUTO_HIDE_DELAY_MS = 5_000
+
+/**
+ * Pure helper: should the list be hidden right now?
+ *  - `firstAllCompleteAt` is the timestamp (ms) at which the list first
+ *    became fully completed, or `null` if it isn't all-completed.
+ *  - `now` is the current wall-clock time in ms.
+ *
+ * Extracted as a pure function so the hide decision is unit-testable
+ * without driving timers through the renderer.
+ */
+export function computeShouldHide(
+  firstAllCompleteAt: number | null,
+  now: number,
+): boolean {
+  if (firstAllCompleteAt === null) return false
+  return now >= firstAllCompleteAt + AUTO_HIDE_DELAY_MS
+}
+
+/**
+ * Pure helper: compute the next `firstAllCompleteAt` value given the
+ * previous value and the current list. Returns:
+ *  - `null` if the list is empty or not all-completed (reset).
+ *  - The previous value if it's already set (don't restart the timer).
+ *  - `now` if this is the first tick where all-completed became true.
+ */
+export function nextFirstAllCompleteAt(
+  prev: number | null,
+  todos: readonly TodoItem[],
+  now: number,
+): number | null {
+  const allComplete =
+    todos.length > 0 && todos.every((t) => t.status === "completed")
+  if (!allComplete) return null
+  return prev ?? now
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for test coverage)
@@ -124,6 +166,39 @@ export function TaskChecklist(props: {
   const maxDisplay = createMemo(() => computeMaxDisplay(rows()))
   const maxSubjectWidth = createMemo(() => computeMaxSubjectWidth(columns()))
 
+  // ---- Auto-hide timer -----------------------------------------------------
+  // When the incoming list transitions to all-completed, remember the
+  // timestamp of that moment (`firstAllCompleteAt`). Once
+  // `AUTO_HIDE_DELAY_MS` has elapsed, `shouldHide` flips true and the
+  // panel renders nothing. If the list changes back to not-all-completed
+  // (or the list length changes meaningfully) before the timer fires, the
+  // timestamp resets. Repeated all-completed payloads with the same shape
+  // keep counting from the first moment (no restart).
+  const [firstAllCompleteAt, setFirstAllCompleteAt] = createSignal<number | null>(null)
+  const [now, setNow] = createSignal(Date.now())
+
+  createEffect(() => {
+    const todos = props.todos
+    setFirstAllCompleteAt((prev) => nextFirstAllCompleteAt(prev, todos, Date.now()))
+  })
+
+  // Drive `now` reactivity when the timer is due to fire, so the <Show>
+  // below re-evaluates at the exact moment shouldHide() flips.
+  createEffect(() => {
+    const target = firstAllCompleteAt()
+    if (target === null) return
+    const deadline = target + AUTO_HIDE_DELAY_MS
+    const ms = deadline - Date.now()
+    if (ms <= 0) {
+      setNow(Date.now())
+      return
+    }
+    const handle = setTimeout(() => setNow(Date.now()), ms)
+    onCleanup(() => clearTimeout(handle))
+  })
+
+  const shouldHide = createMemo(() => computeShouldHide(firstAllCompleteAt(), now()))
+
   // Counts over the entire list (for standalone header + hidden-summary).
   const counts = createMemo(() => {
     let completed = 0
@@ -170,8 +245,10 @@ export function TaskChecklist(props: {
   )
 
   // Bail entirely when the list is empty — never render nothing-but-margin.
+  // Also hide once the all-completed auto-hide timer has fired (matches
+  // Claude Code's TaskListV2 post-completion UX).
   return (
-    <Show when={props.todos.length > 0}>
+    <Show when={props.todos.length > 0 && !shouldHide()}>
       <Show
         when={props.isStandalone}
         fallback={

@@ -15,6 +15,9 @@ import {
   pickSubject,
   prioritizeTodos,
   buildHiddenSummary,
+  computeShouldHide,
+  nextFirstAllCompleteAt,
+  AUTO_HIDE_DELAY_MS,
 } from "../../src/frontends/tui/components/task-checklist"
 import type { TodoItem } from "../../src/protocol/types"
 
@@ -138,6 +141,85 @@ describe("prioritizeTodos", () => {
   it("handles all-pending without crash", () => {
     const todos = [mk("a", "pending"), mk("b", "pending")]
     expect(prioritizeTodos(todos).map((t) => t.content)).toEqual(["a", "b"])
+  })
+})
+
+describe("auto-hide helpers", () => {
+  const mk = (status: TodoItem["status"]): TodoItem => ({
+    content: "x",
+    activeForm: "x",
+    status,
+  })
+
+  it("AUTO_HIDE_DELAY_MS is 5 seconds (matches Claude Code's V2 hide timer)", () => {
+    expect(AUTO_HIDE_DELAY_MS).toBe(5_000)
+  })
+
+  describe("nextFirstAllCompleteAt", () => {
+    it("returns null when the list is empty", () => {
+      expect(nextFirstAllCompleteAt(null, [], 1_000)).toBeNull()
+      // Even if a prior timestamp existed, an empty list resets it.
+      expect(nextFirstAllCompleteAt(500, [], 1_000)).toBeNull()
+    })
+
+    it("returns null when not all items are completed", () => {
+      const list = [mk("completed"), mk("in_progress"), mk("pending")]
+      expect(nextFirstAllCompleteAt(null, list, 1_000)).toBeNull()
+      // Previous timestamp is cleared when list regresses.
+      expect(nextFirstAllCompleteAt(500, list, 1_000)).toBeNull()
+    })
+
+    it("latches the first all-completed timestamp and does not restart", () => {
+      const list = [mk("completed"), mk("completed")]
+      // First all-completed moment: stamp with `now`.
+      expect(nextFirstAllCompleteAt(null, list, 1_000)).toBe(1_000)
+      // Subsequent all-completed ticks keep the original timestamp.
+      expect(nextFirstAllCompleteAt(1_000, list, 3_500)).toBe(1_000)
+      expect(nextFirstAllCompleteAt(1_000, list, 9_999)).toBe(1_000)
+    })
+  })
+
+  describe("computeShouldHide", () => {
+    it("returns false when no all-completed timestamp is set", () => {
+      expect(computeShouldHide(null, 0)).toBe(false)
+      expect(computeShouldHide(null, 1_000_000)).toBe(false)
+    })
+
+    it("renders for <5s (grace window) before hiding", () => {
+      expect(computeShouldHide(1_000, 1_100)).toBe(false) // +100ms
+      expect(computeShouldHide(1_000, 1_000 + AUTO_HIDE_DELAY_MS - 1)).toBe(false)
+    })
+
+    it("hides at or after 5s from the first all-completed moment", () => {
+      expect(computeShouldHide(1_000, 1_000 + AUTO_HIDE_DELAY_MS)).toBe(true)
+      expect(computeShouldHide(1_000, 1_000 + AUTO_HIDE_DELAY_MS + 1)).toBe(true)
+      expect(computeShouldHide(1_000, 10_000)).toBe(true)
+    })
+
+    it("regressing to not-all-completed BEFORE 5s resets the timer (keeps rendering)", () => {
+      // Scenario: at t=1000 the list became all-completed (stamp=1000).
+      // At t=4000 the agent pushes an update that includes a new pending
+      // item. nextFirstAllCompleteAt now returns null, and computeShouldHide
+      // with a null stamp is false — so the list remains visible.
+      const stampAt1s = nextFirstAllCompleteAt(
+        null,
+        [mk("completed"), mk("completed")],
+        1_000,
+      )
+      expect(stampAt1s).toBe(1_000)
+
+      // At t=4000 (3s later — before the 5s deadline) a pending item arrives.
+      const resetAt4s = nextFirstAllCompleteAt(
+        stampAt1s,
+        [mk("completed"), mk("pending")],
+        4_000,
+      )
+      expect(resetAt4s).toBeNull()
+
+      // Even well past the original 5s deadline, without a stamp the list
+      // continues rendering indefinitely.
+      expect(computeShouldHide(resetAt4s, 10_000)).toBe(false)
+    })
   })
 })
 
@@ -276,6 +358,27 @@ describe("TaskChecklist rendering", () => {
     const frame = setup.captureCharFrame()
     // Hidden summary mentions the 2 leftover pending items.
     expect(frame).toContain("+2 pending")
+    setup.renderer.destroy()
+  })
+
+  it("renders an all-completed list while still within the 5s grace window", async () => {
+    // Hook into the render path and assert that immediately after mount the
+    // list is still visible (shouldHide hasn't flipped yet). We don't advance
+    // time; a renderOnce() tick takes well under AUTO_HIDE_DELAY_MS.
+    const todos: TodoItem[] = [
+      { content: "Finish A", activeForm: "Finishing A", status: "completed" },
+      { content: "Finish B", activeForm: "Finishing B", status: "completed" },
+    ]
+    const setup = await testRender(() => <TaskChecklist todos={todos} />, {
+      width: 80,
+      height: 24,
+    })
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    // Within the grace window: list should still be visible.
+    expect(frame).toContain("Finish A")
+    expect(frame).toContain("Finish B")
+    expect(frame).toContain("\u2714")
     setup.renderer.destroy()
   })
 

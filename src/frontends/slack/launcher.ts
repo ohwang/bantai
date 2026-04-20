@@ -73,9 +73,22 @@ import {
   type ConfigReloader,
 } from "./config/reloader"
 import { markdownToSlackMrkdwn } from "./view/format"
+import { createAdminBus, type AdminBus } from "./admin/bus"
+import { attachRingBuffer, type AttachedRingBuffer } from "./admin/ring"
+import { startAdminServer, type AdminServer } from "./admin/server"
+import { loadOrGenerateAdminToken } from "./admin/token"
 import { homedir } from "node:os"
 import { join as pathJoin, dirname } from "node:path"
 import { mkdirSync } from "node:fs"
+import pkg from "../../../package.json" with { type: "json" }
+
+/**
+ * Cached package version, handed to the admin server so `/admin/health` +
+ * `/admin/version` + the WS `hello` frame all report the same string. We
+ * resolve it at module-load so a monitor showing a different version than
+ * the actually-running bot is a real bug, not just a stale constant.
+ */
+const SERVER_VERSION: string = (pkg as { version: string }).version
 
 export { mergeCumulativeUsage } from "./usage"
 
@@ -107,6 +120,20 @@ export interface LaunchSlackOpts extends CLIFlags {
   attachmentFetcher?: AttachmentFetcher
   /** Override the staging directory for inbound files. */
   attachmentStagingDir?: string
+  /**
+   * Admin surface overrides from CLI flags. Each is optional; when set,
+   * overrides the corresponding `config.admin.*` field. Undefined leaves
+   * whatever slack.json said (or the schema default) in place. The CLI
+   * uses these so operators can flip admin on without editing the config
+   * file.
+   */
+  adminOverrides?: {
+    enabled?: boolean
+    host?: string
+    port?: number
+    tokenPath?: string
+    readOnly?: boolean
+  }
 }
 
 export interface SlackLaunchHandle {
@@ -117,6 +144,13 @@ export interface SlackLaunchHandle {
   userCache: UserCache
   /** Live metrics collector — exposed for tests + future introspection. */
   metrics: MetricsCollector
+  /**
+   * Live admin server handle — present only when admin is enabled. Tests
+   * use `admin.server.port()` + `admin.token` to hit the REST surface
+   * without knowing the config. Undefined means the launcher did not
+   * start an admin server (disabled-path).
+   */
+  admin?: { server: AdminServer; token: string; tokenPath: string }
   stop(): Promise<void>
 }
 
@@ -148,6 +182,19 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   })
   if (opts.slackApiUrlOverride) {
     config.workspace.slackApiUrl = opts.slackApiUrlOverride
+  }
+  // CLI admin-overrides take precedence over slack.json so operators can
+  // flip admin on / bind a different port / point at an alternate token
+  // file without editing the config file. Each override is applied only
+  // when the CLI actually supplied a value — undefined leaves slack.json
+  // (or the schema default) untouched.
+  if (opts.adminOverrides) {
+    const o = opts.adminOverrides
+    if (o.enabled !== undefined) config.admin.enabled = o.enabled
+    if (o.host !== undefined) config.admin.host = o.host
+    if (o.port !== undefined) config.admin.port = o.port
+    if (o.tokenPath !== undefined) config.admin.tokenPath = o.tokenPath
+    if (o.readOnly !== undefined) config.admin.readOnly = o.readOnly
   }
 
   log.info(
@@ -220,6 +267,12 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   // keeps the store out of the picture — useful for tests + for operators
   // who explicitly opt out of persistence.
   const store = openSessionStore(config.storePath)
+
+  // Admin surface — build the bus unconditionally so registry + approvals
+  // can call `admin.*` without branching. When admin is disabled the bus
+  // just drops everything (no subscribers), which is effectively free.
+  // The HTTP server + ring buffer + token bootstrap only run when enabled.
+  const adminBus: AdminBus = createAdminBus()
   const registry = createSessionRegistry({
     workspace: workspaceId,
     store,
@@ -235,6 +288,16 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
         if (addUsd > 0) metrics.add("bantai_slack_cost_usd_sum", addUsd)
       },
       onTurnErrored: () => metrics.inc("bantai_slack_turn_errored_total"),
+    },
+    admin: {
+      onSessionOpened: (summary) =>
+        adminBus.publish({ type: "session_opened", summary }),
+      onSessionEvent: (key, event) =>
+        adminBus.publish({ type: "session_event", key, event }),
+      onSessionPhase: (key, phase) =>
+        adminBus.publish({ type: "session_phase", key, phase }),
+      onSessionClosed: (key, reason) =>
+        adminBus.publish({ type: "session_closed", key, reason }),
     },
     ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
   })
@@ -273,6 +336,12 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       onRequested: () => metrics.inc("bantai_slack_approval_requested_total"),
       onApproved: () => metrics.inc("bantai_slack_approval_approved_total"),
       onDenied: () => metrics.inc("bantai_slack_approval_denied_total"),
+    },
+    admin: {
+      onRequested: (approval) =>
+        adminBus.publish({ type: "approval_requested", approval }),
+      onResolved: ({ id, decision, by }) =>
+        adminBus.publish({ type: "approval_resolved", id, decision, by }),
     },
     lookupSession(sessionKey) {
       // Sessions are keyed by `slack:<workspace>:<channel>:<threadTs|main>`.
@@ -497,6 +566,59 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     }
   })
 
+  // Admin surface bootstrap. When `config.admin.enabled` is false the
+  // launcher never loads the token file, never attaches the ring buffer,
+  // and never calls `Bun.serve` — admin is truly off, not just bound to
+  // a closed port. Wiring the HTTP+WS server at the END of startup means
+  // every dependency it needs (registry, approvals, config) is already
+  // wired, and an admin crash at boot won't take down the Slack frontend
+  // itself — we still start, just with admin disabled.
+  let adminHandle: SlackLaunchHandle["admin"] = undefined
+  let adminRing: AttachedRingBuffer | undefined = undefined
+  if (config.admin.enabled) {
+    try {
+      const { token, path: tokenPath } = loadOrGenerateAdminToken(
+        config.admin.tokenPath,
+      )
+      adminRing = attachRingBuffer(adminBus, {
+        capacity: config.admin.sessionRingSize,
+      })
+      const adminServer = startAdminServer({
+        bus: adminBus,
+        ring: adminRing,
+        registry,
+        approvals,
+        config,
+        token,
+        serverVersion: SERVER_VERSION,
+        botUserId: auth.botUserId,
+        workspaceId,
+        host: config.admin.host,
+        port: config.admin.port,
+        readOnly: config.admin.readOnly,
+      })
+      adminHandle = { server: adminServer, token, tokenPath }
+      log.info(
+        `slack admin: listening on http://${adminServer.hostname()}:${adminServer.port()} ` +
+          `(read-only=${config.admin.readOnly}, token=${tokenPath})`,
+      )
+    } catch (err) {
+      log.error(
+        `slack admin: bootstrap failed — admin surface disabled for this run (${String(err)})`,
+      )
+      // Clean up any partial state so we don't leak subscribers.
+      if (adminRing) {
+        try {
+          adminRing.dispose()
+        } catch {
+          // best-effort
+        }
+        adminRing = undefined
+      }
+      adminHandle = undefined
+    }
+  }
+
   log.info(`slack: server ready — bot user ${auth.botUserId}, team ${workspaceId}`)
 
   const handle: SlackLaunchHandle = {
@@ -512,6 +634,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     registry,
     userCache,
     metrics,
+    ...(adminHandle ? { admin: adminHandle } : {}),
     async stop() {
       // Stop accepting new turns BEFORE tearing anything down so inbound
       // events that race the signal get an ephemeral "shutting down"
@@ -526,6 +649,27 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
         await routing.shutdown()
       } catch (err) {
         log.debug(`slack: routing shutdown flush threw: ${String(err)}`)
+      }
+      // Stop the admin server BEFORE approvals/registry close — the admin
+      // WS clients would otherwise see a flurry of shutdown-caused
+      // `session_closed` / `approval_resolved` frames on a connection
+      // that's about to terminate anyway. Closing admin first means
+      // those shutdown frames fan out to nobody, which is the right
+      // behaviour: a monitor that was connected at shutdown just sees
+      // the socket go away.
+      if (adminHandle) {
+        try {
+          await adminHandle.server.stop()
+        } catch (err) {
+          log.debug(`slack admin: server.stop threw: ${String(err)}`)
+        }
+      }
+      if (adminRing) {
+        try {
+          adminRing.dispose()
+        } catch (err) {
+          log.debug(`slack admin: ring dispose threw: ${String(err)}`)
+        }
       }
       approvals.closeAll()
       elicitations.closeAll()

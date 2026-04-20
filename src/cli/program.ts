@@ -151,14 +151,35 @@ export async function runCli(argv: string[]): Promise<void> {
       "--slack-api-url <url>",
       "Override the Slack Web API base URL (e.g. for minislack: http://localhost:3102)",
     )
+    // Admin surface flags. Each mirrors a field under slack.json's `admin`
+    // block and only overrides when explicitly passed — absent flags leave
+    // the config (or schema default) in place. `--admin` / `--no-admin`
+    // flip the on/off switch, `--admin-read-only` enables read-only mode.
+    .option("--admin", "Enable the admin HTTP+WebSocket surface")
+    .option("--no-admin", "Disable the admin HTTP+WebSocket surface")
+    .option("--admin-host <host>", "Bind host for the admin server (default: 127.0.0.1)")
+    .option(
+      "--admin-port <port>",
+      "Bind port for the admin server (default: 8787, 0 = OS-picked)",
+    )
+    .option(
+      "--admin-token-path <path>",
+      "Path to the admin bearer-token file (default: ~/.bantai/slack/admin-token)",
+    )
+    .option(
+      "--admin-read-only",
+      "Run the admin surface in read-only mode (GETs + WS only, POSTs return 403)",
+    )
   addGlobalOptions(slackCmd)
   slackCmd.action(async () => {
     const opts = { ...program.opts(), ...slackCmd.opts() }
     const flags = resolveFlags(opts)
+    const adminOverrides = resolveAdminOverrides(opts)
     await launchSlack({
       ...flags,
       slackConfigPath: opts.slackConfig as string | undefined,
       slackApiUrlOverride: opts.slackApiUrl as string | undefined,
+      ...(adminOverrides ? { adminOverrides } : {}),
     })
   })
   slackCmd
@@ -262,4 +283,60 @@ export async function runCli(argv: string[]): Promise<void> {
 
   // Parse and execute
   await program.parseAsync(argv)
+}
+
+/**
+ * Collapse the admin-related CLI flags into the `adminOverrides` object
+ * consumed by `launchSlack`. Returns `undefined` when the operator passed
+ * NO admin flags — that way `launchSlack` knows the CLI had nothing to say
+ * and leaves `config.admin` completely alone (including the `enabled`
+ * default), rather than forcing every field to "preserve whatever
+ * slack.json had". Every mapped key is optional, so passing one flag
+ * still leaves the others alone.
+ *
+ * `--admin` + `--no-admin` are handled by commander's own negatable flag
+ * support: when either is present, `opts.admin` is a boolean; when neither
+ * was passed, the key is absent entirely.
+ *
+ * `--admin-port` is validated here (Number() + range) so a bad value
+ * surfaces as a clean CLI error rather than a runtime config-resolve
+ * exception deep in the launcher.
+ */
+function resolveAdminOverrides(
+  opts: Record<string, unknown>,
+):
+  | {
+      enabled?: boolean
+      host?: string
+      port?: number
+      tokenPath?: string
+      readOnly?: boolean
+    }
+  | undefined {
+  const out: {
+    enabled?: boolean
+    host?: string
+    port?: number
+    tokenPath?: string
+    readOnly?: boolean
+  } = {}
+  if (typeof opts.admin === "boolean") out.enabled = opts.admin
+  if (typeof opts.adminHost === "string" && opts.adminHost.length > 0) {
+    out.host = opts.adminHost
+  }
+  if (opts.adminPort !== undefined) {
+    const n = Number(opts.adminPort)
+    if (!Number.isFinite(n) || n < 0 || n > 65535) {
+      console.error(
+        `Error: --admin-port must be between 0 and 65535, got "${String(opts.adminPort)}"`,
+      )
+      process.exit(1)
+    }
+    out.port = n
+  }
+  if (typeof opts.adminTokenPath === "string" && opts.adminTokenPath.length > 0) {
+    out.tokenPath = opts.adminTokenPath
+  }
+  if (typeof opts.adminReadOnly === "boolean") out.readOnly = opts.adminReadOnly
+  return Object.keys(out).length === 0 ? undefined : out
 }

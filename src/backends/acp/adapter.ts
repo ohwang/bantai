@@ -677,6 +677,41 @@ export class AcpAdapter extends BaseAdapter {
     throw new Error("Session forking not supported for ACP backend")
   }
 
+  /**
+   * Attempt to load an existing session via `session/load`. Returns the
+   * result on success, or `null` on any transport/JSON-RPC failure.
+   *
+   * Gemini (and any other ACP agent that scopes sessions to the active cwd)
+   * responds with JSON-RPC `-32603 "Invalid session identifier"` when the
+   * session is not resolvable. Before this helper existed the error bubbled
+   * out of `initialize()` and killed the thread; now we log + structured-
+   * return so the caller can fall through to `session/new` and emit a
+   * `resume_failed` event.
+   */
+  private async tryLoadSession(
+    sessionId: string,
+    cwd: string,
+  ): Promise<AcpSessionNewResult | null> {
+    if (!this.transport) return null
+    try {
+      return (await this.transport.request("session/load", {
+        sessionId,
+        cwd,
+        mcpServers: [],
+      })) as AcpSessionNewResult
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const isInvalidSession = /-32603/.test(msg)
+      log.warn("ACP session/load failed", {
+        sessionId,
+        cwd,
+        isInvalidSession,
+        error: msg,
+      })
+      return null
+    }
+  }
+
   async resetSession?(): Promise<void> {
     if (!this.transport?.isAlive) return
 
@@ -840,13 +875,64 @@ export class AcpAdapter extends BaseAdapter {
           })
           return
         }
-        sessionResult = (await this.transport.request("session/load", {
-          sessionId: config.resume,
-          cwd,
-          mcpServers: [],
-        })) as AcpSessionNewResult
-        loadedSessionId = config.resume
-        log.info("ACP session loaded", { sessionId: config.resume })
+
+        // Pre-check (gemini/acp presets): the target session file must
+        // exist in the active project dir. Gemini's session/load refuses
+        // to resolve ids that aren't under the current cwd's chats/ dir
+        // and returns JSON-RPC -32603 "Invalid session identifier", which
+        // used to kill the whole session fatally. Looking up on disk first
+        // lets us degrade gracefully: log, tell the user, and fall through
+        // to a fresh session/new.
+        let resumeMissingOnDisk = false
+        if (this.presetName === "gemini" || this.presetName === "acp") {
+          const { listGeminiSessionsFromDisk } = await import(
+            "../../session/cross-backend"
+          )
+          const available = listGeminiSessionsFromDisk(cwd)
+          resumeMissingOnDisk = !available.some(s => s.id === config.resume)
+          if (resumeMissingOnDisk) {
+            log.warn("ACP resume skipped — session not found on disk", {
+              sessionId: config.resume,
+              cwd,
+              available: available.length,
+            })
+          }
+        }
+
+        const resumed = resumeMissingOnDisk
+          ? null
+          : await this.tryLoadSession(config.resume, cwd)
+        if (resumed) {
+          sessionResult = resumed
+          loadedSessionId = config.resume
+          log.info("ACP session loaded", { sessionId: config.resume })
+        } else {
+          // session/load failed OR we pre-detected the id is gone. Emit a
+          // resume_failed event so the Slack router (and any other
+          // consumer) can surface the stale-resume prompt / audit this;
+          // then fall through to a clean session/new so the thread is
+          // still usable.
+          this.replayMode = false
+          const failureReason = resumeMissingOnDisk
+            ? "session_file_missing"
+            : "session_load_rejected"
+          this.eventChannel?.push({
+            type: "error",
+            code: "resume_failed",
+            message:
+              `Could not resume previous ${this.agentName} session (${failureReason}). ` +
+              `Starting a new session; history from the old one is no longer available on disk.`,
+            severity: "recoverable",
+          })
+          log.warn("ACP resume failed, falling through to session/new", {
+            sessionId: config.resume,
+            reason: failureReason,
+          })
+          sessionResult = (await this.transport.request("session/new", {
+            cwd,
+            mcpServers: [],
+          })) as AcpSessionNewResult
+        }
       } else if (config.continue) {
         // --continue: find and load the most recent session
         if (!this.agentCapabilities?.loadSession) {
@@ -877,13 +963,34 @@ export class AcpAdapter extends BaseAdapter {
           const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
           const mostRecent = sorted[0]!
           log.info("Continuing most recent ACP session", { sessionId: mostRecent.id })
-          sessionResult = (await this.transport.request("session/load", {
-            sessionId: mostRecent.id,
-            cwd,
-            mcpServers: [],
-          })) as AcpSessionNewResult
-          loadedSessionId = mostRecent.id
-          log.info("ACP session loaded for --continue", { sessionId: mostRecent.id })
+          const resumed = await this.tryLoadSession(mostRecent.id, cwd)
+          if (resumed) {
+            sessionResult = resumed
+            loadedSessionId = mostRecent.id
+            log.info("ACP session loaded for --continue", { sessionId: mostRecent.id })
+          } else {
+            // Same resilience as --resume: degrade to a new session
+            // instead of crashing the thread. Rare — session/list just
+            // returned this id — but possible if the file is deleted
+            // between list and load, or if the agent enforces a cwd
+            // scope different from the listing scope.
+            this.replayMode = false
+            this.eventChannel?.push({
+              type: "error",
+              code: "resume_failed",
+              message:
+                `Could not continue the most recent ${this.agentName} session (session_load_rejected). ` +
+                `Starting a new session.`,
+              severity: "recoverable",
+            })
+            log.warn("ACP continue failed, falling through to session/new", {
+              sessionId: mostRecent.id,
+            })
+            sessionResult = (await this.transport.request("session/new", {
+              cwd,
+              mcpServers: [],
+            })) as AcpSessionNewResult
+          }
         }
       } else {
         sessionResult = (await this.transport.request("session/new", {

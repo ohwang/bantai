@@ -51,12 +51,6 @@ export function toggleDiagnostics(): void {
   _toggleDiagnostics?.()
 }
 
-// Module-level copy hint so the render callback (outside component tree) can show status hints
-let _showCopyHint: ((chars: number) => void) | undefined
-export function showCopyConfirmation(chars: number): void {
-  _showCopyHint?.(chars)
-}
-
 /** Render a full-width dash separator line (Claude Code style) — uses Divider primitive */
 function DashLine() {
   return (
@@ -172,11 +166,9 @@ function Layout(props: { onExit?: () => void }) {
   const copyText = (text: string) => {
     if (renderer.isOsc52Supported()) {
       renderer.copyToClipboardOSC52(text)
-      showCopyConfirmation(text.length)
       log.info("Copied selection via OSC 52", { chars: text.length })
     } else {
       copyToClipboard(text).then(() => {
-        showCopyConfirmation(text.length)
         log.info("Copied selection via clipboard cmd", { chars: text.length })
       }).catch((err: unknown) => {
         log.warn("Failed to copy selection", { error: err instanceof Error ? err.message : String(err) })
@@ -247,10 +239,6 @@ function Layout(props: { onExit?: () => void }) {
 
   // Expose diagnostics toggle for slash commands (/diagnostics)
   _toggleDiagnostics = () => setShowDiagnostics((v) => !v)
-
-  _showCopyHint = (chars: number) => {
-    toast.success(`Copied ${chars} chars to clipboard`)
-  }
 
   // Register diagnostics panel as an overlay so escape coordination works
   createEffect(() => {
@@ -772,7 +760,6 @@ export function startApp(options: AppOptions): void {
       onCopySelection: (text: string) => {
         copyToClipboard(text).then(() => {
           log.info("Copied console selection to clipboard", { chars: text.length })
-          showCopyConfirmation(text.length)
         }).catch((err: unknown) => {
           log.warn("Failed to copy console selection", {
             error: err instanceof Error ? err.message : String(err),

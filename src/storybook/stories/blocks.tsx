@@ -243,7 +243,7 @@ export const conversationStories: Story[] = [
     render: () => <SystemBlock block={systemBlock("Model switched to claude-opus-4-6")} />,
     variants: [
       { label: "info", render: () => <SystemBlock block={systemBlock("Model switched to claude-opus-4-6")} /> },
-      { label: "success", render: () => <SystemBlock block={systemBlock("Copied to clipboard")} /> },
+      { label: "success", render: () => <SystemBlock block={systemBlock("Copied to clipboard (42 chars): hello world")} /> },
       { label: "interrupt", render: () => <SystemBlock block={systemBlock("Turn interrupted by user")} /> },
       { label: "denial", render: () => <SystemBlock block={systemBlock("Permission denied for Bash command")} /> },
       { label: "error", render: () => <SystemBlock block={systemBlock("Failed to read file: ENOENT")} /> },
@@ -255,7 +255,7 @@ export const conversationStories: Story[] = [
             <SystemBlock block={systemBlock("Turn interrupted by user")} />
             <SystemBlock block={systemBlock("Permission denied for Bash command")} />
             <SystemBlock block={systemBlock("Failed to read file: ENOENT")} />
-            <SystemBlock block={systemBlock("Copied to clipboard")} />
+            <SystemBlock block={systemBlock("Copied to clipboard (42 chars): hello world")} />
           </box>
         ),
       },

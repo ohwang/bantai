@@ -97,13 +97,14 @@ describe("event-renderer — streaming", () => {
 })
 
 describe("event-renderer — reactions", () => {
-  it("collapses a synchronous event batch to a single working + clear cycle", async () => {
+  it("collapses a synchronous event batch to speech_balloon → round_pushpin", async () => {
     // All events land in the same 16ms EventBatcher window. The reaction
-    // controller coalesces them into at most two API calls: initial prime
-    // (:cyclone:) and a terminal remove on turn_complete. Tool / text
-    // events are intentionally silent — intermediate reactions used to burn
-    // through the Slack rate limit on long turns. `done` never emits
-    // :white_check_mark: (reserved for humans).
+    // controller coalesces them into at most two API adds: the initial
+    // :speech_balloon: (agent working) and the :round_pushpin: that lands
+    // on turn_complete (agent idle, ball back in user's court). Tool /
+    // text events are intentionally silent — intermediate reactions used
+    // to burn through the Slack rate limit on long turns. :white_check_mark:
+    // is never emitted by the bot (reserved for humans).
     const h = harness("t1")
     h.push([
       { type: "turn_start" },
@@ -115,8 +116,8 @@ describe("event-renderer — reactions", () => {
     await drain(100)
     const adds = h.reacts.filter((r) => r.op === "add").map((r) => r.name)
     const removes = h.reacts.filter((r) => r.op === "remove").map((r) => r.name)
-    expect(adds).toEqual(["cyclone"])
-    expect(removes).toEqual(["cyclone"])
+    expect(adds).toEqual(["speech_balloon", "round_pushpin"])
+    expect(removes).toEqual(["speech_balloon"])
     expect(h.reacts.some((r) => r.name === "white_check_mark")).toBe(false)
   })
 
@@ -164,8 +165,8 @@ describe("event-renderer — errors", () => {
     ])
     await drain(100)
     expect(h.sends[0]?.text).toMatch(/^\[error\] rate_limited: slow down/)
-    // Reaction ends at error state.
+    // Fatal error surfaces as :octagonal_sign: — "session state compromised."
     const adds = h.reacts.filter((r) => r.op === "add").map((r) => r.name)
-    expect(adds.at(-1)).toBe("x")
+    expect(adds.at(-1)).toBe("octagonal_sign")
   })
 })

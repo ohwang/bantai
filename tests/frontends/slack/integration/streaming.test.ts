@@ -7,8 +7,9 @@
  *      "read + reply" simulation ("can you read the file?").
  *   2. Assert: the bot's thread accumulates a single message (the streamed
  *      draft), not a chain of posts. Updates land in place.
- *   3. Assert: the status reaction cycles through :cyclone: (working) and
- *      lands clean (removed) once the turn completes. The bot never uses
+ *   3. Assert: the status reaction starts as :speech_balloon: (agent
+ *      working) and lands on :round_pushpin: once the turn completes
+ *      (agent idle, ball back in user's court). The bot never uses
  *      :white_check_mark: — that's reserved for humans marking review.
  *
  * Streaming is inherently asynchronous — we use a generous wait window and
@@ -119,7 +120,7 @@ describe("slack frontend S2 — streaming + reactions", () => {
     expect((replies[0]?.text ?? "").length).toBeGreaterThan(0)
   })
 
-  it("lands a :cyclone: while working and removes it on turn_complete (never :white_check_mark:)", async () => {
+  it("lands :speech_balloon: while working and :round_pushpin: on turn_complete (never :white_check_mark:)", async () => {
     const parent = await mini
       .asUser(aliceId)
       .sendMessage(generalId, `<@${botUserId}> just reply`)
@@ -137,16 +138,17 @@ describe("slack frontend S2 — streaming + reactions", () => {
         { timeoutMs: 10_000, message: "expected reply" },
       )
       // The working reaction must have landed at some point.
-      await waitFor(() => history.has("cyclone"), {
+      await waitFor(() => history.has("speech_balloon"), {
         timeoutMs: 5000,
-        message: "expected :cyclone: reaction while working",
+        message: "expected :speech_balloon: reaction while working",
       })
-      // Then wait for the trigger message to end up clean — :cyclone: is
-      // removed on turn_complete and nothing replaces it (the new reaction
-      // system never emits :white_check_mark: as a bot reaction).
+      // Then wait for the trigger message to land on :round_pushpin: —
+      // :speech_balloon: is removed on turn_complete and replaced with
+      // :round_pushpin: (agent idle, ball in user's court). The bot
+      // never emits :white_check_mark: — that's reserved for humans.
       await waitFor(
-        () => finalReactionFor(mini, generalId, parent.ts) === undefined,
-        { timeoutMs: 5000, message: "expected working reaction to be cleared" },
+        () => finalReactionFor(mini, generalId, parent.ts) === "round_pushpin",
+        { timeoutMs: 5000, message: "expected :round_pushpin: on turn_complete" },
       )
     } finally {
       stopObserver()

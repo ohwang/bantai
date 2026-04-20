@@ -96,8 +96,11 @@ export async function dispatchCommand(
     case "stop":
     case "cancel":
     case "interrupt": {
+      // :watermelon: matches the reaction surface for user-triggered
+      // interrupts. :octagonal_sign: is reserved for internal errors
+      // (session state compromised — connection lost, backend crash).
       ctx.interrupt()
-      await ctx.sendReply(":octagonal_sign: interrupted")
+      await ctx.sendReply(":watermelon: interrupted")
       return { kind: "handled" }
     }
 

@@ -1,26 +1,32 @@
 /**
  * Status-reaction state machine.
  *
- * Per-turn lifecycle, drastically simplified (prior revisions tracked 15
- * states and burned reactions.add / reactions.remove on every tool, thinking
- * pulse, and permission request — we consistently hit Slack's reaction
- * rate limit). The contract now is:
+ * Per-turn lifecycle, deliberately small (prior revisions tracked 15 states
+ * and burned reactions.add / reactions.remove on every tool, thinking pulse,
+ * and permission request — we consistently hit Slack's reaction rate limit).
+ * The contract now is:
  *
- *   1. On the first event of a turn we react with a single "working" emoji
- *      (:cyclone:) on the user's trigger message.
- *   2. Intermediate state changes (tool calls, thinking, permission /
- *      elicitation waits, compaction, rate-limit blips) do NOT retouch the
- *      reaction. The thread-status banner (view/thread-status.ts) already
- *      carries that detail via `assistant.threads.setStatus` — no reason
- *      to double up on the reaction API.
- *   3. On `turn_complete` we REMOVE the working emoji and add nothing —
- *      :white_check_mark: is reserved for humans marking work as reviewed,
- *      not for the bot announcing its own completion. A clean trigger
- *      message signals "done" implicitly.
- *   4. On interrupt / fatal error we swap to :octagonal_sign: / :x:.
- *
- * Budget: at most 2 emoji-surface transitions per turn (add + remove on
- * happy path; add + remove + add on interrupt/error). Never :white_check_mark:.
+ *   1. Four states, one emoji each:
+ *        working      💬 :speech_balloon:   — agent is actively processing
+ *        waiting      📍 :round_pushpin:    — agent is done OR waiting on
+ *                                             the user (permission / answer)
+ *        interrupted  🍉 :watermelon:       — `interrupt` event (user stop /
+ *                                             turn timeout / budget cap)
+ *        error        🛑 :octagonal_sign:   — fatal error (session state
+ *                                             compromised — connection lost,
+ *                                             protocol fault, backend crash)
+ *   2. Intermediate events do NOT retouch the reaction: tool_use_*,
+ *      thinking_delta, text_delta, compact, rate_limit_update, and
+ *      recoverable errors. The thread-status banner (view/thread-status.ts)
+ *      carries that detail via `assistant.threads.setStatus` — no need to
+ *      double up on the reactions API.
+ *   3. permission_request / elicitation_request flip to `waiting`; the
+ *      matching _response flips back to `working`. If both land in the
+ *      same event batch (auto-approve policy), the coalescer collapses
+ *      them to zero API calls.
+ *   4. :white_check_mark: is NEVER emitted — reserved for humans marking
+ *      work as reviewed. Humans remain free to add ✅ themselves; the bot
+ *      simply doesn't use that emoji anywhere.
  *
  * This module is pure of Bolt types — it uses a narrow `ReactionAdapter`
  * surface so tests wire in a fake (same pattern as the outbox).
@@ -42,29 +48,18 @@ export interface ReactionAdapter {
 // State derivation
 // ---------------------------------------------------------------------------
 
-export type ReactionState = "working" | "done" | "interrupted" | "error"
+export type ReactionState = "working" | "waiting" | "interrupted" | "error"
 
-/**
- * Map from state → Slack shortcode. An empty string means "no emoji" — the
- * controller clears the prior reaction without adding a new one. We use
- * this for `done` so the happy path ends with a clean trigger message
- * (never :white_check_mark: — reserved for humans).
- */
 export const STATE_TO_SHORTCODE: Record<ReactionState, string> = {
-  working: "cyclone",
-  done: "",
-  interrupted: "octagonal_sign",
-  error: "x",
+  working: "speech_balloon",
+  waiting: "round_pushpin",
+  interrupted: "watermelon",
+  error: "octagonal_sign",
 }
 
 /**
  * Pure state-transition function: given the current state and an AgentEvent,
  * return the next state (or `undefined` to leave unchanged).
- *
- * The machine intentionally ignores tool_use_*, thinking_delta, text_delta,
- * permission_*, elicitation_*, compact, and rate_limit_update. Those used
- * to flip the emoji in older revisions and were the primary cause of
- * rate-limit pain on long turns.
  */
 export function nextReactionState(
   current: ReactionState,
@@ -73,14 +68,25 @@ export function nextReactionState(
   switch (event.type) {
     case "session_init":
     case "turn_start":
-      // Reset to working at the start of every turn (also handles a fresh
-      // controller whose initial state is something other than "working").
+      // Starting (or re-entering) a turn. No-op if we're already working —
+      // keeps the :speech_balloon: stable and avoids a redundant API flip.
+      return current === "working" ? undefined : "working"
+    case "permission_request":
+    case "elicitation_request":
+      // Agent is blocked waiting on user input. Same surface as turn_complete:
+      // ball is in the user's court.
+      return current === "waiting" ? undefined : "waiting"
+    case "permission_response":
+    case "elicitation_response":
+      // User answered; agent resumes work.
       return current === "working" ? undefined : "working"
     case "turn_complete":
-      return "done"
+      return "waiting"
     case "interrupt":
       return "interrupted"
     case "error":
+      // Only fatal errors mean "session state is compromised." Recoverable
+      // errors surface as inline [warn] posts — the reaction stays put.
       if (event.severity === "fatal") return "error"
       return undefined
     default:
@@ -108,10 +114,24 @@ export interface StatusReactionOpts {
 export interface StatusReactionController {
   /** Drive the state machine with one event. */
   apply(event: ConversationEvent): void
-  /** Force a terminal state (e.g. on process shutdown) and flush. */
+  /**
+   * Force a terminal state (e.g. on process shutdown) and flush.
+   * "done" maps to the `waiting` state — the agent finished and the
+   * ball is back in the user's court.
+   */
   terminate(state: "done" | "interrupted" | "error"): Promise<void>
   /** Current reaction state (read-only). */
   current(): ReactionState
+}
+
+/**
+ * Translate the terminate() keyword into an internal state. "done" is
+ * the public name for the normal-completion case; internally the
+ * controller treats it as `waiting` (📍 — agent is idle, user's turn).
+ */
+function terminalToState(terminal: "done" | "interrupted" | "error"): ReactionState {
+  if (terminal === "done") return "waiting"
+  return terminal
 }
 
 export function createStatusReactionController(
@@ -120,8 +140,9 @@ export function createStatusReactionController(
   let state: ReactionState = opts.initial ?? "working"
   /**
    * The shortcode currently attached to the trigger message. `""` means
-   * no emoji is applied — either we haven't added one yet or the `done`
-   * state cleared it.
+   * no emoji is applied — either we haven't added one yet or a prior
+   * removal failed to re-add anything (shouldn't happen with the new
+   * design, but the code still handles it safely).
    */
   let applied = ""
   let inflight: Promise<void> = Promise.resolve()
@@ -159,8 +180,9 @@ export function createStatusReactionController(
       applied = ""
     }
     if (!shortcode) {
-      // Terminal clear (e.g. `done`) — nothing to add, just stamp the clock
-      // so a follow-on throttled call still waits the right amount.
+      // Defensive: no state currently maps to the empty string, but if a
+      // future state ever does we still stamp the clock so the next
+      // throttled call waits the right amount.
       lastTransitionAt = now()
       return
     }
@@ -196,7 +218,7 @@ export function createStatusReactionController(
       scheduleFlush()
     },
     async terminate(terminal) {
-      state = terminal
+      state = terminalToState(terminal)
       // scheduleFlush is a no-op if a flush is already queued; that flush will
       // read `state = terminal` when it executes, so the terminal state is
       // guaranteed to be applied before the await resolves.

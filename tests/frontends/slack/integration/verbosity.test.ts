@@ -133,23 +133,27 @@ async function driveToolTurn(fix: Fixture): Promise<{ parentTs: string }> {
   const parent = await fix.mini
     .asUser(fix.aliceId)
     .sendMessage(fix.generalId, `<@${fix.botUserId}> can you read the file please`)
-  // Wait until the working :cyclone: reaction has been seen AND then cleared
-  // from the trigger message. The bot adds :cyclone: on turn_start and
-  // removes it on turn_complete — so a transition "cyclone seen → no
-  // reactions" anchors us past turn_complete, which is when tool cards,
-  // concise summaries, and cost footers have all landed. We never wait
-  // for :white_check_mark: — the bot no longer emits it (reserved for
-  // humans).
+  // Wait until the working :speech_balloon: has been seen AND replaced
+  // with :round_pushpin: on the trigger message. The bot adds
+  // :speech_balloon: on turn_start and swaps to :round_pushpin: on
+  // turn_complete — so the transition "speech_balloon seen →
+  // round_pushpin landed" anchors us past turn_complete, which is
+  // when tool cards, concise summaries, and cost footers have all
+  // landed. We never wait for :white_check_mark: — the bot doesn't
+  // emit it (reserved for humans).
   let workingSeen = false
   await waitFor(
     () => {
       const p = fix.mini.workspace.channels.get(fix.generalId)?.messages.get(parent.ts)
       const reactions = (p as { reactions?: Array<{ name: string }> } | undefined)?.reactions
-      if (reactions?.some((r) => r.name === "cyclone")) workingSeen = true
-      const cleared = !reactions || reactions.length === 0
-      return workingSeen && cleared
+      if (reactions?.some((r) => r.name === "speech_balloon")) workingSeen = true
+      const waitingLanded = !!reactions?.some((r) => r.name === "round_pushpin")
+      return workingSeen && waitingLanded
     },
-    { timeoutMs: 15_000, message: "expected :cyclone: to appear then clear on trigger message" },
+    {
+      timeoutMs: 15_000,
+      message: "expected :speech_balloon: then :round_pushpin: on trigger message",
+    },
   )
   // Small buffer for postPerTurnAnnotations' chained posts.
   await new Promise((r) => setTimeout(r, 250))

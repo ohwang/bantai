@@ -131,7 +131,7 @@ In your Slack workspace:
 
 1. Invite the bot to a channel: `/invite @bantai`.
 2. Mention it: `@bantai please list the files in /tmp`.
-3. The bot should react with `:cyclone:` while it works, post a reply, then clear the reaction on completion. `:white_check_mark:` is never used by the bot — it's reserved for humans marking work as reviewed.
+3. The bot should react with `:speech_balloon:` while it works, post a reply, then swap the reaction to `:round_pushpin:` when it's done (ball back in your court). Other terminal states: `:watermelon:` if you run `!bantai stop`, `:octagonal_sign:` for internal errors. `:white_check_mark:` is never used by the bot — it's reserved for humans marking work as reviewed.
 
 ## Per-channel configuration
 

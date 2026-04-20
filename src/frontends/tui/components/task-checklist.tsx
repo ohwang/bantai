@@ -162,6 +162,12 @@ export function TaskChecklist(props: {
   )
 
   const hiddenSummary = createMemo(() => buildHiddenSummary(slices().hidden))
+  // Parity with Claude Code's TaskListV2: only show the hidden-summary line
+  // when truncation is active (maxDisplay > 0). On tiny terminals (rows ≤ 10)
+  // maxDisplay is 0 and the reference hides the summary entirely.
+  const showHiddenSummary = createMemo(
+    () => maxDisplay() > 0 && hiddenSummary().length > 0,
+  )
 
   // Bail entirely when the list is empty — never render nothing-but-margin.
   return (
@@ -170,7 +176,11 @@ export function TaskChecklist(props: {
         when={props.isStandalone}
         fallback={
           <box flexDirection="column">
-            <ChecklistBody rows={renderRows()} hiddenSummary={hiddenSummary()} />
+            <ChecklistBody
+              rows={renderRows()}
+              hiddenSummary={hiddenSummary()}
+              showHiddenSummary={showHiddenSummary()}
+            />
           </box>
         }
       >
@@ -181,7 +191,11 @@ export function TaskChecklist(props: {
             inProgress={counts().inProgress}
             pending={counts().pending}
           />
-          <ChecklistBody rows={renderRows()} hiddenSummary={hiddenSummary()} />
+          <ChecklistBody
+            rows={renderRows()}
+            hiddenSummary={hiddenSummary()}
+            showHiddenSummary={showHiddenSummary()}
+          />
         </box>
       </Show>
     </Show>
@@ -198,13 +212,14 @@ type RenderRow = { status: TodoItem["status"]; subject: string }
 function ChecklistBody(props: {
   rows: RenderRow[]
   hiddenSummary: string
+  showHiddenSummary: boolean
 }): JSX.Element {
   return (
     <>
       <For each={props.rows}>
         {(row) => <TaskRow status={row.status} subject={row.subject} />}
       </For>
-      <Show when={props.hiddenSummary.length > 0}>
+      <Show when={props.showHiddenSummary}>
         <text fg={colors.text.muted}>{props.hiddenSummary}</text>
       </Show>
     </>

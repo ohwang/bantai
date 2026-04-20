@@ -278,4 +278,24 @@ describe("TaskChecklist rendering", () => {
     expect(frame).toContain("+2 pending")
     setup.renderer.destroy()
   })
+
+  it("suppresses the hidden-summary line on tiny terminals (maxDisplay=0)", async () => {
+    // Parity with Claude Code's TaskListV2: when rows ≤ 10 (maxDisplay=0)
+    // the reference hides the "… +N pending" summary entirely. Previously
+    // we rendered it unconditionally whenever hiddenSummary was non-empty.
+    const todos: TodoItem[] = Array.from({ length: 5 }, (_, i) => ({
+      content: `Task ${i}`,
+      activeForm: `Working on task ${i}`,
+      status: "pending" as const,
+    }))
+    const setup = await testRender(() => <TaskChecklist todos={todos} />, {
+      width: 80,
+      height: 10, // computeMaxDisplay(10) === 0
+    })
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(frame).not.toContain("pending")
+    expect(frame).not.toContain("\u2026")
+    setup.renderer.destroy()
+  })
 })

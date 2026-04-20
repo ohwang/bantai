@@ -30,9 +30,12 @@ import { sortSessionsByActivity } from "./context/store"
 import { SessionList } from "./panes/session-list"
 import { EventStream } from "./panes/event-stream"
 import { MetadataPane } from "./panes/metadata"
+import { ApprovalsPane } from "./panes/approvals"
 import type { SessionDetail } from "../slack/admin/protocol"
 import { mc } from "./theme"
 import { log } from "../../utils/logger"
+
+type Feedback = { tone: "info" | "warn" | "error"; message: string } | null
 
 export interface MonitorAppProps {
   ctx: AdminContext
@@ -58,6 +61,14 @@ export function MonitorApp(props: MonitorAppProps) {
   const [detail, setDetail] = createSignal<SessionDetail | null>(null)
   const [showHelp, setShowHelp] = createSignal(false)
   const [refreshing, setRefreshing] = createSignal(false)
+  // Which pending approval is highlighted — the action keys fire
+  // against this id. Auto-tracks the approvalOrder so the cursor stays
+  // on something valid without the user having to re-pick every time
+  // an approval resolves.
+  const [selectedApprovalId, setSelectedApprovalId] =
+    createSignal<string | null>(null)
+  const [approvalFeedback, setApprovalFeedback] = createSignal<Feedback>(null)
+  let approvalFeedbackTimer: ReturnType<typeof setTimeout> | undefined
 
   const sessions = createMemo(() => sortSessionsByActivity(props.ctx.store.state))
   const selectedKey = createMemo(() => props.ctx.store.state.selectedSessionKey)
@@ -66,6 +77,26 @@ export function MonitorApp(props: MonitorAppProps) {
     if (!key) return -1
     return sessions().findIndex((s) => s.key === key)
   })
+  const approvalOrder = createMemo(() => props.ctx.store.state.approvalOrder)
+  const readOnly = createMemo(
+    () => props.ctx.store.state.config?.admin.readOnly ?? false,
+  )
+
+  // Keep the approval cursor on a valid id whenever the list changes.
+  createEffect(
+    on(approvalOrder, (order) => {
+      const current = selectedApprovalId()
+      if (!current || !order.includes(current)) {
+        setSelectedApprovalId(order[0] ?? null)
+      }
+    }),
+  )
+
+  function flashFeedback(tone: "info" | "warn" | "error", message: string) {
+    setApprovalFeedback({ tone, message })
+    if (approvalFeedbackTimer) clearTimeout(approvalFeedbackTimer)
+    approvalFeedbackTimer = setTimeout(() => setApprovalFeedback(null), 3_000)
+  }
 
   // Lazily pull the ring buffer + detail when the selection changes.
   createEffect(
@@ -146,7 +177,97 @@ export function MonitorApp(props: MonitorAppProps) {
       if (last) props.ctx.store.selectSession(last)
       return
     }
+
+    // --- Approvals + interrupt -----------------------------------------
+    // Action-on-selection keys per AGENTS.md — they only fire when the
+    // target the action operates on exists. Read-only mode short-circuits
+    // write actions with a warning banner.
+    if (event.name === "[") {
+      cycleApproval(-1)
+      return
+    }
+    if (event.name === "]") {
+      cycleApproval(1)
+      return
+    }
+    if (event.name === "a" && !event.shift && !event.ctrl) {
+      void handleApprove(false)
+      return
+    }
+    if (event.name === "A" || (event.shift && event.name === "a")) {
+      void handleApprove(true)
+      return
+    }
+    if (event.name === "d" && !event.shift && !event.ctrl) {
+      void handleDeny()
+      return
+    }
+    if (event.name === "i" && !event.shift && !event.ctrl) {
+      void handleInterrupt()
+      return
+    }
   })
+
+  function cycleApproval(delta: 1 | -1): void {
+    const order = approvalOrder()
+    if (order.length === 0) return
+    const current = selectedApprovalId()
+    const idx = current ? order.indexOf(current) : -1
+    if (idx < 0) {
+      setSelectedApprovalId(order[0] ?? null)
+      return
+    }
+    const next = (idx + delta + order.length) % order.length
+    setSelectedApprovalId(order[next] ?? null)
+  }
+
+  async function handleApprove(alwaysAllow: boolean): Promise<void> {
+    const id = selectedApprovalId()
+    if (!id) return
+    if (readOnly()) {
+      flashFeedback("warn", "approve blocked: admin is in read-only mode")
+      return
+    }
+    try {
+      await props.ctx.approve(id, alwaysAllow)
+      flashFeedback(
+        "info",
+        alwaysAllow ? `approved ${id} (always allow)` : `approved ${id}`,
+      )
+    } catch (err) {
+      flashFeedback("error", `approve ${id} failed: ${String(err)}`)
+    }
+  }
+
+  async function handleDeny(): Promise<void> {
+    const id = selectedApprovalId()
+    if (!id) return
+    if (readOnly()) {
+      flashFeedback("warn", "deny blocked: admin is in read-only mode")
+      return
+    }
+    try {
+      await props.ctx.deny(id)
+      flashFeedback("info", `denied ${id}`)
+    } catch (err) {
+      flashFeedback("error", `deny ${id} failed: ${String(err)}`)
+    }
+  }
+
+  async function handleInterrupt(): Promise<void> {
+    const key = selectedKey()
+    if (!key) return
+    if (readOnly()) {
+      flashFeedback("warn", "interrupt blocked: admin is in read-only mode")
+      return
+    }
+    try {
+      await props.ctx.interrupt(key)
+      flashFeedback("info", `interrupt sent to ${key}`)
+    } catch (err) {
+      flashFeedback("error", `interrupt ${key} failed: ${String(err)}`)
+    }
+  }
 
   async function refreshSnapshot(): Promise<void> {
     if (refreshing()) return
@@ -183,7 +304,20 @@ export function MonitorApp(props: MonitorAppProps) {
       <box flexDirection="row" flexGrow={1}>
         <SessionList store={props.ctx.store} width={leftWidth()} />
         <EventStream store={props.ctx.store} />
-        <MetadataPane store={props.ctx.store} detail={detail()} width={rightWidth()} />
+        <box flexDirection="column" width={rightWidth()} flexShrink={0}>
+          <MetadataPane
+            store={props.ctx.store}
+            detail={detail()}
+            width={rightWidth()}
+          />
+          <ApprovalsPane
+            store={props.ctx.store}
+            width={rightWidth()}
+            selectedId={selectedApprovalId()}
+            readOnly={readOnly()}
+            feedback={approvalFeedback()}
+          />
+        </box>
       </box>
       <StatusBar baseUrl={props.baseUrl} ctx={props.ctx} />
       <Show when={showHelp()}>
@@ -273,6 +407,8 @@ function StatusBar(props: { baseUrl: string; ctx: AdminContext }) {
       flexShrink={0}
     >
       <text fg={mc.text.muted}>↑/↓ nav  </text>
+      <text fg={mc.text.muted}>a/d approve/deny  </text>
+      <text fg={mc.text.muted}>i interrupt  </text>
       <text fg={mc.text.muted}>R refresh  </text>
       <text fg={mc.text.muted}>? help  </text>
       <text fg={mc.text.muted}>q quit</text>
@@ -336,6 +472,11 @@ function HelpOverlay(_props: { onDismiss: () => void }) {
       <text fg={mc.text.secondary}>k / ↑          previous session</text>
       <text fg={mc.text.secondary}>g              first session</text>
       <text fg={mc.text.secondary}>G              last session</text>
+      <text fg={mc.text.secondary}>[ / ]          cycle approvals</text>
+      <text fg={mc.text.secondary}>a              approve selected</text>
+      <text fg={mc.text.secondary}>A              approve + allow always</text>
+      <text fg={mc.text.secondary}>d              deny selected</text>
+      <text fg={mc.text.secondary}>i              interrupt selected session</text>
       <text fg={mc.text.secondary}>R              refresh snapshot</text>
       <text fg={mc.text.secondary}>?              toggle this help</text>
       <text fg={mc.text.secondary}>q / Ctrl-C     quit</text>

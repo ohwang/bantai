@@ -450,6 +450,7 @@ export function SyncProvider(props: ParentProps) {
         session.setState("turnNumber", 0)
         messages.setState("streamingOutputTokens", 0)
         messages.setState("lastTurnFiles", undefined)
+        messages.setState("todos", reconcile([]))
       })
 
       // Phase: starting subprocess + handshake

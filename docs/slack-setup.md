@@ -280,6 +280,27 @@ Three `store_path` modes:
 
 The example at the top of this doc sets `store_path: "~/.bantai/slack.db"` explicitly — that's equivalent to omitting the key today, but kept in the sample so operators who want to move the file know which knob to change.
 
+## Follow mode (experimental)
+
+`bantai follow <session-id>` opens the regular TUI as a read-only observer over a live session — typically one being driven from Slack on the same host. Every turn, tool call, and assistant message streams into the terminal as it lands in the Claude JSONL on disk. You cannot type, interrupt, approve tool use, or touch the session in any way — all interaction still happens in the originating frontend.
+
+```bash
+# Grab the session ID from Slack (the bot prints it on first reply in a thread,
+# and it's visible via `!bantai status` as "Claude Session: <uuid>").
+bun run ./src/index.ts follow 3f8b1a10-...
+```
+
+Scope — this is an experiment:
+
+- **Claude-backend only.** We detect the session origin and refuse Codex / Gemini sessions. The follower relies on Claude's on-disk JSONL format, and doubling the review surface for one-off follows isn't worth it while we're still evaluating the feature.
+- **Same host only.** The follower reads `~/.claude/projects/*/<sessionId>.jsonl` directly. Following a remotely hosted bot needs a different transport (R2 / worker plan, not this).
+- **Read-only, visibly.** The input box is disabled, the status bar shows a `FOLLOW` pill, and the placeholder banner reads "Following (read-only). Interact in Slack to drive this session." Send-side methods on the backend are no-ops as a second line of defence.
+- **No streaming deltas.** Claude writes complete assistant messages to JSONL — there is no per-token stream to tail. Messages appear as whole blocks.
+- **No live permission visibility.** `permission_request` is a runtime SDK event; it's not persisted to JSONL. The follower sees the tool call complete (or fail) after the permission was resolved in Slack, but cannot show "awaiting permission" in real time.
+- **No session picker.** `bantai follow` with no ID errors out — you bring the session ID.
+
+If the experiment pays off, we'll promote it into the `AGENTS.md` CLI table and the main README. Until then, treat it as scratch infrastructure and expect the UX to shift.
+
 ## What's next
 
 - `!bantai status` and `!bantai settings` are your debugging primitives — run them in a channel when something looks wrong.

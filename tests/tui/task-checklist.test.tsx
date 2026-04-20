@@ -92,7 +92,7 @@ describe("prioritizeTodos", () => {
     status,
   })
 
-  it("orders in_progress first, then recent completed, then pending, then older completed", () => {
+  it("orders recent completed first, then in_progress, then pending, then older completed", () => {
     const todos: TodoItem[] = [
       mk("c1", "completed"),
       mk("c2", "completed"),
@@ -103,14 +103,36 @@ describe("prioritizeTodos", () => {
       mk("p2", "pending"),
     ]
     const out = prioritizeTodos(todos)
-    // in_progress first
-    expect(out[0]?.content).toBe("ip1")
-    // recent completed (upper half — indices 2,3): c3, c4
-    expect(out.slice(1, 3).map((t) => t.content)).toEqual(["c3", "c4"])
+    // recent completed (upper half — indices 2,3): c3, c4 — first
+    expect(out.slice(0, 2).map((t) => t.content)).toEqual(["c3", "c4"])
+    // then in_progress
+    expect(out[2]?.content).toBe("ip1")
     // then pending in insertion order
     expect(out.slice(3, 5).map((t) => t.content)).toEqual(["p1", "p2"])
     // then older completed (lower half): c1, c2
     expect(out.slice(5).map((t) => t.content)).toEqual(["c1", "c2"])
+  })
+
+  it("truncation prioritizes recent-completed before in-progress (12 todos, maxDisplay=3)", () => {
+    // 4 completed, 2 in_progress, 6 pending. With maxDisplay=3, expect visible
+    // to START with the 2 most-recent completed (later indices) then 1 in_progress.
+    const todos: TodoItem[] = [
+      mk("c1", "completed"),
+      mk("c2", "completed"),
+      mk("c3", "completed"),
+      mk("c4", "completed"),
+      mk("ip1", "in_progress"),
+      mk("ip2", "in_progress"),
+      mk("p1", "pending"),
+      mk("p2", "pending"),
+      mk("p3", "pending"),
+      mk("p4", "pending"),
+      mk("p5", "pending"),
+      mk("p6", "pending"),
+    ]
+    const visible = prioritizeTodos(todos).slice(0, 3)
+    // Upper half of completed = indices 2,3 → c3, c4. Then first in_progress.
+    expect(visible.map((t) => t.content)).toEqual(["c3", "c4", "ip1"])
   })
 
   it("handles all-pending without crash", () => {

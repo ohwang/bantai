@@ -63,8 +63,8 @@ export function pickSubject(todo: TodoItem): string {
 
 /**
  * Priority ordering for truncation:
- *   1. in-progress
- *   2. recently completed (later indices first — newer completions float up)
+ *   1. recently completed (later indices first — newer completions float up)
+ *   2. in-progress
  *   3. pending
  *   4. older completed
  *
@@ -88,7 +88,7 @@ export function prioritizeTodos(todos: readonly TodoItem[]): TodoItem[] {
   const recentCompleted = completed.slice(completed.length - half).map((c) => c.todo)
   const olderCompleted = completed.slice(0, completed.length - half).map((c) => c.todo)
 
-  return [...inProgress, ...recentCompleted, ...pending, ...olderCompleted]
+  return [...recentCompleted, ...inProgress, ...pending, ...olderCompleted]
 }
 
 export function buildHiddenSummary(hidden: readonly TodoItem[]): string {

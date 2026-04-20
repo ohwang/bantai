@@ -3,7 +3,14 @@ import { mapCodexNotification } from "../../src/backends/codex/event-mapper"
 
 describe("Codex Event Mapper", () => {
   describe("thread lifecycle", () => {
-    it("maps thread/started to session_init", () => {
+    it("maps thread/started to session_init (sessionId = Codex thread id)", () => {
+      // Regression: the mapper used to emit `sessionId: crypto.randomUUID()`
+      // on every thread/started, which silently broke resume. Slack persisted
+      // the ghost id to ~/.bantai/slack.db; on the next turn bantai asked
+      // Codex to resume it, Codex couldn't find it, and from a cross-backend
+      // POV the id existed nowhere on disk — a hard phantom. Now the session
+      // id IS the Codex thread id, so persistence + resume + cross-backend
+      // lookup all agree on one identifier.
       const events = mapCodexNotification("thread/started", {
         thread: {
           id: "thread-1",
@@ -17,8 +24,32 @@ describe("Codex Event Mapper", () => {
       expect(events).toHaveLength(1)
       expect(events[0]!.type).toBe("session_init")
       const init = events[0]! as any
+      expect(init.sessionId).toBe("thread-1")
       expect(init.models).toHaveLength(1)
       expect(init.models[0].provider).toBe("openai")
+    })
+
+    it("leaves sessionId undefined when thread.id is missing (do NOT forge a random UUID)", () => {
+      // Defensive: if Codex ever changes its notification shape, emitting a
+      // synthetic UUID again would re-introduce the ghost-id class of bug.
+      // Prefer an undefined sessionId (the adapter has a separate safety-net
+      // that injects this.threadId from the thread/start response) so any
+      // downstream "resume" path correctly sees "no id to resume with".
+      const events = mapCodexNotification("thread/started", {
+        thread: { preview: "no-id", modelProvider: "openai" },
+      })
+      expect(events).toHaveLength(1)
+      const init = events[0]! as any
+      expect(init.type).toBe("session_init")
+      expect(init.sessionId).toBeUndefined()
+    })
+
+    it("leaves sessionId undefined when thread.id is empty string", () => {
+      const events = mapCodexNotification("thread/started", {
+        thread: { id: "", modelProvider: "openai" },
+      })
+      expect(events).toHaveLength(1)
+      expect((events[0]! as any).sessionId).toBeUndefined()
     })
 
     it("maps thread/status/changed to session_state", () => {

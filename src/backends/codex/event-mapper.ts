@@ -62,9 +62,21 @@ export function mapCodexNotification(
           provider: "openai",
         })
       }
+      // Use Codex's real thread id as the session id — NOT a synthetic
+      // crypto.randomUUID(). The synthetic id was the original shape and
+      // silently broke resume everywhere: bantai persisted it into the
+      // Slack store (and displayed it in the TUI session picker), but no
+      // backend — not even Codex itself — could look it up. Feeding the
+      // ghost id back into `thread/resume` just got a "thread not found"
+      // and every cross-backend resume failed with the same "id exists
+      // nowhere on disk" symptom. If `thread.id` is missing, leave
+      // sessionId undefined (the type allows it) instead of inventing one.
+      const threadId = typeof thread?.id === "string" && thread.id.length > 0
+        ? thread.id
+        : undefined
       events.push({
         type: "session_init",
-        sessionId: crypto.randomUUID(),
+        ...(threadId ? { sessionId: threadId } : {}),
         tools: [],  // Codex doesn't enumerate tools at init; they appear as items
         models,
         account: undefined,

@@ -765,6 +765,15 @@ export class CodexAdapter extends BaseAdapter {
       if (event.type === "session_init" && this.modelName) {
         event.models = [{ id: this.modelName, name: this.modelName, provider: "openai" }]
       }
+      // Safety net: if the notification arrived without a thread.id (the
+      // mapper intentionally leaves sessionId undefined rather than forging
+      // a random UUID — see event-mapper.ts "thread/started") but the
+      // thread/start RESPONSE has since resolved `this.threadId`, use it.
+      // This keeps session ids stable across the race between Codex firing
+      // `thread/started` and the `thread/start` request returning.
+      if (event.type === "session_init" && !event.sessionId && this.threadId) {
+        event.sessionId = this.threadId
+      }
       // Inject cached token usage into turn_complete events if usage is undefined
       if (event.type === "turn_complete" && !event.usage && this.lastTokenUsage) {
         event.usage = { ...this.lastTokenUsage }

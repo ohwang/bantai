@@ -213,6 +213,60 @@ export async function runCli(argv: string[]): Promise<void> {
       }
     })
   slackCmd
+    .command("monitor")
+    .description("Connect a read-through TUI to a running `bantai slack` admin surface")
+    .option(
+      "--url <url>",
+      "Admin server base URL (default: derived from slack.json admin.host/port)",
+    )
+    .option(
+      "--token <value>",
+      "Admin bearer token (default: read from --token-path or slack.json)",
+    )
+    .option(
+      "--token-path <path>",
+      "Path to the admin bearer-token file (default: from slack.json or ~/.bantai/slack/admin-token)",
+    )
+    .option(
+      "--max-events <n>",
+      "Cap per-session event tail held in memory (default: 1000)",
+    )
+    // `--slack-config` lives on the parent `slackCmd` — monitor picks it up via optsWithGlobals().
+    .action(async (_subOpts: unknown, cmd: Command) => {
+      const opts = cmd.optsWithGlobals() as {
+        slackConfig?: string
+        url?: string
+        token?: string
+        tokenPath?: string
+        maxEvents?: string
+      }
+      const maxEvents =
+        opts.maxEvents !== undefined ? Number(opts.maxEvents) : undefined
+      if (maxEvents !== undefined && (!Number.isFinite(maxEvents) || maxEvents < 1)) {
+        console.error(
+          `Error: --max-events must be a positive integer, got "${String(opts.maxEvents)}"`,
+        )
+        process.exit(1)
+      }
+      const { launchSlackMonitor } = await import(
+        "../frontends/slack-monitor/launcher"
+      )
+      try {
+        await launchSlackMonitor({
+          ...(opts.url ? { url: opts.url } : {}),
+          ...(opts.token ? { token: opts.token } : {}),
+          ...(opts.tokenPath ? { tokenPath: opts.tokenPath } : {}),
+          ...(opts.slackConfig ? { slackConfigPath: opts.slackConfig } : {}),
+          ...(maxEvents !== undefined ? { maxEventsPerSession: maxEvents } : {}),
+        })
+      } catch (err) {
+        console.error(
+          `bantai slack monitor failed: ${(err as Error).message ?? String(err)}`,
+        )
+        process.exit(2)
+      }
+    })
+  slackCmd
     .command("init-manifest")
     .description("Print a Slack app manifest for bantai (paste into api.slack.com)")
     .option("--format <json|yaml>", "Output format (default: yaml)", "yaml")

@@ -131,6 +131,17 @@ function buildSlackRenderOptions() {
   };
 }
 
+/**
+ * @deprecated Prefer Slack's `markdown_text` API field (see
+ *   `view/outbox.ts` → `markdownText`, and `view/send-adapter.ts` →
+ *   `compileBody`). `markdown_text` accepts raw GitHub-flavoured markdown
+ *   with a 12,000-char limit and renders tables, fenced code, headers,
+ *   and task lists natively — lossless compared to Slack's mrkdwn
+ *   dialect. This mrkdwn converter is retained only for short strings
+ *   that rely on mrkdwn-only affordances (`<@U…>` mentions, `<!date^…>`,
+ *   `<#C…>` channel refs) in banners, approvals, and elicitation copy.
+ *   Do not use for new code paths that carry agent reply bodies.
+ */
 export function markdownToSlackMrkdwn(
   markdown: string,
   options: SlackMarkdownOptions = {},
@@ -145,10 +156,21 @@ export function markdownToSlackMrkdwn(
   return renderMarkdownWithMarkers(ir, buildSlackRenderOptions());
 }
 
+/**
+ * @deprecated See `markdownToSlackMrkdwn`. New outbound surfaces should
+ *   pass raw markdown through `markdownText` instead of running it
+ *   through this mrkdwn normalizer.
+ */
 export function normalizeSlackOutboundText(markdown: string): string {
   return markdownToSlackMrkdwn(markdown ?? "");
 }
 
+/**
+ * @deprecated See `markdownToSlackMrkdwn`. For raw-markdown chunking
+ *   use `view/markdown-chunk.ts → chunkRawMarkdown`, which targets
+ *   Slack's 12k `markdown_text` limit and preserves fenced-code
+ *   integrity without lossy mrkdwn conversion.
+ */
 export function markdownToSlackMrkdwnChunks(
   markdown: string,
   limit: number,

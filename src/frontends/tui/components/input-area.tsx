@@ -251,7 +251,7 @@ export function InputArea() {
 
   const placeholder = () => {
     if (isReadOnly()) {
-      return "👀 Following (read-only). Interact in Slack to drive this session."
+      return "👀 Following (read-only)."
     }
     if (session.resuming) return "Loading session history…"
     if (session.sessionState === "INITIALIZING") return "Type a message to start..."

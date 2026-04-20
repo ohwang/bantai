@@ -294,7 +294,7 @@ Scope — this is an experiment:
 
 - **Claude-backend only.** We detect the session origin and refuse Codex / Gemini sessions. The follower relies on Claude's on-disk JSONL format, and doubling the review surface for one-off follows isn't worth it while we're still evaluating the feature.
 - **Same host only.** The follower reads `~/.claude/projects/*/<sessionId>.jsonl` directly. Following a remotely hosted bot needs a different transport (R2 / worker plan, not this).
-- **Read-only, visibly.** The input box is disabled, the status bar shows a `FOLLOW` pill, and the placeholder banner reads "Following (read-only). Interact in Slack to drive this session." Send-side methods on the backend are no-ops as a second line of defence.
+- **Read-only, visibly.** The input box is disabled, the status bar shows a `FOLLOW` pill, and the placeholder banner reads "Following (read-only)." Send-side methods on the backend are no-ops as a second line of defence.
 - **No streaming deltas.** Claude writes complete assistant messages to JSONL — there is no per-token stream to tail. Messages appear as whole blocks.
 - **No live permission visibility.** `permission_request` is a runtime SDK event; it's not persisted to JSONL. The follower sees the tool call complete (or fail) after the permission was resolved in Slack, but cannot show "awaiting permission" in real time.
 - **No session picker.** `bantai follow` with no ID errors out — you bring the session ID.

@@ -15,6 +15,7 @@ import { describe, test, expect } from "bun:test"
 import { MockAdapter } from "../../../src/backends/mock/adapter"
 import {
   createInitialState,
+  resetVolatileSessionState,
   type AgentBackend,
   type Block,
   type ConversationEvent,
@@ -74,10 +75,11 @@ function createHarness(initial: AgentBackend) {
 
     const ready = new Promise<void>((resolve) => pendingInitResolvers.push(resolve))
 
+    // Mirror sync.tsx: use the shared helper so the harness resets the same
+    // volatile slice the real switch path does. The explicit `currentModel`
+    // override models the sync.tsx branch that applies `opts.model` on top.
     conversationState = {
-      ...conversationState,
-      sessionState: "INITIALIZING",
-      session: null,
+      ...resetVolatileSessionState(conversationState),
       currentModel: model ?? null,
     }
 
@@ -189,5 +191,59 @@ describe("switchBackend hot-swap (integration)", () => {
     const b = new MockAdapter()
     await harness.switchBackend(b)
     expect(harness.config.initialPrompt).toBeUndefined()
+  })
+
+  test("resets volatile status-bar state (cost, rate-limits, turn counters) while preserving blocks", async () => {
+    const a = new MockAdapter()
+    const harness = createHarness(a)
+    harness.startEventLoop()
+    await waitFor(() => harness.state.session !== null)
+
+    // Exchange a turn so the state picks up non-defaults the reducer writes:
+    // session metadata, cost (from turn_complete), turnNumber, blocks.
+    harness.sendMessage("hello")
+    await waitFor(
+      () =>
+        harness.state.sessionState === "IDLE" &&
+        harness.state.blocks.some((b) => b.type === "assistant"),
+    )
+
+    // Seed the remaining volatile fields by hand — the mock adapter doesn't
+    // necessarily drive rate-limits or streaming output tokens, but the real
+    // switch path has to reset them regardless of whether they were set.
+    ;(harness as any).state_mutate?.()
+    // Direct write into the mutable state mirror so we don't depend on
+    // internal event shapes the mock doesn't emit.
+    const dirty = harness.state as any
+    dirty.rateLimits = { primary: { usedPercentage: 75, resetsAt: Date.now() + 1000 } }
+    dirty.lastTurnInputTokens = 12_345
+    dirty._contextFromStream = true
+    dirty.streamingOutputTokens = 77
+    dirty.lastTurnFiles = [{ path: "/x", type: "modified", added: 1, removed: 0 }]
+
+    const priorBlocks = [...harness.blocks]
+    expect(priorBlocks.length).toBeGreaterThan(0)
+    expect(harness.state.turnNumber).toBeGreaterThan(0)
+
+    const fresh = createInitialState()
+
+    const b = new MockAdapter()
+    await harness.switchBackend(b)
+
+    // Post-switch, the new backend has already driven session_init → IDLE on
+    // our harness, which repopulates `session`, `sessionState`, `turnNumber`
+    // is still 0 (no new turn yet), etc. Assert the *reset-specific* fields
+    // match the factory before the new turn runs.
+    const s = harness.state
+    expect(s.cost).toEqual(fresh.cost)
+    expect(s.rateLimits).toEqual(fresh.rateLimits)
+    expect(s.lastTurnInputTokens).toBe(fresh.lastTurnInputTokens)
+    expect(s._contextFromStream).toBe(fresh._contextFromStream)
+    expect(s.streamingOutputTokens).toBe(fresh.streamingOutputTokens)
+    expect(s.turnNumber).toBe(fresh.turnNumber)
+    expect(s.lastTurnFiles).toBe(fresh.lastTurnFiles)
+
+    // Blocks preserved (reference-stable).
+    expect(s.blocks).toEqual(priorBlocks)
   })
 })

@@ -1251,3 +1251,50 @@ export function createInitialState(): ConversationState {
     worktree: null,
   }
 }
+
+/**
+ * Reset the per-backend volatile slice of ConversationState to the defaults
+ * from `createInitialState()`, while preserving `blocks` (conversation history
+ * is deliberately kept across a `/switch`) and other cross-backend state.
+ *
+ * Use this from `switchBackend()` so the status bar doesn't bleed the old
+ * backend's cost / rate-limits / context / turn counters into the new
+ * session. Reading the defaults from `createInitialState()` (instead of
+ * hand-rolling them here) means that when a new volatile field is added to
+ * `ConversationState`, it's enough to add it to the list below — the values
+ * can't drift out of sync with the initial-state factory.
+ *
+ * Preserved (not reset): `blocks`, `eventLog`, `streamingText`,
+ * `streamingThinking`, `pendingPermission`, `pendingElicitation`,
+ * `activeTasks`, `backgrounded`, `awaitingTurnStart`, `resuming`,
+ * `lastError`, `currentCwd`, `worktree`. In practice the switch path gates
+ * on IDLE so the mid-turn fields are already at defaults, and
+ * `currentCwd`/`worktree` are observable facts about the working
+ * environment rather than per-backend state.
+ */
+export function resetVolatileSessionState(
+  current: ConversationState,
+): ConversationState {
+  const fresh = createInitialState()
+  return {
+    ...current,
+    // Session identity / lifecycle — reset so header + status bar re-render
+    // cleanly while the new backend initializes.
+    sessionState: fresh.sessionState,
+    session: fresh.session,
+    currentModel: fresh.currentModel,
+    currentEffort: fresh.currentEffort,
+    agentCommands: fresh.agentCommands,
+    configOptions: fresh.configOptions,
+    // Cost + usage accounting — stale values here are actively misleading
+    // (users have reported believing Codex charged them for Claude usage).
+    cost: fresh.cost,
+    rateLimits: fresh.rateLimits,
+    lastTurnInputTokens: fresh.lastTurnInputTokens,
+    lastTurnTtftMs: fresh.lastTurnTtftMs,
+    _contextFromStream: fresh._contextFromStream,
+    streamingOutputTokens: fresh.streamingOutputTokens,
+    turnNumber: fresh.turnNumber,
+    lastTurnFiles: fresh.lastTurnFiles,
+  }
+}

@@ -326,6 +326,23 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
   let tokenSamples: TokenSample[] = []
   let prevSessionState: string = state.sessionState
 
+  // On backend swap (`/switch`), drop the sample window even if we're not
+  // transitioning through RUNNING. Without this, the reading for the old
+  // backend sticks around until the next IDLE → RUNNING edge on the new
+  // backend — visually nonsensical once `agent.backend` is a different
+  // adapter. The `on(..., { defer: true })` form skips the initial read
+  // so we don't clear samples on first mount.
+  createEffect(
+    on(
+      agent.backendAccessor,
+      () => {
+        tokenSamples = []
+        setTokPerSec(0)
+      },
+      { defer: true },
+    ),
+  )
+
   const tickerHandle = setInterval(() => {
     const currentState = state.sessionState
     const isRunning = currentState === "RUNNING"

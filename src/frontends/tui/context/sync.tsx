@@ -24,6 +24,7 @@ import { reconcile } from "solid-js/store"
 import { reduce } from "../../../protocol/reducer"
 import {
   createInitialState,
+  resetVolatileSessionState,
   type ConversationEvent,
 } from "../../../protocol/types"
 import { EventBatcher } from "../../../utils/event-batcher"
@@ -419,16 +420,19 @@ export function SyncProvider(props: ParentProps) {
       agent.setBackend(opts.adapter)
 
       // Step 6: reset session-level reducer state so the status bar doesn't
-      // show stale model / cost from the old backend during the gap. The block
-      // history is preserved deliberately — the user wants to see prior turns.
+      // show stale cost / rate-limits / context / turn counters from the old
+      // backend during the gap. The block history is preserved deliberately
+      // — the user wants to see prior turns.
+      //
+      // `resetVolatileSessionState` reads defaults from `createInitialState()`,
+      // so adding a new per-backend field to ConversationState later just
+      // means extending the helper's pick list (and we won't silently skip
+      // resetting it here). If the caller passed an explicit `opts.model`,
+      // apply it on top of the reset defaults so the status bar shows the
+      // target model immediately rather than "unknown" for the boot gap.
       conversationState = {
-        ...conversationState,
-        sessionState: "INITIALIZING",
-        session: null,
+        ...resetVolatileSessionState(conversationState),
         currentModel: opts.model ?? null,
-        currentEffort: null,
-        configOptions: [],
-        agentCommands: [],
       }
       batch(() => {
         session.setState("sessionState", "INITIALIZING")
@@ -437,6 +441,13 @@ export function SyncProvider(props: ParentProps) {
         session.setState("currentEffort", "")
         session.setState("configOptions", reconcile([]))
         session.setState("agentCommands", reconcile([]))
+        session.setState("cost", reconcile(conversationState.cost))
+        session.setState("rateLimits", reconcile(null))
+        session.setState("lastTurnInputTokens", 0)
+        session.setState("lastTurnTtftMs", null)
+        session.setState("turnNumber", 0)
+        messages.setState("streamingOutputTokens", 0)
+        messages.setState("lastTurnFiles", undefined)
       })
 
       // Phase: starting subprocess + handshake

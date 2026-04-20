@@ -59,7 +59,20 @@ import {
   createSessionStore,
   type SessionStore,
 } from "./store/sessions"
-import { buildRoutingHandler, parseSessionKey } from "./routing"
+import {
+  buildRoutingHandler,
+  invalidateProjectOverrides,
+  parseSessionKey,
+  type RoutingCtx,
+  type RuntimeChannelOverride,
+} from "./routing"
+import {
+  createConfigReloader,
+  formatDiffSummary,
+  formatRejectionSummary,
+  type ConfigReloader,
+} from "./config/reloader"
+import { markdownToSlackMrkdwn } from "./view/format"
 import { homedir } from "node:os"
 import { join as pathJoin, dirname } from "node:path"
 import { mkdirSync } from "node:fs"
@@ -340,9 +353,21 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     },
   })
 
-  const routing = buildRoutingHandler({
+  // Per-channel user-scope overrides (`!bantai verbosity`, `!bantai model`).
+  // Lives outside `projectOverrides` so a config reload (which clears the
+  // resolution cache) doesn't erase an operator's live tweaks.
+  const runtimeOverrides = new Map<string, RuntimeChannelOverride>()
+  // Live reference to the current ResolvedSlackConfig. The getter on the
+  // routing ctx reads from this every time `mutableProjectFor` runs, so a
+  // successful `ConfigReloader` apply flows into every downstream decision
+  // (gate, debouncer, resolver) without re-wiring the handler.
+  let currentConfig: ResolvedSlackConfig = config
+
+  const routingCtx: RoutingCtx = {
     app,
-    config,
+    get config() {
+      return currentConfig
+    },
     registry,
     dedup,
     userCache,
@@ -354,6 +379,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     attachments,
     renderers: new WeakMap(),
     projectOverrides: new Map(),
+    runtimeOverrides,
     bannerPosted: new WeakSet(),
     shuttingDown,
     slackUploadMcpFor,
@@ -389,11 +415,86 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
         }
       },
     },
-  })
+  }
+
+  const routing = buildRoutingHandler(routingCtx)
   registerEvents({
     app,
     botUserId: auth.botUserId,
     onInbound: routing.onInbound,
+  })
+
+  // Config hot-reload. `<inline>` configs (test harnesses + future
+  // programmatic overrides) disable the watcher — there's no file on disk
+  // to watch. Inline sources also get an empty source string, so guard
+  // defensively: only enable when we can confirm `source` is a real path.
+  const reloader: ConfigReloader = createConfigReloader({
+    path: config.source,
+    initial: config,
+    ...(config.source === "<inline>" || config.source.length === 0
+      ? { disableWatcher: true }
+      : {}),
+  })
+  const notifyAdapter = buildDefaultSendAdapter(app)
+  const unsubApplied = reloader.onApplied((event) => {
+    currentConfig = event.next
+    invalidateProjectOverrides(routingCtx, event.diff)
+    metrics.inc("bantai_slack_config_reload_applied_total")
+    metrics.setGauge(
+      "bantai_slack_config_last_reload_timestamp_seconds",
+      Math.floor(Date.now() / 1000),
+    )
+    if (event.restartRequired.length > 0) {
+      log.warn(
+        `slack reload: restart required for: ${event.restartRequired.join(", ")}`,
+      )
+    }
+    const logLine = formatDiffSummary(event.diff, {
+      source: event.next.source,
+      next: event.next,
+      previous: event.previous,
+      restartRequired: event.restartRequired,
+    })
+    log.info(`slack reload: ${logLine.replace(/\n/g, " | ")}`)
+    const channel = event.next.defaults.reload_notify_channel
+    if (channel && channel.length > 0) {
+      const mdBody = formatDiffSummary(event.diff, {
+        source: event.next.source,
+        mrkdwn: true,
+        next: event.next,
+        previous: event.previous,
+        restartRequired: event.restartRequired,
+      })
+      notifyAdapter
+        .postMessage({ channel, text: markdownToSlackMrkdwn(mdBody) })
+        .catch((err) => {
+          log.warn(
+            `slack reload: notify-channel post to ${channel} failed: ${String(err)}`,
+          )
+        })
+    }
+  })
+  const unsubRejected = reloader.onRejected((event) => {
+    metrics.inc("bantai_slack_config_reload_rejected_total")
+    log.warn(
+      `slack reload: rejected (${event.reason}) — ${event.errors.join("; ")}`,
+    )
+    // Notify-channel posts are best-effort; a config so broken we can't
+    // even post about it still logs to the server log.
+    const channel = currentConfig.defaults.reload_notify_channel
+    if (channel && channel.length > 0) {
+      const mdBody = formatRejectionSummary(event.errors, {
+        source: currentConfig.source,
+        mrkdwn: true,
+      })
+      notifyAdapter
+        .postMessage({ channel, text: markdownToSlackMrkdwn(mdBody) })
+        .catch((err) => {
+          log.warn(
+            `slack reload: notify-channel rejection post to ${channel} failed: ${String(err)}`,
+          )
+        })
+    }
   })
 
   log.info(`slack: server ready — bot user ${auth.botUserId}, team ${workspaceId}`)
@@ -423,6 +524,13 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       approvals.closeAll()
       elicitations.closeAll()
       registry.closeAll()
+      try {
+        unsubApplied()
+        unsubRejected()
+        reloader.close()
+      } catch (err) {
+        log.debug(`slack: reloader.close threw: ${String(err)}`)
+      }
       await app.stop()
       try {
         store.close()

@@ -56,6 +56,21 @@ export const METRIC_DESCRIPTORS: MetricDescriptor[] = [
     help: "Number of approval requests the operator approved.",
   },
   {
+    name: "bantai_slack_config_reload_applied_total",
+    type: "counter",
+    help: "Number of slack.json reloads that passed validation and were applied.",
+  },
+  {
+    name: "bantai_slack_config_reload_rejected_total",
+    type: "counter",
+    help: "Number of slack.json reloads rejected by parser or zod validation.",
+  },
+  {
+    name: "bantai_slack_config_last_reload_timestamp_seconds",
+    type: "gauge",
+    help: "Unix timestamp (seconds) of the most recent successful config reload.",
+  },
+  {
     name: "bantai_slack_approval_denied_total",
     type: "counter",
     help: "Number of approval requests the operator denied.",

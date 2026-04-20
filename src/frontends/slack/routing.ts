@@ -17,6 +17,7 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { log } from "../../utils/logger"
 import type { ConversationEvent, SessionConfig } from "../../protocol/types"
 import type { ResolvedSlackConfig, VerbosityLevel } from "./config/schema"
+import type { ConfigDiff } from "./config/reloader"
 import { resolveProjectForChannel, type ProjectConfig } from "./router/resolver"
 import type { SessionEntry, SessionRegistry } from "./router/registry"
 import type { InboundSlackEvent } from "./transport/events"
@@ -53,9 +54,28 @@ import { mergeCumulativeUsage } from "./usage"
 // RoutingCtx — the struct the launcher hands to `buildRoutingHandler`.
 // ---------------------------------------------------------------------------
 
+/**
+ * User-scope per-channel state that must survive a config reload. When
+ * `slack.json` changes, the cached `projectOverrides` map is blown away
+ * and re-resolved from the new config; anything in this struct is layered
+ * back on top so control-command state isn't clobbered by an unrelated
+ * edit to `defaults` or a freshly-added channel row.
+ */
+export interface RuntimeChannelOverride {
+  verbosity?: VerbosityLevel
+  model?: string
+}
+
 export interface RoutingCtx {
   app: App
-  config: ResolvedSlackConfig
+  /**
+   * Current resolved config. Backed by a getter on the object literal so a
+   * later `ConfigReloader` apply automatically surfaces the new value to
+   * every downstream read — no re-wiring required. The interface shape stays
+   * a plain property so existing call sites (`ctx.config.defaults…`) work
+   * unchanged.
+   */
+  readonly config: ResolvedSlackConfig
   registry: SessionRegistry
   dedup: ReturnType<typeof createDedupCache>
   /**
@@ -99,9 +119,20 @@ export interface RoutingCtx {
   /**
    * Mutable per-channel project view — populated on first resolve, updated
    * by `!bantai verbosity` / `!bantai model` etc. without touching the
-   * underlying immutable ResolvedSlackConfig.
+   * underlying immutable ResolvedSlackConfig. Cleared lazily on config
+   * reload via `invalidateProjectOverrides` so the next access re-resolves
+   * against the fresh config (runtime overrides are re-layered from
+   * `runtimeOverrides`, see below).
    */
   projectOverrides: Map<string, ProjectConfig>
+  /**
+   * Per-channel runtime overrides that survive config reloads — a user who
+   * typed `!bantai verbosity debug` shouldn't lose that setting because
+   * somebody else edited slack.json to add a new channel. Narrow on purpose:
+   * only fields the control-command surface writes. Merged on top of a
+   * fresh resolution inside `mutableProjectFor`.
+   */
+  runtimeOverrides: Map<string, RuntimeChannelOverride>
   /** Sessions for which we've already posted the banner. */
   bannerPosted: WeakSet<SessionEntry>
   /**
@@ -596,6 +627,12 @@ export function buildSessionMcpOverlay(args: {
  * (so `!bantai verbosity <l>` can update the in-memory view). The SlackConfig
  * itself stays immutable in this launcher; mutations travel via
  * `ctx.projectOverrides.set(channelId, nextConfig)`.
+ *
+ * Cache semantics: `projectOverrides` is a plain perf cache that
+ * `invalidateProjectOverrides` clears after a config reload. User-scope
+ * overrides (`!bantai verbosity`, `!bantai model`) live in
+ * `ctx.runtimeOverrides` and are re-layered on top of a fresh resolution
+ * when the cache is cold.
  */
 export function mutableProjectFor(ctx: RoutingCtx, channelId: string): ProjectConfig {
   const cached = ctx.projectOverrides.get(channelId)
@@ -603,8 +640,58 @@ export function mutableProjectFor(ctx: RoutingCtx, channelId: string): ProjectCo
   const fresh = resolveProjectForChannel(ctx.config, channelId, {
     launchCwd: ctx.launchCwd,
   })
-  ctx.projectOverrides.set(channelId, fresh)
-  return fresh
+  const withOverrides = applyRuntimeOverrides(fresh, ctx.runtimeOverrides.get(channelId))
+  ctx.projectOverrides.set(channelId, withOverrides)
+  return withOverrides
+}
+
+function applyRuntimeOverrides(
+  project: ProjectConfig,
+  overrides: RuntimeChannelOverride | undefined,
+): ProjectConfig {
+  if (!overrides) return project
+  const next: ProjectConfig = { ...project }
+  if (overrides.verbosity !== undefined) next.verbosity = overrides.verbosity
+  if (overrides.model !== undefined) next.model = overrides.model
+  return next
+}
+
+/**
+ * Drop the cached per-channel resolutions in `ctx.projectOverrides` so the
+ * next `mutableProjectFor(...)` re-resolves against `ctx.config`. Called
+ * after a successful `ConfigReloader` apply.
+ *
+ * Invalidation scope is coarse on purpose: any resolved field
+ * (defaults.*, workspace, store_path, channels[], mcp_servers) can cascade
+ * into the per-channel view (e.g. defaults.verbosity flows into channels
+ * that didn't set their own verbosity), so teasing apart "which channels'
+ * resolutions actually changed" would duplicate the resolver's precedence
+ * logic. Reloads are rare; clearing a Map<channelId, ProjectConfig> with a
+ * handful of entries is trivial.
+ *
+ * Runtime overrides in `ctx.runtimeOverrides` are NOT cleared — they're
+ * re-applied on the next access so `!bantai verbosity debug` survives an
+ * unrelated config edit.
+ */
+export function invalidateProjectOverrides(
+  ctx: RoutingCtx,
+  _diff: ConfigDiff,
+): void {
+  ctx.projectOverrides.clear()
+}
+
+/**
+ * Merge a partial runtime override into `ctx.runtimeOverrides[channelId]`.
+ * Keeps existing keys (a later `!bantai verbosity` doesn't erase an earlier
+ * `!bantai model`).
+ */
+function rememberRuntimeOverride(
+  ctx: RoutingCtx,
+  channelId: string,
+  patch: Partial<RuntimeChannelOverride>,
+): void {
+  const prev = ctx.runtimeOverrides.get(channelId) ?? {}
+  ctx.runtimeOverrides.set(channelId, { ...prev, ...patch })
 }
 
 interface CommandRouteArgs {
@@ -639,12 +726,14 @@ async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
     async setModel(model) {
       if (existing) await existing.host.backend.setModel(model)
       ctx.projectOverrides.set(project.channelId, { ...project, model })
+      rememberRuntimeOverride(ctx, project.channelId, { model })
     },
     async resetSession() {
       existing?.reset()
     },
     setVerbosity(level: VerbosityLevel) {
       ctx.projectOverrides.set(project.channelId, { ...project, verbosity: level })
+      rememberRuntimeOverride(ctx, project.channelId, { verbosity: level })
     },
     async availableModels() {
       if (!existing) return []

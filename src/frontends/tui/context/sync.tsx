@@ -588,6 +588,10 @@ export function SyncProvider(props: ParentProps) {
           }
 
           const { blocks, summary } = parsed
+          // Todos only exist for Claude-origin sessions today (TodoWrite is
+          // a Claude-specific tool). Codex / Gemini parsers always return
+          // `[]`. Default here too so the seeding path is uniform.
+          const todos = origin === "claude" ? (parsed.todos ?? []) : []
           // Parser always stamps target=origin; the sync layer overrides it
           // to reflect which backend is actually rendering the resume.
           summary.target = target
@@ -614,10 +618,19 @@ export function SyncProvider(props: ParentProps) {
 
           // Seed blocks synchronously so they're visible before the backend
           // session spins up. Matches the pre-existing Claude-resume fast path.
-          if (blocks.length > 0) {
-            conversationState = { ...conversationState, blocks: [...blocks] }
+          // Also seed the todo checklist in the same batch so the Claude-origin
+          // task view lights up atomically with the transcript (the reducer
+          // is bypassed on resume, so without this the list stays empty even
+          // though the TodoWrite tool_use is present in the JSONL).
+          if (blocks.length > 0 || todos.length > 0) {
+            conversationState = {
+              ...conversationState,
+              blocks: [...blocks],
+              todos,
+            }
             batch(() => {
               messages.setState("blocks", reconcile([...blocks]))
+              messages.setState("todos", reconcile(todos))
             })
           }
 

@@ -70,13 +70,15 @@ describe("pickSubject", () => {
     ).toBe("Run tests")
   })
 
-  it("uses activeForm for in_progress when present", () => {
+  it("uses content for in_progress (not activeForm)", () => {
+    // Matches Claude Code's TaskListV2: row text is always `task.subject`
+    // (= content). activeForm is reserved for the spinner verb.
     expect(
       pickSubject({ content: "Run tests", activeForm: "Running tests", status: "in_progress" }),
-    ).toBe("Running tests")
+    ).toBe("Run tests")
   })
 
-  it("falls back to content when activeForm is empty", () => {
+  it("still returns content when activeForm is empty", () => {
     expect(
       pickSubject({ content: "Run tests", activeForm: "", status: "in_progress" }),
     ).toBe("Run tests")
@@ -174,10 +176,29 @@ describe("TaskChecklist rendering", () => {
     expect(frame).toContain("\u2714") // completed check
     expect(frame).toContain("\u25FC") // in-progress filled square
     expect(frame).toContain("\u25FB") // pending empty square
-    // Subject text — in-progress uses activeForm, others use content.
+    // Subject text — all statuses use content (matches Claude Code reference).
     expect(frame).toContain("Finish the refactor")
-    expect(frame).toContain("Running the tests")
+    expect(frame).toContain("Run the tests")
     expect(frame).toContain("Ship it")
+    setup.renderer.destroy()
+  })
+
+  it("in-progress row renders content, not activeForm", async () => {
+    // Regression guard: an earlier bug rendered `activeForm` for the
+    // in-progress row ("Writing hello into the file") instead of
+    // `content` ("Write hello"). Claude Code's TaskListV2 unconditionally
+    // uses `content`; `activeForm` belongs to the spinner verb only.
+    const todos: TodoItem[] = [
+      { content: "Write hello", activeForm: "Writing hello", status: "in_progress" },
+    ]
+    const setup = await testRender(() => <TaskChecklist todos={todos} />, {
+      width: 80,
+      height: 24,
+    })
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Write hello")
+    expect(frame).not.toContain("Writing hello")
     setup.renderer.destroy()
   })
 

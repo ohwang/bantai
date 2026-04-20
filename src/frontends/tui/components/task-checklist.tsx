@@ -51,11 +51,13 @@ export function truncateSubject(subject: string, maxWidth: number): string {
   return subject.slice(0, maxWidth - 1) + "\u2026"
 }
 
-/** Pick the subject text to display — prefer activeForm for in-progress tasks. */
+/**
+ * Pick the subject text to display. Always returns `content` regardless of
+ * status — this matches Claude Code's TaskListV2 reference (`task.subject`
+ * is unconditional on status). `activeForm` is reserved for the spinner
+ * verb ("Writing hello into the file"), not for list rows.
+ */
 export function pickSubject(todo: TodoItem): string {
-  if (todo.status === "in_progress" && todo.activeForm && todo.activeForm.length > 0) {
-    return todo.activeForm
-  }
   return todo.content
 }
 

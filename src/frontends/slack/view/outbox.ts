@@ -314,7 +314,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       }
 
       const postTier3 = async () => {
-        const chunks = markdownToSlackMrkdwnChunks(accumulator, { maxLen: maxChunkLen })
+        const chunks = markdownToSlackMrkdwnChunks(accumulator, maxChunkLen)
         // If the accumulator is empty we still emit nothing — the caller
         // (event-renderer) guarantees this path is only taken when the turn
         // produced text or the caller deliberately wants an empty ack, so no
@@ -356,7 +356,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
         return
       }
       if (draftTs) {
-        const chunks = markdownToSlackMrkdwnChunks(accumulator, { maxLen: maxChunkLen })
+        const chunks = markdownToSlackMrkdwnChunks(accumulator, maxChunkLen)
         const firstChunk = chunks.length > 0 ? chunks[0]! : placeholderText()
         const overflowChunks = chunks.slice(1)
         try {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import {
-  chunkForSlack,
   markdownToSlackMrkdwn,
   markdownToSlackMrkdwnChunks,
+  normalizeSlackOutboundText,
 } from "../../../../src/frontends/slack/view/format"
 
 describe("markdownToSlackMrkdwn — inline conversions", () => {
@@ -24,16 +24,16 @@ describe("markdownToSlackMrkdwn — inline conversions", () => {
     )
   })
 
-  it("preserves inline code and avoids mutating its content", () => {
+  it("preserves inline code content verbatim (no markdown re-parse)", () => {
     expect(markdownToSlackMrkdwn("run `**not bold**` verbatim")).toBe(
       "run `**not bold**` verbatim",
     )
   })
 
-  it("preserves fenced code blocks verbatim", () => {
+  it("preserves fenced code bodies (openclaw IR drops the language tag)", () => {
     const input = "Before\n```ts\n**kept**\n```\nAfter **bold**"
     expect(markdownToSlackMrkdwn(input)).toBe(
-      "Before\n```ts\n**kept**\n```\nAfter *bold*",
+      "Before\n\n```\n**kept**\n```\nAfter *bold*",
     )
   })
 
@@ -42,7 +42,7 @@ describe("markdownToSlackMrkdwn — inline conversions", () => {
     expect(markdownToSlackMrkdwn(input)).toBe("*Title*\n\nBody\n\n*Sub*")
   })
 
-  it("rewrites '-' and '*' list markers to bullets", () => {
+  it("rewrites '-' and '*' list markers to bullets, including nested", () => {
     const input = "- one\n- two\n  - nested"
     expect(markdownToSlackMrkdwn(input)).toBe("• one\n• two\n  • nested")
   })
@@ -53,64 +53,70 @@ describe("markdownToSlackMrkdwn — inline conversions", () => {
   })
 })
 
-describe("chunkForSlack", () => {
+describe("markdownToSlackMrkdwnChunks", () => {
   it("returns a single chunk when under the limit", () => {
-    expect(chunkForSlack("short text", { maxLen: 100 })).toEqual(["short text"])
+    expect(markdownToSlackMrkdwnChunks("short text", 100)).toEqual(["short text"])
   })
 
   it("returns no chunks for empty string", () => {
-    expect(chunkForSlack("", { maxLen: 100 })).toEqual([])
+    expect(markdownToSlackMrkdwnChunks("", 100)).toEqual([])
+  })
+
+  it("is the two-step pipeline (convert + chunk)", () => {
+    expect(markdownToSlackMrkdwnChunks("**bold**\n\n- item", 1000)).toEqual([
+      "*bold*\n\n• item",
+    ])
   })
 
   it("splits at paragraph boundaries when possible", () => {
     const input = "para one\n\npara two\n\npara three"
-    const chunks = chunkForSlack(input, { maxLen: 12 })
+    const chunks = markdownToSlackMrkdwnChunks(input, 12)
     expect(chunks).toEqual(["para one", "para two", "para three"])
   })
 
   it("never tears a code fence", () => {
     const code = "```\n" + "x".repeat(40) + "\n```"
     const input = `pre\n\n${code}\n\npost`
-    const chunks = chunkForSlack(input, { maxLen: 50 })
+    const chunks = markdownToSlackMrkdwnChunks(input, 50)
     for (const c of chunks) {
       const opens = (c.match(/```/g) ?? []).length
       // Every chunk has either 0 or an even number of fence tokens.
       expect(opens % 2).toBe(0)
     }
-    // And the original code block is preserved intact in one of the chunks.
+    // And the original code body is preserved intact in one of the chunks.
     expect(chunks.some((c) => c.includes("x".repeat(40)))).toBe(true)
   })
 
-  it("splits oversized fences into sub-fences that preserve the language tag", () => {
-    const body = "line\n".repeat(200) // way over any chunk size
+  it("splits oversized fences into fenced sub-chunks", () => {
+    // openclaw's IR renderer drops the language tag (emits plain ``` fences).
+    // We still require each chunk to be a well-formed fenced block.
+    const body = "line\n".repeat(200)
     const input = "```ts\n" + body + "```"
-    const chunks = chunkForSlack(input, { maxLen: 200 })
+    const chunks = markdownToSlackMrkdwnChunks(input, 200)
     expect(chunks.length).toBeGreaterThan(1)
     for (const c of chunks) {
-      expect(c.startsWith("```ts")).toBe(true)
+      expect(c.startsWith("```")).toBe(true)
       expect(c.endsWith("```")).toBe(true)
       expect(c.length).toBeLessThanOrEqual(200)
     }
   })
 
-  it("hard-splits oversized paragraphs with sentence/word fallback", () => {
+  it("hard-splits oversized paragraphs along whitespace boundaries", () => {
     const input = "sentence one. sentence two. sentence three.".repeat(3)
-    const chunks = chunkForSlack(input, { maxLen: 30 })
+    const chunks = markdownToSlackMrkdwnChunks(input, 30)
     expect(chunks.length).toBeGreaterThan(1)
     for (const c of chunks) expect(c.length).toBeLessThanOrEqual(30)
-    // Join preserves content (modulo collapsed trailing whitespace).
     const recombined = chunks.join(" ")
     expect(recombined.replace(/\s+/g, " ")).toContain("sentence one")
     expect(recombined.replace(/\s+/g, " ")).toContain("sentence three")
   })
-})
 
-describe("markdownToSlackMrkdwnChunks", () => {
-  it("is the two-step pipeline", () => {
-    const input = "**bold**\n\n- item"
-    expect(markdownToSlackMrkdwnChunks(input, { maxLen: 1000 })).toEqual([
-      "*bold*\n\n• item",
-    ])
+  it("re-chunks when rendered length exceeds the limit (HTML escape expands bytes)", () => {
+    // "alpha <<" is 8 chars raw, but once rendered each `<` → `&lt;` (4 chars).
+    // The render-aware chunker must shrink chunks so every rendered chunk ≤ limit.
+    const chunks = markdownToSlackMrkdwnChunks("alpha <<", 8)
+    expect(chunks).toEqual(["alpha ", "&lt;&lt;"])
+    expect(chunks.every((c) => c.length <= 8)).toBe(true)
   })
 })
 
@@ -151,40 +157,66 @@ describe("angle-token preservation", () => {
     )
   })
 
-  it("leaves angle tokens inside inline code untouched", () => {
+  it("escapes angle characters even inside inline code spans", () => {
+    // Upstream openclaw behaviour: the IR renderer HTML-escapes < and > for
+    // Slack across all text (including code spans). This is safer — a raw
+    // `<` inside a backtick span could still be interpreted by some Slack
+    // surfaces as the start of a mention/link token.
     expect(markdownToSlackMrkdwn("run `<script>` inline")).toBe(
-      "run `<script>` inline",
+      "run `&lt;script&gt;` inline",
     )
   })
 })
 
-describe("table conversion", () => {
-  it("converts a simple GFM table to an aligned code fence", () => {
+describe("table conversion (tableMode: 'code')", () => {
+  it("converts a simple GFM table to a pipe-aligned code fence", () => {
     const input = "| a | bb |\n|---|----|\n| 1 | 22 |"
-    const out = markdownToSlackMrkdwn(input)
-    expect(out).toBe(["```", "a  bb", "-  --", "1  22", "```"].join("\n"))
+    const out = markdownToSlackMrkdwn(input, { tableMode: "code" })
+    expect(out).toBe(
+      ["```", "| a | bb |", "| --- | --- |", "| 1 | 22 |", "```"].join("\n"),
+    )
   })
 
-  it("handles multi-row tables", () => {
+  it("aligns multi-row tables to the widest column value", () => {
     const input = [
       "| name | role |",
       "|------|------|",
       "| alice | dev |",
       "| bob | pm |",
     ].join("\n")
-    const out = markdownToSlackMrkdwn(input)
-    expect(out).toContain("```")
-    expect(out).toContain("alice  dev")
-    expect(out).toContain("bob    pm")
+    const out = markdownToSlackMrkdwn(input, { tableMode: "code" })
+    expect(out).toBe(
+      [
+        "```",
+        "| name  | role |",
+        "| ----- | ---- |",
+        "| alice | dev  |",
+        "| bob   | pm   |",
+        "```",
+      ].join("\n"),
+    )
   })
 
-  it("leaves non-table pipe text alone", () => {
-    const input = "run `foo | bar` in a shell"
-    expect(markdownToSlackMrkdwn(input)).toBe("run `foo | bar` in a shell")
-  })
-
-  it("does not treat a pipe row without separator as a table", () => {
+  it("defaults to tableMode: 'off' — pipe rows pass through as plain text", () => {
     const input = "| a | b |"
     expect(markdownToSlackMrkdwn(input)).toBe("| a | b |")
+  })
+
+  it("leaves non-table pipe text alone regardless of mode", () => {
+    const input = "run `foo | bar` in a shell"
+    expect(markdownToSlackMrkdwn(input)).toBe("run `foo | bar` in a shell")
+    expect(markdownToSlackMrkdwn(input, { tableMode: "code" })).toBe(
+      "run `foo | bar` in a shell",
+    )
+  })
+})
+
+describe("normalizeSlackOutboundText", () => {
+  it("normalizes markdown for outbound send/update paths", () => {
+    expect(normalizeSlackOutboundText(" **bold** ")).toBe("*bold*")
+  })
+
+  it("handles undefined input at runtime without throwing", () => {
+    expect(normalizeSlackOutboundText(undefined as unknown as string)).toBe("")
   })
 })

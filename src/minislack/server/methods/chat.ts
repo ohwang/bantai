@@ -32,6 +32,14 @@ import { log } from "../../../utils/logger"
 export interface ChatPostMessageArgs {
   channel: string
   text?: string
+  /**
+   * Slack's native GFM body (tables, fenced code, headers, task lists).
+   * Mutually exclusive with `text` on real Slack (returns
+   * `markdown_text_conflict`); minislack mirrors the accept-path but
+   * stores the body as plain `text` on the Message record — tests that
+   * introspect the message see the raw markdown.
+   */
+  markdown_text?: string
   thread_ts?: string
   /** When true on a thread reply, also surface the message in the channel. */
   reply_broadcast?: boolean
@@ -59,12 +67,18 @@ export function chatPostMessage(
   if (ctx.kind === "app") {
     throw new MinislackError("not_authed", "chat.postMessage requires a user or bot token")
   }
+  if (args.text !== undefined && args.markdown_text !== undefined) {
+    throw new MinislackError(
+      "markdown_text_conflict",
+      "chat.postMessage accepts either text or markdown_text, not both",
+    )
+  }
   const userId = ctx.userId
   if (!userId) throw new MinislackError("not_authed")
   const { message: msg, threadParent } = postMessageDetailed(ws, {
     channelId: ch.id,
     userId,
-    text: args.text ?? "",
+    text: args.markdown_text ?? args.text ?? "",
     blocks: args.blocks,
     attachments: args.attachments,
     thread_ts: args.thread_ts,
@@ -140,6 +154,8 @@ export interface ChatUpdateArgs {
   channel: string
   ts: string
   text?: string
+  /** See ChatPostMessageArgs.markdown_text — same semantics on update. */
+  markdown_text?: string
   blocks?: (KnownBlock | Block)[]
   attachments?: MessageAttachment[]
 }
@@ -161,11 +177,17 @@ export function chatUpdate(
   const ch = resolve(ws, args.channel)
   const userId = ctx.userId
   if (!userId) throw new MinislackError("not_authed")
+  if (args.text !== undefined && args.markdown_text !== undefined) {
+    throw new MinislackError(
+      "markdown_text_conflict",
+      "chat.update accepts either text or markdown_text, not both",
+    )
+  }
   const { message, previous } = editMessage(ws, {
     channelId: ch.id,
     ts: args.ts,
     userId,
-    text: args.text ?? "",
+    text: args.markdown_text ?? args.text ?? "",
     blocks: args.blocks,
     attachments: args.attachments,
   })

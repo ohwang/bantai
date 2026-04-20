@@ -404,6 +404,7 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
           chatPostMessage(ctx.ws, ctx.bus, auth, {
             channel: str(args.channel),
             text: args.text as string | undefined,
+            markdown_text: args.markdown_text as string | undefined,
             thread_ts: args.thread_ts as string | undefined,
             reply_broadcast: toBool(args.reply_broadcast),
             blocks: args.blocks as chatBlocks,
@@ -417,6 +418,7 @@ async function dispatchApi(req: Request, method: string, ctx: HttpContext): Prom
             channel: str(args.channel),
             ts: str(args.ts),
             text: args.text as string | undefined,
+            markdown_text: args.markdown_text as string | undefined,
             blocks: args.blocks as chatBlocks,
             attachments: args.attachments as chatAttachments,
           }),

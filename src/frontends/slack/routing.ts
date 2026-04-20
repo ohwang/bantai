@@ -90,9 +90,10 @@ export interface RoutingCtx {
   /** Fetches inbound file attachments into images / staging files. */
   attachments: AttachmentFetcher
   /**
-   * One event-renderer per live session. We keep a map (not just a set) so
-   * the handler can update the per-turn triggerTs when a new mention lands
-   * in the same thread.
+   * One event-renderer per live session, keyed on the session entry so we
+   * can recover the same renderer across multiple turns in the same thread.
+   * Reactions anchor to the thread root and transition via the renderer's
+   * internal state machine — no per-turn rebinding needed.
    */
   renderers: WeakMap<SessionEntry, EventRenderer>
   /**
@@ -420,7 +421,11 @@ async function dispatchMessageBatch(
       binding: {
         channel: turn.channel,
         threadTs: turn.parentTs,
-        triggerTs: turn.triggerTs,
+        // Reactions live on the thread ROOT, not on the per-turn trigger
+        // message. Mid-thread mentions inherit the thread's original ts,
+        // so the 📍 / 💬 emoji stays pinned to the first post that
+        // opened the thread — never on each individual user message.
+        triggerTs: turn.parentTs,
       },
       verbosity: project.verbosity,
       showCost: project.showCost,
@@ -451,9 +456,10 @@ async function dispatchMessageBatch(
     if (project.sessionBanner) {
       attachBannerOnce(ctx, entry, project, turn.channel, turn.parentTs)
     }
-  } else {
-    renderer.setTriggerTs(turn.triggerTs)
   }
+  // Subsequent turns reuse the same renderer + reaction controller. The
+  // next turn_start AgentEvent naturally flips the emoji 📍 → 💬 via the
+  // controller's state machine, so there's no per-turn rebind to do here.
 
   // Prefetch thread history when the bot is pulled into an existing
   // thread for the first time. Three conditions must all hold:

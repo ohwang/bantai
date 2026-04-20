@@ -1,9 +1,12 @@
 /**
  * Event renderer — AgentEvent → Slack side-effects.
  *
- * The renderer is bound to one (channel, parentTs, triggerTs) triple: the
- * channel + thread ts the bot's replies post to, plus the ts of the user
- * message that opened the turn (used for status reactions).
+ * The renderer is bound to one (channel, threadTs, triggerTs) triple: the
+ * channel + thread ts the bot's replies post to, plus the ts the status
+ * reaction lands on. `triggerTs` is the THREAD ROOT (one emoji per thread,
+ * never per-turn or per-message) — for a top-level mention it's the
+ * message itself, for a mid-thread mention it's the thread's parent post,
+ * NOT the message that pulled bantai in.
  *
  * Per turn it drives:
  *   - an OutboundStream (view/outbox.ts) — draft `chat.postMessage` →
@@ -11,7 +14,10 @@
  *     on failure. Started on the first `text_delta` and stopped on
  *     `turn_complete`.
  *   - a StatusReactionController (view/reactions.ts) — emoji state
- *     machine on the trigger message.
+ *     machine pinned to the thread root. Lives for the full renderer
+ *     lifetime so the 📍 ⇄ 💬 flip happens on the same message across
+ *     every turn in the session (a fresh controller per turn would leave
+ *     a stale 📍 behind on turn N when turn N+1 starts).
  *   - error posts rendered inline with a terse `[error|warn] code: message`
  *     reply.
  *   - tool cards, plan updates, and thinking breakouts (verbosity ≥ verbose).
@@ -71,8 +77,13 @@ export interface RendererBinding {
   /** Thread anchor ts for replies. */
   threadTs: string
   /**
-   * ts of the user message that triggered the session. The reaction state
-   * machine lands on this ts. Undefined → reactions disabled.
+   * Thread-root ts the reaction state machine pins to. One emoji per
+   * thread, never per-turn or per-message — the waiting 📍 / working 💬
+   * pair lives on this single ts across every turn in the session.
+   * For a top-level mention this is the message itself; for a mid-thread
+   * mention this is the thread's PARENT (ts of the thread's first post),
+   * NOT the message that pulled bantai in. Undefined → reactions disabled
+   * (test stub).
    */
   triggerTs?: string
 }
@@ -80,8 +91,6 @@ export interface RendererBinding {
 export interface EventRenderer {
   /** Subscriber to pass into registry.entry.subscribe. */
   onEvent(event: ConversationEvent): void
-  /** Update the trigger ts (e.g. on a new turn from a different message). */
-  setTriggerTs(ts: string): void
   /** Force-flush any pending events (e.g. on shutdown). */
   flush(): void
   /** Stop the renderer. Does NOT post any pending text. */
@@ -434,11 +443,16 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
       cancelPendingElicitations()
     }
     const s = stream
+    // NOTE: `reactions` is NOT nulled here. The controller is session-
+    // scoped (pinned to the thread root) so a fresh turn_start on the
+    // next turn flips its state "waiting" → "working" and naturally
+    // replaces the 📍 with 💬 on the same ts. A per-turn teardown would
+    // leave a stale 📍 behind — the new controller would have
+    // `applied=""` and just stack a second 💬 on top of the existing 📍.
     const r = reactions
     const ts = threadStatus
     const final = finalText
     stream = undefined
-    reactions = undefined
     threadStatus = undefined
     finalText = undefined
     if (s) {
@@ -882,13 +896,6 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   return {
     onEvent(event) {
       batcher.push(event)
-    },
-    setTriggerTs(ts) {
-      triggerTs = ts
-      if (reactions) {
-        void reactions.terminate("done").catch(() => undefined)
-        reactions = undefined
-      }
     },
     flush() {
       batcher.flush()

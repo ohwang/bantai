@@ -127,6 +127,94 @@ describe("event-renderer — reactions", () => {
     await drain()
     expect(h.reacts).toEqual([])
   })
+
+  it("pins reactions to a single ts across multiple turns in the same thread", async () => {
+    // Regression guard: prior behaviour recreated the reaction controller
+    // per turn and rebound it to whichever user message triggered the
+    // turn. That left :round_pushpin: stacked on the previous message(s)
+    // while a fresh :speech_balloon: landed on the new one. The fix pins
+    // the reaction to the thread root for the renderer's whole lifetime,
+    // so every add/remove call in this test targets exactly one ts.
+    const THREAD_ROOT = "thread_root_ts"
+    const seen = new Set<string>()
+    const reacts: Array<{ op: "add" | "remove"; name: string; ts: string }> = []
+    const sendAdapter: SendAdapter = {
+      async postMessage(args) {
+        return { ts: "draft-1", channel: args.channel }
+      },
+      async updateMessage() {},
+    }
+    const reactionAdapter: ReactionAdapter = {
+      async addReaction(args) {
+        seen.add(args.timestamp)
+        reacts.push({ op: "add", name: args.name, ts: args.timestamp })
+      },
+      async removeReaction(args) {
+        seen.add(args.timestamp)
+        reacts.push({ op: "remove", name: args.name, ts: args.timestamp })
+      },
+    }
+    const renderer = createEventRenderer({
+      app: makeStubApp(),
+      binding: { channel: "C01", threadTs: THREAD_ROOT, triggerTs: THREAD_ROOT },
+      sendAdapter,
+      reactionAdapter,
+    })
+    // Turn 1.
+    renderer.onEvent({ type: "turn_start" } as ConversationEvent)
+    renderer.onEvent({ type: "text_complete", text: "done 1" } as ConversationEvent)
+    renderer.onEvent({ type: "turn_complete" } as ConversationEvent)
+    await drain(100)
+    // Turn 2.
+    renderer.onEvent({ type: "turn_start" } as ConversationEvent)
+    renderer.onEvent({ type: "text_complete", text: "done 2" } as ConversationEvent)
+    renderer.onEvent({ type: "turn_complete" } as ConversationEvent)
+    await drain(100)
+    // Every reaction API call landed on THE SAME ts — the thread root.
+    expect([...seen]).toEqual([THREAD_ROOT])
+    for (const r of reacts) expect(r.ts).toBe(THREAD_ROOT)
+    renderer.destroy()
+  })
+
+  it("flips :round_pushpin: → :speech_balloon: on the next turn_start", async () => {
+    // Issue #2 regression guard: once a turn finished and left the thread
+    // on :round_pushpin:, a subsequent user message must drive the emoji
+    // back to :speech_balloon: for the working phase of the new turn.
+    const h = harness("t1")
+    // Turn 1 — primes :speech_balloon:, lands on :round_pushpin:.
+    h.push([
+      { type: "turn_start" },
+      { type: "text_complete", text: "reply 1" },
+      { type: "turn_complete" },
+    ])
+    await drain(80)
+    const addsTurn1 = h.reacts.filter((r) => r.op === "add").map((r) => r.name)
+    expect(addsTurn1).toEqual(["speech_balloon", "round_pushpin"])
+
+    // Turn 2 — the controller lives on, so turn_start flips back to working
+    // before landing on :round_pushpin: again at turn_complete.
+    h.push([
+      { type: "turn_start" },
+      { type: "text_complete", text: "reply 2" },
+      { type: "turn_complete" },
+    ])
+    await drain(80)
+    const allAdds = h.reacts.filter((r) => r.op === "add").map((r) => r.name)
+    const allRemoves = h.reacts.filter((r) => r.op === "remove").map((r) => r.name)
+    expect(allAdds).toEqual([
+      "speech_balloon",
+      "round_pushpin",
+      "speech_balloon",
+      "round_pushpin",
+    ])
+    // Each 💬/📍 that comes after the prime removes its predecessor, so
+    // the sequence of removes has length == adds - 1.
+    expect(allRemoves).toEqual([
+      "speech_balloon",
+      "round_pushpin",
+      "speech_balloon",
+    ])
+  })
 })
 
 describe("event-renderer — errors", () => {

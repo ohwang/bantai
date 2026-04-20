@@ -41,7 +41,7 @@ import { log } from "../../../utils/logger"
 // ---------------------------------------------------------------------------
 
 export interface AdminClientOpts {
-  /** Base URL — e.g. `http://127.0.0.1:8787`. No trailing slash required. */
+  /** Base URL — e.g. `http://127.0.0.1:4242`. No trailing slash required. */
   baseUrl: string
   /** Bearer token loaded from the server's tokenPath file. */
   token: string

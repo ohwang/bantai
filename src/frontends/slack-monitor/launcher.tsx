@@ -33,7 +33,7 @@ import { loadSlackConfig } from "../slack/config/loader"
 import { log } from "../../utils/logger"
 
 export interface SlackMonitorFlags {
-  /** Explicit base URL (e.g. http://127.0.0.1:8787). Overrides slack.json. */
+  /** Explicit base URL (e.g. http://127.0.0.1:4242). Overrides slack.json. */
   url?: string
   /** Explicit bearer token. Overrides --token-path and slack.json. */
   token?: string
@@ -134,7 +134,7 @@ async function resolveConnection(flags: SlackMonitorFlags): Promise<Resolved> {
       )
       if (!baseUrl) {
         const host = cfg.admin.host || "127.0.0.1"
-        const port = cfg.admin.port || 8787
+        const port = cfg.admin.port || 4242
         baseUrl = `http://${host}:${port}`
         sourceUrl = "config"
       }
@@ -154,7 +154,7 @@ async function resolveConnection(flags: SlackMonitorFlags): Promise<Resolved> {
   }
 
   if (!baseUrl) {
-    baseUrl = "http://127.0.0.1:8787"
+    baseUrl = "http://127.0.0.1:4242"
     sourceUrl = "default"
   }
 

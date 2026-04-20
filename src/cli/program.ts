@@ -160,7 +160,7 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--admin-host <host>", "Bind host for the admin server (default: 127.0.0.1)")
     .option(
       "--admin-port <port>",
-      "Bind port for the admin server (default: 8787, 0 = OS-picked)",
+      "Bind port for the admin server (default: 4242, 0 = OS-picked)",
     )
     .option(
       "--admin-token-path <path>",

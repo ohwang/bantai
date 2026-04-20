@@ -319,7 +319,7 @@ Add an `admin` block to your `slack.json`:
   "admin": {
     "enabled": true,
     "host": "127.0.0.1",
-    "port": 8787,
+    "port": 4242,
     "read_only": false,
     "token_path": "~/.bantai/slack/admin-token",
     "session_ring_size": 200
@@ -330,7 +330,7 @@ Add an `admin` block to your `slack.json`:
 Or flip everything on the CLI without editing the file:
 
 ```bash
-bun run ./src/index.ts slack --admin --admin-port 8787 --admin-read-only
+bun run ./src/index.ts slack --admin --admin-port 4242 --admin-read-only
 ```
 
 On first boot the server generates a random bearer token at `token_path`
@@ -356,11 +356,11 @@ finds the URL + token file automatically. Override as needed:
 ```bash
 # Explicit URL + token file
 bun run ./src/index.ts slack monitor \
-  --url http://127.0.0.1:8787 \
+  --url http://127.0.0.1:4242 \
   --token-path ~/.bantai/slack/admin-token
 
 # One-shot attach with a literal token (handy for remote debugging)
-bun run ./src/index.ts slack monitor --url http://box.internal:8787 --token "$TOKEN"
+bun run ./src/index.ts slack monitor --url http://box.internal:4242 --token "$TOKEN"
 ```
 
 Keyboard shortcuts inside the monitor:

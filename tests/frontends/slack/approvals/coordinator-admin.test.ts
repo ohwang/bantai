@@ -263,6 +263,112 @@ describe("approval coordinator — admin hook wiring", () => {
     expect(admin.resolved).toEqual([])
   })
 
+  it("adminResolve(allow) approves the backend and emits by='admin'", async () => {
+    const approved: Array<{ id: string; alwaysAllow?: boolean }> = []
+    const denied: Array<{ id: string; reason?: string }> = []
+    const admin2 = makeRecordingAdmin()
+    const coord2 = createApprovalCoordinator({
+      adapter: makeAdapter(),
+      lookupSession: () => ({
+        approve(id, opts) {
+          approved.push({
+            id,
+            ...(opts?.alwaysAllow ? { alwaysAllow: true } : {}),
+          })
+        },
+        deny(id, reason) {
+          denied.push({ id, ...(reason ? { reason } : {}) })
+        },
+      }),
+      admin: admin2,
+    })
+    const hook = coord2.bindSession({
+      sessionKey: "slack:T1:C01:100.001",
+      approvers: ["U_ok"],
+    })
+    hook.onRequest({ request: req({ id: "adm1" }), channel: "C01", threadTs: "100.001" })
+    await tick()
+
+    const res = await coord2.adminResolve({ id: "adm1", decision: "allow" })
+    expect(res).toEqual({ kind: "resolved", permissionId: "adm1" })
+    expect(approved).toEqual([{ id: "adm1" }])
+    expect(denied).toEqual([])
+    expect(admin2.resolved).toEqual([{ id: "adm1", decision: "allow", by: "admin" }])
+  })
+
+  it("adminResolve(allow, alwaysAllow) forwards alwaysAllow to the backend", async () => {
+    const approved: Array<{ id: string; alwaysAllow?: boolean }> = []
+    const coord2 = createApprovalCoordinator({
+      adapter: makeAdapter(),
+      lookupSession: () => ({
+        approve(id, opts) {
+          approved.push({
+            id,
+            ...(opts?.alwaysAllow ? { alwaysAllow: true } : {}),
+          })
+        },
+        deny() {},
+      }),
+      admin: makeRecordingAdmin(),
+    })
+    const hook = coord2.bindSession({ sessionKey: "slack:T1:C01:100.001", approvers: [] })
+    hook.onRequest({ request: req({ id: "adm2" }), channel: "C01", threadTs: "100.001" })
+    await tick()
+    await coord2.adminResolve({ id: "adm2", decision: "allow", alwaysAllow: true })
+    expect(approved).toEqual([{ id: "adm2", alwaysAllow: true }])
+  })
+
+  it("adminResolve(deny, reason) passes the reason to backend.deny", async () => {
+    const denied: Array<{ id: string; reason?: string }> = []
+    const coord2 = createApprovalCoordinator({
+      adapter: makeAdapter(),
+      lookupSession: () => ({
+        approve() {},
+        deny(id, reason) {
+          denied.push({ id, ...(reason ? { reason } : {}) })
+        },
+      }),
+      admin: makeRecordingAdmin(),
+    })
+    const hook = coord2.bindSession({ sessionKey: "slack:T1:C01:100.001", approvers: [] })
+    hook.onRequest({ request: req({ id: "adm3" }), channel: "C01", threadTs: "100.001" })
+    await tick()
+    await coord2.adminResolve({
+      id: "adm3",
+      decision: "deny",
+      denyReason: "not on my watch",
+    })
+    expect(denied).toEqual([{ id: "adm3", reason: "not on my watch" }])
+  })
+
+  it("adminResolve bypasses the Slack approvers allow-list", async () => {
+    const approved: Array<{ id: string }> = []
+    const coord2 = createApprovalCoordinator({
+      adapter: makeAdapter(),
+      lookupSession: () => ({
+        approve(id) {
+          approved.push({ id })
+        },
+        deny() {},
+      }),
+      admin: makeRecordingAdmin(),
+    })
+    const hook = coord2.bindSession({
+      sessionKey: "slack:T1:C01:100.001",
+      approvers: ["only_this_user"], // admin token holder is not on this list
+    })
+    hook.onRequest({ request: req({ id: "adm4" }), channel: "C01", threadTs: "100.001" })
+    await tick()
+    const res = await coord2.adminResolve({ id: "adm4", decision: "allow" })
+    expect(res.kind).toBe("resolved")
+    expect(approved).toEqual([{ id: "adm4" }])
+  })
+
+  it("adminResolve returns { kind: 'unknown' } for a missing id", async () => {
+    const res = await coord.adminResolve({ id: "never_requested", decision: "allow" })
+    expect(res).toEqual({ kind: "unknown", permissionId: "never_requested" })
+  })
+
   it("throwing admin hook is isolated — decisions still land", async () => {
     const exploding: ApprovalAdminHook = {
       onRequested() {

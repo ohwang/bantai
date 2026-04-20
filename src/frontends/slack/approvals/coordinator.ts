@@ -100,11 +100,37 @@ export interface ApprovalCoordinator {
   bindSession(binding: SessionApprovalBinding): ApprovalHook
   /** Handle a Slack block_action payload (approval button click). */
   handleBlockAction(input: BlockActionInput): Promise<BlockActionResult>
+  /**
+   * Resolve an approval from the admin REST surface. Flows through the
+   * same `finalise()` path as a block_action click, but with `by="admin"`
+   * on the resulting admin frame so monitors can tell "decided via TUI"
+   * apart from "decided via Slack button".
+   */
+  adminResolve(input: AdminResolveInput): Promise<AdminResolveResult>
   /** Debug / shutdown helper. */
   registry: ApprovalRegistry
   /** Auto-deny every outstanding approval. Used on launcher shutdown. */
   closeAll(): void
 }
+
+export interface AdminResolveInput {
+  id: string
+  decision: "allow" | "deny"
+  /** When `decision="allow"`: also tell the backend to always-allow. */
+  alwaysAllow?: boolean
+  /** Optional deny reason — plumbed into the backend's denyToolUse. */
+  denyReason?: string
+  /**
+   * Who made the call. For the REST route this is the admin token holder
+   * ("admin" by default); monitors that identify their operator can pass
+   * a Slack user id instead to get it on the resolved card.
+   */
+  userId?: string
+}
+
+export type AdminResolveResult =
+  | { kind: "resolved"; permissionId: string }
+  | { kind: "unknown"; permissionId: string }
 
 export interface CreateCoordinatorOpts {
   adapter: SendAdapter
@@ -199,6 +225,7 @@ export function createApprovalCoordinator(
     decision: ApprovalDecision | "timeout",
     resolver: { userId: string },
     by: "admin" | "slack" | "timeout" | "shutdown",
+    opts2: { denyReason?: string } = {},
   ): Promise<void> {
     // 1. Update the card in place.
     try {
@@ -242,7 +269,10 @@ export function createApprovalCoordinator(
         session.approve(record.request.id, { alwaysAllow: true })
         metrics.onApproved()
       } else {
-        session.deny(record.request.id, decision === "timeout" ? "timed out, auto-denied" : undefined)
+        const denyReason =
+          opts2.denyReason ??
+          (decision === "timeout" ? "timed out, auto-denied" : undefined)
+        session.deny(record.request.id, denyReason)
         metrics.onDenied()
       }
     } catch (err) {
@@ -371,6 +401,33 @@ export function createApprovalCoordinator(
       }
       await finalise(res.record, res.decision, { userId: res.resolverUserId }, "slack")
       return { kind: "resolved", permissionId: parsed.id }
+    },
+
+    async adminResolve({ id, decision, alwaysAllow, denyReason, userId }) {
+      // Map the wire-level decision to the internal ApprovalDecision. We
+      // deliberately support `allowAlways` via the `alwaysAllow` flag
+      // rather than a third string because the admin surface already
+      // carries a boolean on the request body.
+      const internalDecision: ApprovalDecision =
+        decision === "allow"
+          ? alwaysAllow
+            ? "allowAlways"
+            : "allow"
+          : "deny"
+      const resolverUserId = userId ?? "admin"
+      // Admin REST auth is by bearer token, NOT Slack approver membership,
+      // so we atomically take() the record instead of going through
+      // registry.resolve() (which enforces the channel's approvers list).
+      const record = registry.take(id)
+      if (!record) return { kind: "unknown", permissionId: id }
+      await finalise(
+        record,
+        internalDecision,
+        { userId: resolverUserId },
+        "admin",
+        denyReason ? { denyReason } : {},
+      )
+      return { kind: "resolved", permissionId: id }
     },
 
     registry,

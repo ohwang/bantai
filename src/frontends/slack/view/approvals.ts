@@ -79,6 +79,15 @@ export interface ApprovalRegistry {
   }): ApprovalResolution
   /** Current number of pending approvals. */
   size(): number
+  /** Snapshot of every currently-pending record. Used by the admin surface. */
+  list(): PendingApprovalRecord[]
+  /**
+   * Remove a record atomically, bypassing the approver allow-list. Used by
+   * the admin REST surface, where auth is by admin bearer token rather
+   * than Slack approver membership. Returns `undefined` when the id is
+   * unknown (already resolved or never existed).
+   */
+  take(id: string): PendingApprovalRecord | undefined
   /** Close every pending approval (auto-deny on shutdown). */
   closeAll(): PendingApprovalRecord[]
 }
@@ -167,6 +176,14 @@ export function createApprovalRegistry(
 
     size() {
       return pending.size
+    },
+
+    list() {
+      return Array.from(pending.values(), (entry) => entry.record)
+    },
+
+    take(id) {
+      return deleteEntry(id)?.record
     },
 
     closeAll() {

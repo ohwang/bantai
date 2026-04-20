@@ -501,7 +501,13 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
 
   const handle: SlackLaunchHandle = {
     app,
-    config,
+    // Live getter — a successful hot-reload updates `currentConfig`, and
+    // any external observer (integration tests, future admin command)
+    // reading `handle.config` picks up the new value rather than a stale
+    // boot-time snapshot.
+    get config() {
+      return currentConfig
+    },
     botUserId: auth.botUserId,
     registry,
     userCache,

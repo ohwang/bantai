@@ -1,6 +1,6 @@
 # bantai
 
-Open-source **multi-frontend** UI for agentic coding backends. Decoupled from any single AI provider (Claude Code, Codex, ACP, …) *and* from any single surface — today the same agent runs in a local TUI and in a Slack workspace, driven by the same protocol and event stream.
+Multi-surface UI for agentic coding backends. Decoupled from any single coding agent (Claude Code, Codex, ACP, …) from any single surface — today the same agent runs in a local TUI and in a Slack workspace, driven by the same protocol and event stream.
 
 ## Quick Start
 
@@ -9,7 +9,6 @@ bun install
 
 # TUI
 bun run dev                       # default backend (claude)
-bun run dev:mock                  # mock backend
 bun test                          # run all tests
 
 # Slack
@@ -32,10 +31,9 @@ See `docs/slack-setup.md` for the real-workspace walkthrough and `docs/minislack
 
 ## Tech Stack
 
-- **Runtime:** Bun.
-- **Language:** TypeScript (strict). `tsc --noEmit` must pass.
-- **TUI frontend:** OpenTUI ^0.1.100 (Zig native core, double-buffered) + SolidJS ^1.9 via `@opentui/solid` (NOT React).
-- **Slack frontend:** `@slack/bolt` ^4.7 (Socket Mode or HTTP/Events API) + `@slack/web-api` ^7.15.
+- Bun + TypeScript (strict, `tsc --noEmit` must pass.
+- **TUI frontend:** OpenTUI + SolidJS via `@opentui/solid` (NOT React).
+- **Slack frontend:** `@slack/bolt` (Socket Mode) + `@slack/web-api`.
 - **Backends:** `@anthropic-ai/claude-agent-sdk` (track latest), `@openai/codex-sdk`, ACP over JSON-RPC, and an in-process mock.
 - **Everything else:** `commander` (CLI), `zod` (config schemas), `fuzzysort` (file/session search), `jsonc-parser` (configs with comments).
 
@@ -62,7 +60,7 @@ The protocol layer is the load-bearing abstraction: **adding a frontend or backe
 - **`tsc --noEmit` must pass.** Never commit code that adds new TypeScript errors.
 - **Types as documentation.** `src/protocol/types.ts` IS the spec.
 - **Test contracts, not implementations.** Adapter contract tests validate event ordering and lifecycle rules (see §Testing).
-- **~500 line file max.** One component per file, one adapter per file; split into submodules when a file grows past that.
+- **One concern per file.** Size is a proxy for cohesion, not a rule. Target ~800 lines, hard cap ~1200; past that, justify in a top-of-file comment or split. Exempt: type/schema specs, vendored code, generated code.
 - **No Effect.js, no metaprogramming, no deep inheritance.** Plain TypeScript; factory functions for service construction; explicit over clever.
 - **Never silently drop data from an external source.** SDK events, session JSONL, MCP payloads, ACP notifications, Slack events, user config — every skip path MUST log, every unrecognised shape MUST `log.warn`. A bare `break` / `continue` / `return []` / `if (!expected) break` on external data is a bug. Concretely:
   - **Event mappers** (`src/backends/*/event-mapper.ts`): every SDK/ACP message branch either maps to an `AgentEvent` or logs. Intentional suppressions (per-delta items whose content arrives via `*_delta` events) use `log.debug`. Unknown types/subtypes and "expected field missing" cases use `log.warn` — these are the signals that a provider's protocol drifted.

@@ -40,6 +40,7 @@ function createMessagesStore() {
     activeTasks: [],
     backgrounded: false,
     streamingOutputTokens: 0,
+    todos: [],
   })
 }
 

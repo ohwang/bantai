@@ -63,6 +63,7 @@ const DEFAULT_MESSAGES: MessagesState = {
   streamingOutputTokens: 0,
   activeTasks: [],
   backgrounded: false,
+  todos: [],
 }
 
 const DEFAULT_PERMISSIONS: PermissionsState = {

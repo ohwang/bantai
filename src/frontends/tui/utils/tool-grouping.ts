@@ -17,6 +17,16 @@ export function isCollapsibleTool(toolName: string): boolean {
   return COLLAPSIBLE_TOOLS.has(toolName)
 }
 
+/**
+ * Filter out TodoWrite tool blocks from the transcript. TodoWrite is rendered
+ * as a standalone TaskChecklist panel driven by `ConversationState.todos`,
+ * not inline — the event mapper still emits the tool block intentionally for
+ * other consumers, so the UI layer is responsible for suppressing it here.
+ */
+export function filterTodoWriteBlocks(blocks: readonly Block[]): Block[] {
+  return blocks.filter(b => !(b.type === "tool" && b.tool === "TodoWrite"))
+}
+
 export interface ToolGroup {
   type: "group"
   blocks: ToolBlock[]

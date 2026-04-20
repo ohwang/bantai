@@ -8,6 +8,7 @@ import {
   computeTotalDuration,
   formatGroupSummary,
   formatDuration,
+  filterTodoWriteBlocks,
   type ToolGroup,
 } from "../../src/frontends/tui/utils/tool-grouping"
 import type { Block } from "../../src/protocol/types"
@@ -352,5 +353,69 @@ describe("groupConsecutiveTools", () => {
     ]
     const result = groupConsecutiveTools(blocks)
     expect((result[0] as ToolGroup).totalDuration).toBe(3500)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// filterTodoWriteBlocks — TodoWrite is rendered as a standalone TaskChecklist
+// panel, not inline; the helper suppresses its tool blocks from the transcript.
+// ---------------------------------------------------------------------------
+
+describe("filterTodoWriteBlocks", () => {
+  it("passes transcripts without TodoWrite blocks through unchanged", () => {
+    const blocks: Block[] = [
+      userBlock("hi"),
+      assistantBlock("hello"),
+      toolBlock("Read"),
+      toolBlock("Bash"),
+    ]
+    const result = filterTodoWriteBlocks(blocks)
+    expect(result).toHaveLength(4)
+    expect(result).toEqual(blocks)
+  })
+
+  it("removes TodoWrite tool blocks from the transcript", () => {
+    const blocks: Block[] = [
+      userBlock("plan"),
+      toolBlock("TodoWrite"),
+      assistantBlock("on it"),
+      toolBlock("TodoWrite"),
+      toolBlock("Read"),
+    ]
+    const result = filterTodoWriteBlocks(blocks)
+    expect(result).toHaveLength(3)
+    expect(result.some(b => b.type === "tool" && b.tool === "TodoWrite")).toBe(false)
+    expect((result[0] as Extract<Block, { type: "user" }>).type).toBe("user")
+    expect((result[1] as Extract<Block, { type: "assistant" }>).type).toBe("assistant")
+    expect((result[2] as Extract<Block, { type: "tool" }>).tool).toBe("Read")
+  })
+
+  it("does not fold empty tool groups when all TodoWrites are removed", () => {
+    // When three consecutive TodoWrites sit between a user and assistant
+    // turn, filtering removes them first so groupConsecutiveTools does not
+    // see a phantom group of zero or one remaining tools.
+    const blocks: Block[] = [
+      userBlock("plan"),
+      toolBlock("TodoWrite"),
+      toolBlock("TodoWrite"),
+      toolBlock("TodoWrite"),
+      assistantBlock("done"),
+    ]
+    const filtered = filterTodoWriteBlocks(blocks)
+    expect(filtered).toHaveLength(2)
+    const grouped = groupConsecutiveTools(filtered)
+    expect(grouped).toHaveLength(2)
+    expect(isToolGroup(grouped[0]!)).toBe(false)
+    expect(isToolGroup(grouped[1]!)).toBe(false)
+  })
+
+  it("does not remove unrelated tool blocks", () => {
+    const blocks: Block[] = [
+      toolBlock("Read"),
+      toolBlock("Write"),
+      toolBlock("Edit"),
+    ]
+    const result = filterTodoWriteBlocks(blocks)
+    expect(result).toHaveLength(3)
   })
 })

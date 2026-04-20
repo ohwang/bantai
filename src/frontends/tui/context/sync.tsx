@@ -161,6 +161,7 @@ export function SyncProvider(props: ParentProps) {
       messages.setState("backgrounded", conversationState.backgrounded)
       messages.setState("streamingOutputTokens", conversationState.streamingOutputTokens)
       messages.setState("lastTurnFiles", reconcile(conversationState.lastTurnFiles ?? undefined as any))
+      messages.setState("todos", reconcile(conversationState.todos))
 
       session.setState("sessionState", conversationState.sessionState)
       session.setState("session", reconcile(conversationState.session))

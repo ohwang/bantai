@@ -39,9 +39,10 @@ import { BlockView } from "./block-view"
 import { CollapsedToolGroup } from "./collapsed-tool-group"
 import { EphemeralLine } from "./ephemeral-line"
 import { ToastDisplay } from "./toast"
-import { groupConsecutiveTools, isToolGroup, type GroupedItem, type ToolGroup } from "../utils/tool-grouping"
+import { groupConsecutiveTools, isToolGroup, filterTodoWriteBlocks, type GroupedItem, type ToolGroup } from "../utils/tool-grouping"
 import { TurnSummary } from "./turn-summary"
 import { QueuedMessage } from "./blocks/queued-message"
+import { TaskChecklist } from "./task-checklist"
 import { createThrottledValue } from "../../../utils/throttled-value"
 
 export type { ViewLevel }
@@ -84,9 +85,10 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
   // store proxies pass through with stable identity (via reconcile() in sync).
   // Matches OpenCode's filtered → grouped → flat → selected pattern.
 
-  // Stage 1: Filter out queued user blocks
+  // Stage 1: Filter out queued user blocks.
+  // TodoWrite is rendered as a standalone TaskChecklist panel, not inline.
   const committed = createMemo(() =>
-    state.blocks.filter(b => !(b.type === "user" && b.queued))
+    filterTodoWriteBlocks(state.blocks.filter(b => !(b.type === "user" && b.queued)))
   )
   const queuedBlocks = createMemo(() =>
     state.blocks.filter(b => b.type === "user" && b.queued) as Array<Extract<Block, { type: "user" }>>
@@ -182,8 +184,17 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
 
   onCleanup(() => clearInterval(turnTickHandle))
 
-  // Spinner label from running tools in blocks
+  // Spinner label — fallback order matches Claude Code (spec §5.1):
+  //   1. In-progress todo's activeForm (if any)
+  //   2. Last running tool from blocks
+  //   3. "Thinking..."
   const spinnerLabel = () => {
+    const todos = state.todos
+    for (const t of todos) {
+      if (t.status === "in_progress" && t.activeForm && t.activeForm.length > 0) {
+        return `${t.activeForm}...`
+      }
+    }
     const blocks = state.blocks
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i]
@@ -438,16 +449,29 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
           </box>
 
           {/* Spinner — visible during RUNNING when there's no other visual activity.
-              Hidden while text is actively streaming since that already signals progress. */}
+              Hidden while text is actively streaming since that already signals progress.
+              Inline TaskChecklist sits directly below the spinner during active runs. */}
           <box flexDirection="column">
             <Show when={
               session.sessionState === "RUNNING" &&
               !state.backgrounded &&
               !state.streamingText
             }>
-              <box marginTop={1} paddingLeft={2}>
+              <box marginTop={1} paddingLeft={2} flexDirection="column">
                 <StreamingSpinner label={spinnerLabel()} elapsedSeconds={turnElapsed()} outputTokens={state.streamingOutputTokens || session.cost.outputTokens} />
+                <Show when={state.todos.length > 0}>
+                  <TaskChecklist todos={state.todos} />
+                </Show>
               </box>
+            </Show>
+          </box>
+
+          {/* Standalone TaskChecklist — shown between turns / when idle so the
+              user can see the active task list without a running spinner.
+              Gated on NOT being in RUNNING, mirroring Claude Code. */}
+          <box flexDirection="column">
+            <Show when={session.sessionState !== "RUNNING" && state.todos.length > 0}>
+              <TaskChecklist todos={state.todos} isStandalone={true} />
             </Show>
           </box>
 

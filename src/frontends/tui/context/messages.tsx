@@ -14,6 +14,7 @@ import { createStore, type SetStoreFunction } from "solid-js/store"
 import type {
   Block,
   TaskInfo,
+  TodoItem,
   TurnFileChange,
 } from "../../../protocol/types"
 
@@ -25,6 +26,7 @@ export interface MessagesState {
   backgrounded: boolean
   streamingOutputTokens: number
   lastTurnFiles?: TurnFileChange[]
+  todos: TodoItem[]
 }
 
 export interface MessagesContextValue {
@@ -42,6 +44,7 @@ export function MessagesProvider(props: ParentProps) {
     activeTasks: [],
     backgrounded: false,
     streamingOutputTokens: 0,
+    todos: [],
   })
 
   return (

@@ -187,7 +187,7 @@ describe("dispatchCommand", () => {
         allowedTools: ["Read", "Grep"],
         mcpServers: ["git"],
         claudeConfigDir: "/home/me/.claude/backend",
-        systemPromptAppend: "Be terse.",
+        systemPrompt: "Be terse.",
         env: { ANTHROPIC_API_KEY: "sk-secret-not-posted" },
       }),
     })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { loadSlackConfig } from "../../../../src/frontends/slack/config/loader"
 import {
+  composeSystemPrompt,
   resolveMcpServersForChannel,
   resolveProjectForChannel,
 } from "../../../../src/frontends/slack/router/resolver"
@@ -223,5 +224,102 @@ describe("resolveMcpServersForChannel", () => {
   it("drops unknown names but keeps the known ones", () => {
     const out = resolveMcpServersForChannel(registry, ["git", "typo"], "C0")
     expect(Object.keys(out!)).toEqual(["git"])
+  })
+})
+
+describe("composeSystemPrompt", () => {
+  it("returns undefined when nothing is set", () => {
+    expect(composeSystemPrompt(undefined, undefined, undefined)).toBeUndefined()
+  })
+
+  it("returns the workspace default when the channel has no overrides", () => {
+    expect(composeSystemPrompt("default", undefined, undefined)).toBe("default")
+  })
+
+  it("replace swaps out the default entirely", () => {
+    expect(composeSystemPrompt("default", "channel-replace", undefined)).toBe(
+      "channel-replace",
+    )
+  })
+
+  it("append concatenates LAST with a blank-line separator", () => {
+    expect(composeSystemPrompt("default", undefined, "channel-append")).toBe(
+      "default\n\nchannel-append",
+    )
+  })
+
+  it("replace + append: append is concatenated onto the replace text", () => {
+    expect(composeSystemPrompt("default", "channel-replace", "channel-append")).toBe(
+      "channel-replace\n\nchannel-append",
+    )
+  })
+
+  it("append without any base becomes the full prompt", () => {
+    expect(composeSystemPrompt(undefined, undefined, "only-append")).toBe(
+      "only-append",
+    )
+  })
+
+  it("replace without a default still works", () => {
+    expect(composeSystemPrompt(undefined, "only-replace", undefined)).toBe(
+      "only-replace",
+    )
+  })
+})
+
+describe("resolveProjectForChannel — system prompt composition", () => {
+  it("picks up defaults.system_prompt when channel omits both overrides", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { system_prompt: "workspace-base" },
+      channels: [{ id: "C0DEF" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0DEF", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBe("workspace-base")
+  })
+
+  it("channel.system_prompt_replace swaps out defaults.system_prompt", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { system_prompt: "workspace-base" },
+      channels: [{ id: "C0RE", system_prompt_replace: "channel-base" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0RE", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBe("channel-base")
+  })
+
+  it("channel.system_prompt_append is concatenated after the base with a blank line", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { system_prompt: "workspace-base" },
+      channels: [{ id: "C0AP", system_prompt_append: "channel-extra" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0AP", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBe("workspace-base\n\nchannel-extra")
+  })
+
+  it("replace + append: append lands last", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { system_prompt: "workspace-base" },
+      channels: [
+        {
+          id: "C0BOTH",
+          system_prompt_replace: "channel-base",
+          system_prompt_append: "channel-extra",
+        },
+      ],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0BOTH", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBe("channel-base\n\nchannel-extra")
+  })
+
+  it("no defaults, no channel overrides → undefined (backend default)", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      channels: [{ id: "C0NONE" }],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0NONE", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBeUndefined()
   })
 })

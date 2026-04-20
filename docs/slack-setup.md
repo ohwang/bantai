@@ -154,6 +154,10 @@ Each entry in `channels[]` scopes its fields to one channel ID:
       "verbosity": "verbose",
       "allowed_tools": ["Read", "Grep", "Bash"],
       "claude_config_dir": "/home/me/.claude/eng-backend",
+      // system_prompt_replace swaps out defaults.system_prompt for this channel.
+      // system_prompt_append is always concatenated LAST (with a blank-line
+      // separator), whether on top of defaults.system_prompt or on top of
+      // system_prompt_replace. Both are optional; omit either or both.
       "system_prompt_append": "Focus on the backend service; ignore the frontend subtree.",
       "turn_timeout_s": 300,               // auto-interrupt a turn after 5 min
       "max_budget_usd": 10                 // stop turn streaming if session cost exceeds $10

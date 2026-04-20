@@ -34,8 +34,14 @@ export interface ProjectConfig {
    * → the default `~/.claude`.
    */
   claudeConfigDir?: string
-  /** Appended to the system prompt. */
-  systemPromptAppend?: string
+  /**
+   * Final composed system prompt handed to the backend. Built from
+   * `defaults.system_prompt`, optionally replaced by the channel's
+   * `system_prompt_replace`, with the channel's `system_prompt_append`
+   * concatenated last (see `composeSystemPrompt`). Undefined → no
+   * system prompt configured; backends fall back to their own default.
+   */
+  systemPrompt?: string
   /** Narrow the tool set exposed to the backend. Undefined → no restriction. */
   allowedTools?: string[]
   /** Subset of MCP servers to load. Undefined → load all. */
@@ -161,7 +167,11 @@ export function resolveProjectForChannel(
     backend,
     model,
     claudeConfigDir: override?.claude_config_dir,
-    systemPromptAppend: override?.system_prompt_append,
+    systemPrompt: composeSystemPrompt(
+      defaults.system_prompt,
+      override?.system_prompt_replace,
+      override?.system_prompt_append,
+    ),
     allowedTools: override?.allowed_tools,
     mcpServers: override?.mcp_servers,
     ...(resolvedMcpServers ? { resolvedMcpServers } : {}),
@@ -233,6 +243,31 @@ export function resolveMcpServersForChannel(
     )
   }
   return out
+}
+
+/**
+ * Compose the final system prompt for a channel from:
+ *   - `defaultPrompt`      — `defaults.system_prompt`, the workspace-wide base
+ *   - `channelReplace`     — `channels[].system_prompt_replace`; when set, it
+ *                            swaps out the defaultPrompt entirely
+ *   - `channelAppend`      — `channels[].system_prompt_append`; always
+ *                            concatenated LAST with a blank-line separator,
+ *                            so per-channel guidance overrides anything
+ *                            earlier in the composed prompt
+ *
+ * Returns undefined when no component is set — backends then fall back to
+ * their own default system prompt. Exported for unit tests.
+ */
+export function composeSystemPrompt(
+  defaultPrompt: string | undefined,
+  channelReplace: string | undefined,
+  channelAppend: string | undefined,
+): string | undefined {
+  const base = channelReplace ?? defaultPrompt
+  if (channelAppend) {
+    return base ? `${base}\n\n${channelAppend}` : channelAppend
+  }
+  return base
 }
 
 function resolveEnvRefs(

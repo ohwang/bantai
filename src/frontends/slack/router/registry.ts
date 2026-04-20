@@ -374,7 +374,7 @@ function noopMetricsHook(): RegistryMetricsHook {
  *
  *   - project.projectDir          → sessionConfig.cwd
  *   - project.model               → sessionConfig.model
- *   - project.systemPromptAppend  → sessionConfig.systemPrompt
+ *   - project.systemPrompt        → sessionConfig.systemPrompt
  *   - project.allowedTools        → sessionConfig.allowedTools
  *   - project.mcpServers (subset) → sessionConfig.mcpServers
  *   - project.claudeConfigDir     → sessionConfig.env.CLAUDE_CONFIG_DIR
@@ -400,7 +400,7 @@ export function buildSessionConfigFromProject(
     cwd: project.projectDir,
     permissionMode: project.permissionMode as PermissionMode,
     ...(project.model ? { model: project.model } : {}),
-    ...(project.systemPromptAppend ? { systemPrompt: project.systemPromptAppend } : {}),
+    ...(project.systemPrompt ? { systemPrompt: project.systemPrompt } : {}),
     ...(project.allowedTools ? { allowedTools: project.allowedTools } : {}),
     ...(project.resolvedMcpServers
       ? { mcpServers: project.resolvedMcpServers }

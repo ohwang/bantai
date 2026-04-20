@@ -204,7 +204,7 @@ export function renderSettingsDump(project: ProjectConfig): string {
     `• allowed_tools: ${formatList(project.allowedTools)}`,
     `• mcp_servers: ${formatList(project.mcpServers)}`,
     `• claude_config_dir: \`${project.claudeConfigDir ?? "<default>"}\``,
-    `• system_prompt_append: ${project.systemPromptAppend ? `\`${truncate(project.systemPromptAppend, 80)}\`` : "`<none>`"}`,
+    `• system_prompt: ${project.systemPrompt ? `\`${truncate(project.systemPrompt, 80)}\`` : "`<none>`"}`,
     `• env keys: ${formatList(envKeys)} (values redacted)`,
   ]
   return lines.join("\n")

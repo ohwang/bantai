@@ -29,11 +29,11 @@ function fakeProject(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
 }
 
 describe("buildSessionConfigFromProject", () => {
-  it("passes cwd, model, systemPromptAppend, allowedTools through", () => {
+  it("passes cwd, model, systemPrompt, allowedTools through", () => {
     const cfg = buildSessionConfigFromProject(
       fakeProject({
         model: "claude-opus-4-7",
-        systemPromptAppend: "Be terse.",
+        systemPrompt: "Be terse.",
         allowedTools: ["Read", "Grep"],
       }),
     )

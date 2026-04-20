@@ -186,6 +186,14 @@ export const DefaultsSchema = z
     agent_username: z.string().optional(),
     agent_icon_url: z.url().optional(),
     agent_icon_emoji: z.string().optional(),
+    /**
+     * Workspace-wide default system prompt handed to the agent backend on
+     * every session. Channels may override this entirely via
+     * `system_prompt_replace` or extend it via `system_prompt_append` —
+     * the append text is always concatenated last with a blank-line
+     * separator. Omit to leave the backend's own default in effect.
+     */
+    system_prompt: z.string().optional(),
   })
   .strict()
 export type DefaultsConfig = z.infer<typeof DefaultsSchema>
@@ -247,6 +255,19 @@ export const ChannelOverrideSchema = z
     model: z.string().optional(),
     allowed_tools: z.array(z.string()).optional(),
     mcp_servers: z.array(z.string()).optional(),
+    /**
+     * Replace the workspace-wide `defaults.system_prompt` for this channel.
+     * If both `system_prompt_replace` and `system_prompt_append` are set,
+     * the replace text becomes the base and the append text is concatenated
+     * after it with a blank-line separator.
+     */
+    system_prompt_replace: z.string().optional(),
+    /**
+     * Appended to whatever base system prompt is in effect for this channel
+     * — either `defaults.system_prompt` or this channel's
+     * `system_prompt_replace`. When no base is set, the append text becomes
+     * the full system prompt. The append text is always concatenated last.
+     */
     system_prompt_append: z.string().optional(),
     approvers: z.array(z.string()).optional(),
     verbosity: VerbosityLevelSchema.optional(),

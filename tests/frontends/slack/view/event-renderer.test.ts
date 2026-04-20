@@ -258,3 +258,133 @@ describe("event-renderer — errors", () => {
     expect(adds.at(-1)).toBe("octagonal_sign")
   })
 })
+
+describe("event-renderer — paragraph breaks across content-block boundaries", () => {
+  // Regression: Claude's streaming API splits a single user-visible turn into
+  // multiple content blocks (text → tool_use → text → …). Each text block is a
+  // separate paragraph in the model's output, but the event stream delivers
+  // them as two separate bursts of text_deltas with a tool_use_start /
+  // tool_use_end pair in between. Prior to the fix, the renderer
+  // concatenated every text_delta directly into the accumulator, collapsing
+  // "first ending.\n\nSecond start" into "first ending.Second start" in the
+  // final Slack message. These tests guard the text_delta→boundary→text_delta
+  // path end-to-end (renderer + mrkdwn round-trip via the outbox).
+  function primaryText(sends: Array<{ kind: "post" | "update"; text: string }>) {
+    // Tool cards hit the adapter too — filter to the draft/update pair that
+    // belongs to the streaming reply body. Tool cards carry "*Read*" or
+    // similar; the reply draft is whatever landed as the final update.
+    const updates = sends.filter((s) => s.kind === "update")
+    return updates.at(-1)?.text ?? ""
+  }
+
+  it("injects a blank line between two text blocks separated by a tool call", async () => {
+    const h = harness("t1")
+    h.push([
+      { type: "turn_start" },
+      { type: "text_delta", text: "First paragraph ending:" },
+      { type: "tool_use_start", id: "1", tool: "Read", input: {} },
+      { type: "tool_use_end", id: "1", output: "ok" },
+      { type: "text_delta", text: "Second paragraph after tool." },
+      { type: "turn_complete" },
+    ])
+    await drain(100)
+    const text = primaryText(h.sends)
+    expect(text).toContain("First paragraph ending:")
+    expect(text).toContain("Second paragraph after tool.")
+    expect(text).toMatch(/First paragraph ending:\n\nSecond paragraph after tool\./)
+  })
+
+  it("injects a blank line between two text blocks separated by a mid-turn turn_start (agentic step)", async () => {
+    // Claude's event-mapper emits turn_start per message_start — that is,
+    // once per agentic step (think → act → observe). A user-visible turn
+    // with two steps therefore looks like:
+    //   turn_start, text_delta "A", …tool…, turn_start, text_delta "B", turn_complete
+    // The second turn_start must force a paragraph break so "A" and "B"
+    // don't glue together.
+    const h = harness("t1")
+    h.push([
+      { type: "turn_start" },
+      { type: "text_delta", text: "Step 1." },
+      { type: "turn_start" },
+      { type: "text_delta", text: "Step 2." },
+      { type: "turn_complete" },
+    ])
+    await drain(100)
+    expect(primaryText(h.sends)).toMatch(/Step 1\.\n\nStep 2\./)
+  })
+
+  it("does not inject anything before the first text_delta of a fresh turn", async () => {
+    // Regression guard: turn_start sets the paragraph-break flag so that
+    // mid-turn turn_starts work, but the FIRST turn_start of a user turn
+    // starts with an empty accumulator — injection must be a no-op there.
+    const h = harness("t1")
+    h.push([
+      { type: "turn_start" },
+      { type: "text_delta", text: "Just one thing." },
+      { type: "turn_complete" },
+    ])
+    await drain(100)
+    const text = primaryText(h.sends)
+    expect(text).toBe("Just one thing.")
+    expect(text.startsWith("\n")).toBe(false)
+  })
+
+  it("does not insert extra blank lines between adjacent text_deltas in the same block", async () => {
+    // Regression guard: the flag must clear on each text_delta so that
+    // streaming deltas inside a single text block stay concatenated
+    // verbatim — Claude splits a paragraph across many text_deltas during
+    // streaming and injecting "\n\n" between them would shred sentences.
+    const h = harness("t1")
+    h.push([
+      { type: "turn_start" },
+      { type: "text_delta", text: "Hello, " },
+      { type: "text_delta", text: "world! " },
+      { type: "text_delta", text: "How are you?" },
+      { type: "turn_complete" },
+    ])
+    await drain(100)
+    expect(primaryText(h.sends)).toBe("Hello, world! How are you?")
+  })
+
+  it("does not leak the paragraph-break flag across turns", async () => {
+    // A turn that ends on a tool_use_end leaves the flag set in a naive
+    // implementation. endTurn must reset it so the first text_delta of
+    // the NEXT turn doesn't come out prefixed by "\n\n".
+    const h = harness("t1")
+    h.push([
+      { type: "turn_start" },
+      { type: "text_delta", text: "prev turn's last word." },
+      { type: "tool_use_start", id: "1", tool: "Read", input: {} },
+      { type: "tool_use_end", id: "1", output: "ok" },
+      { type: "turn_complete" },
+    ])
+    await drain(100)
+    // Turn 2 starts fresh — its first text_delta should not be "\n\nNext"
+    h.push([
+      { type: "turn_start" },
+      { type: "text_delta", text: "Next turn starts clean." },
+      { type: "turn_complete" },
+    ])
+    await drain(100)
+    const updates = h.sends.filter((s) => s.kind === "update")
+    const last = updates.at(-1)?.text ?? ""
+    expect(last).toBe("Next turn starts clean.")
+  })
+
+  it("injects a blank line when thinking splits two text blocks", async () => {
+    // Interleaved thinking is surfaced in a separate Slack message, but
+    // in the model's output it still separates two text blocks into two
+    // paragraphs — so a text_delta after thinking_delta must still get
+    // the break.
+    const h = harness("t1")
+    h.push([
+      { type: "turn_start" },
+      { type: "text_delta", text: "Before thinking." },
+      { type: "thinking_delta", text: "…considering…" },
+      { type: "text_delta", text: "After thinking." },
+      { type: "turn_complete" },
+    ])
+    await drain(100)
+    expect(primaryText(h.sends)).toMatch(/Before thinking\.\n\nAfter thinking\./)
+  })
+})

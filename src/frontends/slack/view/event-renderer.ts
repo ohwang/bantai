@@ -278,6 +278,24 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   let threadStatus: ThreadStatusController | undefined
   let finalText: string | undefined
   let inTurn = false
+  /**
+   * Claude's streaming API splits a single user-visible turn into multiple
+   * content blocks (text, tool_use, text, tool_use, …) and — across agentic
+   * steps — into multiple `message_start`s. The event-mapper emits
+   * `turn_start` per message_start and `text_delta` per text-block delta,
+   * with `tool_use_start`/`tool_use_end` between blocks. If we concatenate
+   * every `text_delta` directly into the accumulator, two text blocks that
+   * were paragraph-separated in the model's output collapse into
+   * "prev text.next text" with no break at the content-block boundary.
+   *
+   * This flag flips to `true` on any non-text-delta event that represents
+   * a content-block boundary (tool_use_start/_end, mid-turn turn_start,
+   * thinking_delta). The next `text_delta` injects `\n\n` before its
+   * payload — but only when the accumulator already has content, so the
+   * very first text delta of a turn stays clean. The flag clears after
+   * the text_delta consumes it.
+   */
+  let needsBreakBeforeNextText = false
   /** permission_request ids we've handed off to approvals but not yet heard
    *  a permission_response for. Used to auto-deny on interrupt/destroy. */
   const pendingApprovals = new Set<string>()
@@ -455,6 +473,7 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
     stream = undefined
     threadStatus = undefined
     finalText = undefined
+    needsBreakBeforeNextText = false
     if (s) {
       // Optionally compile interactive-reply directives out of the
       // final text. Only on "done" — interrupt / error paths skip
@@ -768,9 +787,24 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
           finalText = undefined
           resetTurnState()
           armTurnTimeout()
+          // A mid-flow turn_start (a new agentic step inside the same user
+          // turn) arrives after prior text + tool activity and precedes the
+          // next text block — flag a paragraph break so the next text_delta
+          // doesn't glue onto the previous step's last sentence. The very
+          // first turn_start of a user turn has an empty accumulator and the
+          // text_delta guard below skips injection, so this is safe to set
+          // unconditionally.
+          needsBreakBeforeNextText = true
           break
         case "text_delta":
-          if (verbosity !== "silent") ensureStream().append(event.text)
+          if (verbosity !== "silent") {
+            const s = ensureStream()
+            if (needsBreakBeforeNextText && s.currentText().length > 0) {
+              s.append("\n\n")
+            }
+            s.append(event.text)
+            needsBreakBeforeNextText = false
+          }
           break
         case "text_complete":
           // Capture the canonical text for stop(finalText) to post.
@@ -798,12 +832,26 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
           )
           break
         case "tool_use_start":
+          // Content-block boundary — force a paragraph break before the
+          // next text_delta. See the `needsBreakBeforeNextText` comment
+          // at the top of the renderer for context.
+          needsBreakBeforeNextText = true
           handleToolStart(event)
           break
         case "tool_use_end":
+          // Covers the common case where the model speaks again after a
+          // tool call completes within the same message. Redundant with
+          // tool_use_start when the next event is immediately a
+          // text_delta, but harmless (the flag is idempotent).
+          needsBreakBeforeNextText = true
           handleToolEnd(event)
           break
         case "thinking_delta":
+          // Interleaved thinking blocks are rendered in a separate Slack
+          // message, but in the model's actual output they still split
+          // surrounding text blocks into separate paragraphs — so flag a
+          // break on the next visible text_delta.
+          needsBreakBeforeNextText = true
           void handleThinkingDelta(event)
           break
         case "plan_update":

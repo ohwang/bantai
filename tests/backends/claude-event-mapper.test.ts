@@ -2594,3 +2594,132 @@ describe("Event Mapper — worktree tool_use_end integration", () => {
     expect(types).not.toContain("cwd_changed")
   })
 })
+
+// ---------------------------------------------------------------------------
+// TodoWrite tool_use -> todos_updated synthesis
+// ---------------------------------------------------------------------------
+
+describe("Claude Event Mapper — TodoWrite tool_use -> todos_updated", () => {
+  it("emits todos_updated in addition to the tool block for a well-formed TodoWrite", () => {
+    const events = mapAssistantMessage({
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-todos-1",
+            name: "TodoWrite",
+            input: {
+              todos: [
+                { content: "Plan steps", activeForm: "Planning steps", status: "completed" },
+                { content: "Run tests", activeForm: "Running tests", status: "in_progress" },
+                { content: "Deploy", activeForm: "Deploying", status: "pending" },
+              ],
+            },
+          },
+        ],
+      },
+    })
+
+    const types = events.map(e => e.type)
+    // Normal tool-block flow must not be suppressed here.
+    expect(types).toContain("tool_use_start")
+    expect(types).toContain("tool_use_progress")
+    expect(types).toContain("todos_updated")
+
+    const todosEvent = events.find(e => e.type === "todos_updated") as any
+    expect(todosEvent.todos).toEqual([
+      { content: "Plan steps", activeForm: "Planning steps", status: "completed" },
+      { content: "Run tests", activeForm: "Running tests", status: "in_progress" },
+      { content: "Deploy", activeForm: "Deploying", status: "pending" },
+    ])
+  })
+
+  it("drops malformed todo items (missing activeForm) but keeps valid ones", () => {
+    const events = mapAssistantMessage({
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-todos-2",
+            name: "TodoWrite",
+            input: {
+              todos: [
+                { content: "Good item", activeForm: "Doing good item", status: "pending" },
+                { content: "Bad item missing activeForm", status: "pending" },
+                { content: "Another good", activeForm: "Doing another", status: "in_progress" },
+              ],
+            },
+          },
+        ],
+      },
+    })
+
+    const todosEvent = events.find(e => e.type === "todos_updated") as any
+    expect(todosEvent).toBeDefined()
+    expect(todosEvent.todos).toHaveLength(2)
+    expect(todosEvent.todos.map((t: any) => t.content)).toEqual([
+      "Good item",
+      "Another good",
+    ])
+  })
+
+  it("emits empty todos_updated when the todos field is missing/malformed", () => {
+    const events = mapAssistantMessage({
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-todos-3",
+            name: "TodoWrite",
+            input: { notTodos: "oops" },
+          },
+        ],
+      },
+    })
+
+    const todosEvent = events.find(e => e.type === "todos_updated") as any
+    expect(todosEvent).toBeDefined()
+    expect(todosEvent.todos).toEqual([])
+  })
+
+  it("emits todos_updated from the streaming (content_block_stop) path too", () => {
+    const state = freshState()
+    // Simulate a streamed TodoWrite tool_use: start, input_json deltas, stop.
+    mapStreamEvent(
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "tool-stream-todos", name: "TodoWrite" },
+      },
+      null,
+      state,
+    )
+    const jsonStr = JSON.stringify({
+      todos: [
+        { content: "Write code", activeForm: "Writing code", status: "in_progress" },
+      ],
+    })
+    mapStreamEvent(
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: jsonStr },
+      },
+      null,
+      state,
+    )
+    const stopEvents = mapStreamEvent(
+      { type: "content_block_stop", index: 0 },
+      null,
+      state,
+    )
+
+    const types = stopEvents.map(e => e.type)
+    expect(types).toContain("tool_use_progress")
+    expect(types).toContain("todos_updated")
+    const todosEvent = stopEvents.find(e => e.type === "todos_updated") as any
+    expect(todosEvent.todos).toEqual([
+      { content: "Write code", activeForm: "Writing code", status: "in_progress" },
+    ])
+  })
+})

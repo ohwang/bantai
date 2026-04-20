@@ -7,7 +7,68 @@
  */
 
 import { log } from "../../utils/logger"
-import type { AgentEvent, ModelInfo } from "../../protocol/types"
+import type { AgentEvent, ModelInfo, TodoItem } from "../../protocol/types"
+
+// ---------------------------------------------------------------------------
+// TodoWrite tool_use -> todos_updated synthesis
+// ---------------------------------------------------------------------------
+//
+// The Claude Agent SDK ships a built-in `TodoWrite` tool whose input carries
+// the full replacement todo list. We observe the tool_use block here (without
+// suppressing the normal tool-block flow — that suppression is the UI layer's
+// job) and additionally emit a `todos_updated` AgentEvent so the reducer can
+// keep `ConversationState.todos` in sync.
+//
+// Validation is defensive: malformed items are dropped with log.warn (that's
+// how we notice protocol drift), and a wholly missing/malformed `todos` field
+// surfaces as an empty-array todos_updated (the reducer treats [] as "clear").
+
+/** Parse and validate a single TodoWrite todo entry. Returns null and logs a
+ *  warning for malformed items so upstream protocol drift is visible. */
+function parseTodoItem(raw: unknown, index: number): TodoItem | null {
+  if (!raw || typeof raw !== "object") {
+    log.warn("TodoWrite item is not an object", { index, snippet: String(raw).slice(0, 120) })
+    return null
+  }
+  const obj = raw as Record<string, unknown>
+  const { content, activeForm, status } = obj
+  if (typeof content !== "string") {
+    log.warn("TodoWrite item missing string content", { index, keys: Object.keys(obj).join(",") })
+    return null
+  }
+  if (typeof activeForm !== "string") {
+    log.warn("TodoWrite item missing string activeForm", { index, keys: Object.keys(obj).join(",") })
+    return null
+  }
+  if (status !== "pending" && status !== "in_progress" && status !== "completed") {
+    log.warn("TodoWrite item has unknown status", { index, status: String(status).slice(0, 40) })
+    return null
+  }
+  return { content, activeForm, status }
+}
+
+/** Build a todos_updated event from a TodoWrite tool_use block's `input`.
+ *  Always returns an event (never null) so the reducer sees the update.
+ *  A missing/malformed `todos` field produces an empty list with a warn. */
+export function synthesizeTodosUpdatedEvent(input: unknown): AgentEvent {
+  const todosRaw =
+    input && typeof input === "object"
+      ? (input as Record<string, unknown>).todos
+      : undefined
+  if (!Array.isArray(todosRaw)) {
+    log.warn("TodoWrite tool_use missing or non-array todos field", {
+      inputType: typeof input,
+      keys: input && typeof input === "object" ? Object.keys(input).join(",") : "",
+    })
+    return { type: "todos_updated", todos: [] }
+  }
+  const todos: TodoItem[] = []
+  todosRaw.forEach((raw, i) => {
+    const parsed = parseTodoItem(raw, i)
+    if (parsed) todos.push(parsed)
+  })
+  return { type: "todos_updated", todos }
+}
 
 // ---------------------------------------------------------------------------
 // Error message cleanup
@@ -1018,6 +1079,12 @@ export function mapAssistantMessage(
             input: block.input,
           })
         }
+        // TodoWrite: additionally surface the todo list to the reducer.
+        // The normal tool_use_start / tool_use_progress above are kept so
+        // the UI still sees the tool block (the UI layer filters it out).
+        if (block.name === "TodoWrite") {
+          events.push(synthesizeTodosUpdatedEvent(block.input))
+        }
         break
 
       default:
@@ -1134,6 +1201,7 @@ export function mapStreamEvent(
       const toolId = streamState.currentToolIds.get(event.index)
       if (toolId) {
         const jsonStr = streamState.toolInputJsons.get(toolId)
+        const toolName = streamState.toolNamesById.get(toolId)
         if (jsonStr) {
           try {
             const parsedInput = JSON.parse(jsonStr)
@@ -1143,6 +1211,10 @@ export function mapStreamEvent(
               output: "",
               input: parsedInput,
             })
+            // TodoWrite: also emit todos_updated alongside the tool block.
+            if (toolName === "TodoWrite") {
+              events.push(synthesizeTodosUpdatedEvent(parsedInput))
+            }
           } catch {
             log.warn("Failed to parse tool input JSON", { toolId, json: jsonStr.slice(0, 200) })
             // Still emit progress with the raw JSON string so the user can see inputs
@@ -1152,6 +1224,11 @@ export function mapStreamEvent(
               output: "",
               input: jsonStr,  // Raw string instead of parsed object
             })
+            // TodoWrite with unparseable JSON — surface an empty todos update
+            // (and the helper's own log.warn) so the protocol drift is visible.
+            if (toolName === "TodoWrite") {
+              events.push(synthesizeTodosUpdatedEvent(undefined))
+            }
           }
         }
         streamState.currentToolIds.delete(event.index)

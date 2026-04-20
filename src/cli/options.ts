@@ -52,6 +52,13 @@ export interface CLIFlags {
 
   /** ACP args (for --backend acp) */
   acpArgs?: string[]
+
+  /**
+   * Experimental — set by `bantai follow <session-id>`. When present,
+   * `launchTui` routes the TUI into read-only follow mode rather than
+   * creating a normal backend. See `team/bantai-follow-tui.md`.
+   */
+  follow?: { sessionId: string }
 }
 
 // ---------------------------------------------------------------------------

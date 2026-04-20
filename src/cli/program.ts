@@ -103,6 +103,25 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(continueCmd)
 
   // -----------------------------------------------------------------------
+  // Subcommand: follow <session-id>  (experimental)
+  //
+  // Read-only TUI that tails a live Claude session JSONL on the same host.
+  // Claude-only, same-host only — see team/bantai-follow-tui.md.
+  // -----------------------------------------------------------------------
+  const followCmd = new Command("follow")
+    .description("Follow a live Claude session read-only (experimental)")
+    .argument("<session-id>", "Session ID to follow")
+  addGlobalOptions(followCmd)
+  addTuiOptions(followCmd)
+  followCmd.action(async (sessionId: string) => {
+    const opts = { ...program.opts(), ...followCmd.opts() }
+    const flags = resolveFlags(opts)
+    flags.follow = { sessionId }
+    await launchTui(flags)
+  })
+  program.addCommand(followCmd)
+
+  // -----------------------------------------------------------------------
   // Backend subcommands: claude, codex, gemini
   // -----------------------------------------------------------------------
   for (const backendName of ["claude", "codex", "gemini"] as const) {

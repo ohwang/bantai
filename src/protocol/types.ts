@@ -846,6 +846,18 @@ export interface SessionConfig {
    * per-query env (e.g. mock, ACP presets) ignore the field.
    */
   env?: Record<string, string>
+
+  /**
+   * Experimental — when true, the TUI should render in read-only follow mode.
+   * Set by `bantai follow <id>` (see `src/backends/follow/`). Consumers:
+   *   - input area: disables the textarea and shows a "following" banner.
+   *   - slash dispatcher: no-ops all commands (system_message instead).
+   *   - status bar: shows a "FOLLOW" pill.
+   *
+   * MUST be read via the session/agent reactive stores in the TUI, never
+   * snapshot into a const (per AGENTS.md runtime-mutable-values rule).
+   */
+  readOnly?: boolean
 }
 
 /** Backend that owns a session */

@@ -77,17 +77,73 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
 
   // Create backend
   let backend: AgentBackend
-  try {
-    backend = createBackend({
-      backend: flags.backend,
-      acpCommand: flags.acpCommand,
-      acpArgs: flags.acpArgs,
-    })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    log.error("Failed to create backend", { error: msg })
-    console.error(`Error: ${msg}`)
-    process.exit(1)
+  if (flags.follow) {
+    // Experimental: read-only follow mode. Detect the session origin first,
+    // refuse cross-backend follow, and refuse if the ID isn't known at all.
+    // The actual FollowBackend is wired up once the feature lands end-to-end;
+    // this early-exit skeleton is the validation path.
+    const { detectSessionOrigin } = await import("../../session/cross-backend")
+    const cwd = flags.config.cwd ?? process.cwd()
+    const origin = detectSessionOrigin(flags.follow.sessionId, cwd)
+    if (!origin) {
+      console.error(
+        `No local session found with ID ${flags.follow.sessionId}. ` +
+          `(Follow mode searches ~/.claude/projects, ~/.codex/sessions, and ~/.gemini/tmp.)`,
+      )
+      process.exit(2)
+    }
+    if (origin !== "claude") {
+      console.error(
+        `bantai follow only supports Claude sessions for now (session is from ${origin}).`,
+      )
+      process.exit(1)
+    }
+    // FollowBackend is resolved dynamically so the skeleton landed in commit
+    // 1 (CLI + guard only) can validate the session origin without the
+    // adapter implementation existing yet. Later commits wire this up.
+    let adapterModule: typeof import("../../backends/follow/adapter") | null = null
+    try {
+      adapterModule = await import("../../backends/follow/adapter")
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error("Follow adapter not implemented yet", { error: msg })
+      console.error(
+        `bantai follow is not yet implemented (missing src/backends/follow/adapter.ts).`,
+      )
+      process.exit(1)
+    }
+    try {
+      backend = adapterModule.createFollowBackend({
+        sessionId: flags.follow.sessionId,
+        cwd,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error("Failed to create follow backend", { error: msg })
+      console.error(`Error: ${msg}`)
+      process.exit(1)
+    }
+    // Route the rest of the launcher through the "resume" path so the event
+    // loop calls backend.start() with config.resume set — FollowBackend's
+    // runSession reads that ID and begins tailing.
+    flags.config.readOnly = true
+    flags.config.resume = flags.follow.sessionId
+    flags.config.sessionOrigin = "claude"
+    // Follow sessions are observational; never write back to the session store.
+    flags.config.persistSession = false
+  } else {
+    try {
+      backend = createBackend({
+        backend: flags.backend,
+        acpCommand: flags.acpCommand,
+        acpArgs: flags.acpArgs,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error("Failed to create backend", { error: msg })
+      console.error(`Error: ${msg}`)
+      process.exit(1)
+    }
   }
 
   log.info("Backend created", { backend: flags.backend })

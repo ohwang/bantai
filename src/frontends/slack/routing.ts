@@ -18,7 +18,11 @@ import { log } from "../../utils/logger"
 import type { ConversationEvent, SessionConfig } from "../../protocol/types"
 import type { ResolvedSlackConfig, VerbosityLevel } from "./config/schema"
 import type { ConfigDiff } from "./config/reloader"
-import { resolveProjectForChannel, type ProjectConfig } from "./router/resolver"
+import {
+  isChannelConfigured,
+  resolveProjectForChannel,
+  type ProjectConfig,
+} from "./router/resolver"
 import type { SessionEntry, SessionRegistry } from "./router/registry"
 import type { InboundSlackEvent } from "./transport/events"
 import type { createDedupCache } from "./inbox/dedup"
@@ -312,6 +316,27 @@ export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
     const anchorTs = event.threadTs ?? event.ts
     const project = mutableProjectFor(ctx, event.channel)
 
+    // When the workspace has set up per-channel mappings but this
+    // particular channel isn't one of them, refuse to silently fall
+    // back to `defaults` + launchCwd (which usually means running in
+    // the wrong repo). Post a helpful reply pointing at slack.json and
+    // stop. Self-host mode (`channels: []`) is unaffected — every
+    // channel there is intentionally using defaults.
+    if (
+      ctx.config.channels.length > 0 &&
+      !isChannelConfigured(ctx.config, event.channel)
+    ) {
+      await postUnconfiguredChannelNotice(ctx, {
+        channel: event.channel,
+        threadTs: event.threadTs ?? event.ts,
+        channelId: event.channel,
+      })
+      log.info(
+        `slack: ignoring ${event.kind} in unconfigured channel ${event.channel} — posted helper`,
+      )
+      return
+    }
+
     // Gate the inbound on the *raw* event text — control commands
     // (e.g. `!bantai status`) must fire immediately without sharing a
     // debounce bucket with surrounding chatter, and a rejected message
@@ -381,6 +406,42 @@ export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
   return {
     onInbound: handler,
     shutdown: () => debouncer.flushAll(),
+  }
+}
+
+/**
+ * Post a one-shot "this channel isn't configured" reply and return.
+ *
+ * Called from the inbound handler when `channels[]` is non-empty but the
+ * triggering channel isn't declared. The message is posted as a regular
+ * threaded reply (not ephemeral) so the whole channel can see the
+ * instruction — otherwise a follow-up user retries the same message and
+ * gets the same silent no-response experience.
+ *
+ * Uses `buildDefaultSendAdapter` so the text flows through the standard
+ * mrkdwn conversion in `view/format.ts` (backticks + bullets render
+ * correctly in Slack).
+ */
+async function postUnconfiguredChannelNotice(
+  ctx: RoutingCtx,
+  args: { channel: string; threadTs: string; channelId: string },
+): Promise<void> {
+  const adapter = buildDefaultSendAdapter(ctx.app)
+  const text =
+    `:wave: I'm not configured for this channel yet, so I'll stay quiet to avoid ` +
+    `running in the wrong project.\n\n` +
+    `Add an entry under \`channels\` in your \`slack.json\` with at least:\n` +
+    `- \`id: "${args.channelId}"\`\n` +
+    `- \`project_dir: "/path/to/repo"\`\n\n` +
+    `Then run \`bantai slack doctor\` to verify the config and restart the bot.`
+  try {
+    await adapter.postMessage({
+      channel: args.channel,
+      threadTs: args.threadTs,
+      text,
+    })
+  } catch (err) {
+    log.error(`slack: unconfigured-channel notice failed: ${String(err)}`)
   }
 }
 

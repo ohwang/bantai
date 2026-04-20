@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { loadSlackConfig } from "../../../../src/frontends/slack/config/loader"
 import {
   composeSystemPrompt,
+  isChannelConfigured,
   resolveMcpServersForChannel,
   resolveProjectForChannel,
 } from "../../../../src/frontends/slack/router/resolver"
@@ -201,6 +202,31 @@ describe("resolveProjectForChannel", () => {
         iconUrl: "https://example.com/icon.png",
       })
     })
+  })
+})
+
+describe("isChannelConfigured", () => {
+  it("returns false when channels[] is empty (self-host mode)", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+    })
+    expect(isChannelConfigured(cfg, "CANYTHING")).toBe(false)
+  })
+
+  it("returns true for a channel declared in channels[]", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      channels: [{ id: "C0MAPPED", project_dir: "/tmp/repo" }],
+    })
+    expect(isChannelConfigured(cfg, "C0MAPPED")).toBe(true)
+  })
+
+  it("returns false for a channel missing from a non-empty channels[]", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      channels: [{ id: "C0MAPPED", project_dir: "/tmp/repo" }],
+    })
+    expect(isChannelConfigured(cfg, "C0OTHER")).toBe(false)
   })
 })
 

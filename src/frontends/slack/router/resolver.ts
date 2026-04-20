@@ -129,6 +129,30 @@ export interface ResolveProjectOpts {
 }
 
 /**
+ * Is the channel explicitly declared in `config.channels`?
+ *
+ * The routing layer uses this to distinguish two cases that
+ * `resolveProjectForChannel` collapses together:
+ *
+ *   1. `channels: []` — self-host mode, every channel intentionally uses
+ *      `defaults` + launchCwd. Unconfigured channels are expected.
+ *   2. `channels: [...]` with at least one entry — the workspace has
+ *      set up per-channel mappings, but this particular channel wasn't
+ *      added. Silently falling back to defaults here is almost always a
+ *      misconfiguration (e.g. the bot ends up running in the wrong
+ *      repository), so the router posts a helpful "add me to slack.json"
+ *      reply instead of invoking the agent.
+ *
+ * Pure lookup — no I/O, no logging. Safe to call inside hot paths.
+ */
+export function isChannelConfigured(
+  config: ResolvedSlackConfig,
+  channelId: string,
+): boolean {
+  return config.channels.some((c) => c.id === channelId)
+}
+
+/**
  * Resolve a channel id to a full ProjectConfig. Always succeeds — when the
  * channel is not in `config.channels`, defaults + launchCwd fill in.
  *

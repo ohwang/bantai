@@ -245,6 +245,15 @@ export interface StatusBarData {
   ctxBar: Accessor<string>
   ctxColor: Accessor<string>
   tokPerSecStr: Accessor<string>
+  /** Raw time-to-first-token in milliseconds for the last completed turn,
+   *  or `null` when the backend didn't report one (non-Claude or pre-0.2.112). */
+  lastTurnTtftMs: Accessor<number | null>
+  /** Pre-formatted TTFT for the last completed turn (e.g. `TTFT: 1.2s`,
+   *  `TTFT: 450ms`). Empty string when unknown or while a turn is running —
+   *  the figure is a per-turn summary, not a live indicator. */
+  ttftStr: Accessor<string>
+  /** Color for the TTFT segment — green <1s, info 1-3s, warning ≥3s. */
+  ttftColor: Accessor<string>
   turnNumber: Accessor<number>
 
   /** Total tokens consumed in the session (input + output, running). */
@@ -535,6 +544,29 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
     return `${rate} tok/s`
   })
 
+  // Time-to-first-token for the most recent completed turn. We only show
+  // the value while IDLE: during a live turn the TUI already surfaces
+  // `tok/s`, and swapping to TTFT mid-stream would misrepresent the figure
+  // as "current" rather than "last turn". `null` means the backend didn't
+  // report TTFT (non-Claude today, or pre-0.2.112 SDK).
+  const lastTurnTtftMs = (): number | null => state.lastTurnTtftMs
+  const ttftStr = createMemo(() => {
+    const ms = state.lastTurnTtftMs
+    if (ms == null || ms <= 0) return ""
+    if (isRunning()) return ""
+    // <1s → ms with no decimals (`450ms`). >=1s → seconds with one decimal
+    // (`1.2s`, `12.4s`). Matches the existing status bar's compactness.
+    if (ms < 1000) return `TTFT: ${Math.round(ms)}ms`
+    return `TTFT: ${(ms / 1000).toFixed(1)}s`
+  })
+  const ttftColor = createMemo(() => {
+    const ms = state.lastTurnTtftMs
+    if (ms == null) return colors.status.info
+    if (ms >= 3000) return colors.status.warning
+    if (ms < 1000) return colors.status.success
+    return colors.status.info
+  })
+
   const turnNumber = () => state.turnNumber
 
   const rawRateLimits = () => state.rateLimits ?? undefined
@@ -623,6 +655,9 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
     ctxBar,
     ctxColor,
     tokPerSecStr,
+    lastTurnTtftMs,
+    ttftStr,
+    ttftColor,
     turnNumber,
     totalTokens,
     totalTokensStr,

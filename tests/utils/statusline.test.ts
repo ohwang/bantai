@@ -16,6 +16,7 @@ function baseSessionState(): SessionContextState {
     lastError: null,
     turnNumber: 0,
     lastTurnInputTokens: 0,
+    lastTurnTtftMs: null,
     currentModel: "gpt-5",
     currentEffort: "",
     rateLimits: null,

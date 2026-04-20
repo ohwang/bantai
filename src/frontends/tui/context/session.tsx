@@ -27,6 +27,11 @@ export interface SessionContextState {
   lastError: ErrorEvent | null
   turnNumber: number
   lastTurnInputTokens: number
+  /** Milliseconds from query start to the first streamed token for the
+   *  most recent completed turn (SDK 0.2.112+ `ttft_ms`). `null` when the
+   *  backend didn't report one (non-Claude or pre-0.2.112). Reset on each
+   *  new `turn_start` so the status bar doesn't leak stale figures. */
+  lastTurnTtftMs: number | null
   currentModel: string
   currentEffort: string
   rateLimits: RateLimits | null
@@ -69,6 +74,7 @@ export function SessionProvider(props: ParentProps) {
     lastError: null,
     turnNumber: 0,
     lastTurnInputTokens: 0,
+    lastTurnTtftMs: null,
     currentModel: "",
     currentEffort: "",
     rateLimits: null,

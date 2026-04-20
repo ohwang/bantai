@@ -112,7 +112,17 @@ export type ShutdownEvent = { type: "shutdown" }
 
 /** Turn lifecycle */
 export type TurnStartEvent = { type: "turn_start" }
-export type TurnCompleteEvent = { type: "turn_complete"; usage?: TokenUsage; sessionId?: string }
+export type TurnCompleteEvent = {
+  type: "turn_complete"
+  usage?: TokenUsage
+  sessionId?: string
+  /** Milliseconds from query start to the first streamed token for this turn.
+   *  Sourced from SDK 0.2.112+ `SDKPartialAssistantMessage.ttft_ms`. High TTFT
+   *  signals backend queueing / cold starts; low TTFT with slow total turn
+   *  time points at the model itself. Backends that don't report it omit the
+   *  field; the reducer keeps the previous value intact when absent. */
+  ttftMs?: number
+}
 
 /** Session state */
 export type SessionInitEvent = {
@@ -724,6 +734,12 @@ export interface ConversationState {
 
   /** Input tokens from the last completed turn — approximates context window fill */
   lastTurnInputTokens: number
+
+  /** Milliseconds from query start to first streamed token for the most
+   *  recent completed turn (SDK 0.2.112+ `ttft_ms`). `null` when unknown
+   *  (backend doesn't report it, or no turn has completed yet). Reset to
+   *  `null` on `turn_start` so stale values don't leak across turns. */
+  lastTurnTtftMs: number | null
   /** True when lastTurnInputTokens was set from per-API-call data (message_start)
    *  during the current turn, so turn_complete should not overwrite it with
    *  cumulative usage. Reset on turn_start. */
@@ -1221,6 +1237,7 @@ export function createInitialState(): ConversationState {
     lastError: null,
     turnNumber: 0,
     lastTurnInputTokens: 0,
+    lastTurnTtftMs: null,
     _contextFromStream: false,
     streamingOutputTokens: 0,
     backgrounded: false,

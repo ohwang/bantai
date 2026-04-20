@@ -256,6 +256,62 @@ describe("ConversationState reducer", () => {
   })
 
   // -----------------------------------------------------------------------
+  // TTFT (time-to-first-token) surfacing
+  // -----------------------------------------------------------------------
+
+  describe("lastTurnTtftMs", () => {
+    it("starts at null on a fresh conversation", () => {
+      const state = createInitialState()
+      expect(state.lastTurnTtftMs).toBeNull()
+    })
+
+    it("is populated when turn_complete carries ttftMs", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "turn_complete", ttftMs: 742 },
+      ])
+      expect(state.lastTurnTtftMs).toBe(742)
+    })
+
+    it("stays null when turn_complete omits ttftMs for a backend that never reports it", () => {
+      // Codex/Gemini don't emit ttft_ms. After a clean turn on these backends,
+      // the status bar should simply not show a TTFT segment — there's no
+      // earlier reading to fall back to either, since turn_start resets.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "turn_complete" },
+      ])
+      expect(state.lastTurnTtftMs).toBeNull()
+    })
+
+    it("resets to null on turn_start so the status bar blanks until the next measurement", () => {
+      // Mid-turn, the previous TTFT must not linger on screen — otherwise the
+      // user sees a stale "TTFT: 0.7s" label while the current turn is still
+      // streaming its first token.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "turn_complete", ttftMs: 450 },
+        { type: "turn_start" }, // new turn begins — clear last reading
+      ])
+      expect(state.lastTurnTtftMs).toBeNull()
+    })
+
+    it("overwrites an earlier reading when the next turn reports a new ttftMs", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "turn_complete", ttftMs: 200 },
+        { type: "turn_start" },
+        { type: "turn_complete", ttftMs: 1800 },
+      ])
+      expect(state.lastTurnTtftMs).toBe(1800)
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // User messages
   // -----------------------------------------------------------------------
 

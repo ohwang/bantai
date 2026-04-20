@@ -73,13 +73,20 @@ function DefaultStatusBar(props: StatusBarPresetProps) {
       {/* Spacer */}
       <box flexGrow={1} />
 
-      {/* Right: exit hint (transient) OR normal right-side info */}
+      {/* Right: exit hint (transient) OR normal right-side info.
+          When IDLE and the last turn reported TTFT, show it; otherwise
+          fall back to tok/s (which only appears while running). The two
+          never collide — `tokPerSecStr` returns "" when not RUNNING and
+          `ttftStr` returns "" when RUNNING. */}
       {props.hint ? (
         <text fg={colors.status.warning}>{props.hint}</text>
       ) : (
         <>
           <box flexDirection="row" visible={!!data.tokPerSecStr()}>
             <text fg={colors.status.info}>{data.tokPerSecStr()}</text>
+          </box>
+          <box flexDirection="row" visible={!!data.ttftStr()}>
+            <text fg={data.ttftColor()}>{data.ttftStr()}</text>
           </box>
         </>
       )}

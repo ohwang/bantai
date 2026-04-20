@@ -525,6 +525,131 @@ describe("Claude Event Mapper — mapSDKMessage", () => {
       expect(tc.usage.outputTokens).toBe(0)
     })
 
+    it("flushes captured ttft_ms onto turn_complete", () => {
+      // TTFT is captured when the SDK emits its first partial assistant
+      // stream_event (SDK 0.2.112+). The mapper stashes it on ToolStreamState
+      // and drains it on the subsequent `result` message so the TUI can
+      // show it in the status bar after the turn finishes.
+      const state = freshState()
+
+      // Simulate a partial assistant stream event that carries ttft_ms.
+      mapSDKMessage(
+        {
+          type: "stream_event",
+          ttft_ms: 1234,
+          event: { type: "message_start", message: { usage: {} } },
+          parent_tool_use_id: null,
+        },
+        state,
+      )
+      // A second stream_event with a different ttft_ms should NOT overwrite
+      // the first — we keep the earliest report for the turn.
+      mapSDKMessage(
+        {
+          type: "stream_event",
+          ttft_ms: 9999,
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "hi" }, index: 0 },
+          parent_tool_use_id: null,
+        },
+        state,
+      )
+
+      const events = mapSDKMessage(
+        {
+          type: "result",
+          subtype: "success",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        state,
+      )
+
+      expect(events).toHaveLength(1)
+      expect((events[0] as any).ttftMs).toBe(1234)
+    })
+
+    it("resets ttft capture between turns", () => {
+      // Guarantees stale TTFT doesn't leak into a later turn where the SDK
+      // stopped reporting the field — the mapper drains its stash on every
+      // result and starts each turn from undefined.
+      const state = freshState()
+
+      mapSDKMessage(
+        {
+          type: "stream_event",
+          ttft_ms: 800,
+          event: { type: "message_start", message: { usage: {} } },
+          parent_tool_use_id: null,
+        },
+        state,
+      )
+      mapSDKMessage({ type: "result", subtype: "success" }, state)
+
+      // Second turn has no ttft_ms at all.
+      mapSDKMessage(
+        {
+          type: "stream_event",
+          event: { type: "message_start", message: { usage: {} } },
+          parent_tool_use_id: null,
+        },
+        state,
+      )
+      const second = mapSDKMessage({ type: "result", subtype: "success" }, state)
+      expect((second[0] as any).ttftMs).toBeUndefined()
+    })
+
+    it("ignores ttft_ms from sub-agent stream events", () => {
+      // Sub-agent partials (parent_tool_use_id set) carry their own TTFT but
+      // shouldn't influence the main turn's figure. The status bar surfaces
+      // the user-facing turn, not skills running underneath it.
+      const state = freshState()
+
+      mapSDKMessage(
+        {
+          type: "stream_event",
+          ttft_ms: 500,
+          parent_tool_use_id: "tool-abc",
+          event: { type: "content_block_start", content_block: { type: "tool_use", id: "t1", name: "Bash" }, index: 0 },
+        },
+        state,
+      )
+      const events = mapSDKMessage(
+        { type: "result", subtype: "success" },
+        state,
+      )
+      expect((events[0] as any).ttftMs).toBeUndefined()
+    })
+
+    it("passes through ttft_ms even on error results", () => {
+      // An errored turn still has a meaningful TTFT — the first-token latency
+      // up to the point the error fired. Expose it so the status bar stays
+      // useful after failures.
+      const state = freshState()
+      mapSDKMessage(
+        {
+          type: "stream_event",
+          ttft_ms: 2100,
+          event: { type: "message_start", message: { usage: {} } },
+          parent_tool_use_id: null,
+        },
+        state,
+      )
+
+      const events = mapSDKMessage(
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: ["boom"],
+          usage: {},
+        },
+        state,
+      )
+      // [error, turn_complete]
+      expect(events).toHaveLength(2)
+      expect((events[1] as any).type).toBe("turn_complete")
+      expect((events[1] as any).ttftMs).toBe(2100)
+    })
+
     it("handles missing errors array on error result", () => {
       const events = mapSDKMessage(
         {

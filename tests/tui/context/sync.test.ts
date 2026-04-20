@@ -57,6 +57,7 @@ function createSessionStore() {
     lastError: null,
     turnNumber: 0,
     lastTurnInputTokens: 0,
+    lastTurnTtftMs: null,
     currentModel: "",
     currentEffort: "",
     rateLimits: null,

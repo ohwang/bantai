@@ -226,6 +226,13 @@ export class ToolStreamState {
    *  per-turn counter every subsequent assistant message gets silently dropped
    *  — the UI hangs on user_message → turn_complete with nothing between. */
   streamEventsThisTurn = 0
+  /** Time-to-first-token (ms) for the current turn, captured from the first
+   *  `SDKPartialAssistantMessage.ttft_ms` we observe and held until the next
+   *  `result` (turn_complete) flushes it onto the outgoing event. SDK 0.2.112+
+   *  attaches `ttft_ms` to partial assistant messages; we only need the first
+   *  non-null value per turn (subsequent partials in the same turn carry the
+   *  same figure). Reset on `result` alongside streamEventsThisTurn. */
+  ttftMsThisTurn: number | undefined = undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +502,18 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
     case "stream_event":
       streamState.hasReceivedStreamEvent = true
       streamState.streamEventsThisTurn++
+      // Capture time-to-first-token (SDK 0.2.112+). We keep the first
+      // reported value per turn; subsequent partials usually carry the same
+      // number, and we want the earliest one we see. Sub-agent partials
+      // carry their own ttft but we don't separate them today — the main
+      // turn's ttft is what the status bar surfaces.
+      if (
+        streamState.ttftMsThisTurn === undefined &&
+        typeof msg.ttft_ms === "number" &&
+        !msg.parent_tool_use_id
+      ) {
+        streamState.ttftMsThisTurn = msg.ttft_ms
+      }
       if (msg.parent_tool_use_id) {
         // Sub-agent stream event — extract tool activity for skill/agent progress
         events.push(...mapSkillStreamEvent(msg.event, msg.parent_tool_use_id))
@@ -567,10 +586,15 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
     case "result": {
       // Extract session ID from result messages (matches claude-go's ResultMessage.SessionID)
       const resultSessionId: string | undefined = msg.session_id || undefined
+      // Flush captured time-to-first-token onto the turn_complete event so
+      // the reducer can expose it on ConversationState. Undefined is fine —
+      // the reducer preserves the previous value when the field is absent.
+      const ttftMs = streamState.ttftMsThisTurn
       if (msg.subtype === "success" || !msg.is_error) {
         events.push({
           type: "turn_complete",
           sessionId: resultSessionId,
+          ttftMs,
           usage: {
             inputTokens: msg.usage?.input_tokens ?? 0,
             outputTokens: msg.usage?.output_tokens ?? 0,
@@ -589,6 +613,7 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
         events.push({
           type: "turn_complete",
           sessionId: resultSessionId,
+          ttftMs,
           usage: {
             inputTokens: msg.usage?.input_tokens ?? 0,
             outputTokens: msg.usage?.output_tokens ?? 0,
@@ -596,10 +621,12 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
           },
         })
       }
-      // Reset per-turn stream event counter — the next turn gets a clean slate
-      // so the assistant-fallback check (see `case "assistant"`) correctly
-      // detects turns where the SDK emits no stream events.
+      // Reset per-turn stream event counter and ttft capture — the next turn
+      // gets a clean slate so the assistant-fallback check (see `case "assistant"`)
+      // correctly detects turns where the SDK emits no stream events, and so
+      // stale TTFT doesn't leak across turns when the SDK ever omits ttft_ms.
       streamState.streamEventsThisTurn = 0
+      streamState.ttftMsThisTurn = undefined
       break
     }
 

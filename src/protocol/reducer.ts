@@ -153,6 +153,10 @@ export function reduce(
         streamingThinking: "",
         streamingOutputTokens: 0,
         _contextFromStream: false,
+        // Clear TTFT for the new turn — turn_complete will set it from the
+        // SDK's ttft_ms field (when reported). Keeping the previous turn's
+        // value around would mislead the status bar during the next turn.
+        lastTurnTtftMs: null,
         activeTasks: prunedTasks,
       }
     }
@@ -246,6 +250,11 @@ export function reduce(
           : event.usage && (event.usage.inputTokens > 0 || (event.usage.cacheReadTokens ?? 0) > 0)
             ? (event.usage.inputTokens + (event.usage.cacheReadTokens ?? 0) + (event.usage.cacheWriteTokens ?? 0))
             : state.lastTurnInputTokens,
+        // TTFT: stamp the completed turn's time-to-first-token when the
+        // backend reported one. Absence is legitimate (Codex/Gemini/mock
+        // don't surface it today), so fall back to the existing value
+        // rather than clearing it to null — the reset happens on turn_start.
+        lastTurnTtftMs: event.ttftMs != null ? event.ttftMs : state.lastTurnTtftMs,
         _contextFromStream: false,
         lastTurnFiles: turnFiles.length > 0 ? turnFiles : undefined,
       }

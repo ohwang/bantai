@@ -109,9 +109,14 @@ function DetailedStatusBar(props: StatusBarPresetProps) {
         {props.hint ? (
           <text fg={colors.status.warning}>{props.hint}</text>
         ) : (
-          <box flexDirection="row" visible={!!data.tokPerSecStr()}>
-            <text fg={colors.status.info}>{data.tokPerSecStr()}</text>
-          </box>
+          <>
+            <box flexDirection="row" visible={!!data.tokPerSecStr()}>
+              <text fg={colors.status.info}>{data.tokPerSecStr()}</text>
+            </box>
+            <box flexDirection="row" visible={!!data.ttftStr()}>
+              <text fg={data.ttftColor()}>{data.ttftStr()}</text>
+            </box>
+          </>
         )}
       </box>
 

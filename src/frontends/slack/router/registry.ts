@@ -260,15 +260,30 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
     // Consult the persistent store before constructing the backend. If a
     // prior run persisted a backend session id for this key, pass it via
     // `resume` so the backend rehydrates instead of starting fresh.
+    //
+    // Backend-id guard: only pass `resume` when the persisted row was
+    // created under the SAME backend as the one we're about to spawn.
+    // A mismatch means the channel's backend config was flipped (codex →
+    // gemini, etc.) and the persisted sessionId belongs to the old backend.
+    // Blindly passing it through causes JSON-RPC -32603 / SDK errors. The
+    // stale-resume coordinator (added in a later commit) handles this case
+    // explicitly by prompting the user for cross-backend history injection;
+    // if it hasn't intercepted yet, fall through to session/new instead of
+    // crashing the thread.
     const persisted = store.get(key)
-    const resumed = !!(persisted && persisted.backendSessionId)
+    const backendMatches = !!persisted && persisted.backendId === project.backend
+    const resumeId = backendMatches ? persisted!.backendSessionId : null
+    const resumed = !!resumeId
     const priorUsage = persisted
       ? { turns: persisted.turns, totalCostUsd: persisted.totalCostUsd }
       : { turns: 0, totalCostUsd: 0 }
+    if (persisted && !backendMatches && persisted.backendSessionId) {
+      log.warn(
+        `slack: skipping resume for ${key} — persisted backend=${persisted.backendId} (sessionId=${persisted.backendSessionId}) but current config backend=${project.backend}. Starting fresh.`,
+      )
+    }
     const mergedOverlay: Partial<SessionConfig> = {
-      ...(persisted?.backendSessionId
-        ? { resume: persisted.backendSessionId }
-        : {}),
+      ...(resumeId ? { resume: resumeId } : {}),
       ...(sessionConfigOverlay ?? {}),
     }
     const sessionConfig: SessionConfig = buildSessionConfigFromProject(project, mergedOverlay)

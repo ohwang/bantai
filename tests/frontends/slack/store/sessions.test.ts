@@ -57,6 +57,42 @@ describe("createSessionStore — in-memory", () => {
     s.close()
   })
 
+  it("upsert with a DIFFERENT backendId clears the stale backend_session_id", () => {
+    // Regression: a channel whose backend flipped from codex → gemini used to
+    // keep the codex-era sessionId, which Gemini's session/load rejects with
+    // JSON-RPC -32603. Now an upsert that changes backend_id must drop the
+    // foreign id so a clean session/new happens on the new backend.
+    const s = mk()
+    s.upsert({ key: "swap", workspace: "W", channelId: "C", threadTs: "t", backendId: "codex" })
+    s.setBackendSessionId("swap", "codex-era-uuid")
+    s.recordTurn("swap", 0.25)
+    expect(s.get("swap")!.backendSessionId).toBe("codex-era-uuid")
+
+    // Simulate channel config change: same key, new backendId.
+    s.upsert({ key: "swap", workspace: "W", channelId: "C", threadTs: "t", backendId: "gemini" })
+    const after = s.get("swap")!
+    expect(after.backendId).toBe("gemini")
+    expect(after.backendSessionId).toBeNull()
+    // Counters are intentionally preserved — they represent thread usage,
+    // not a particular backend's state.
+    expect(after.turns).toBe(1)
+    expect(after.totalCostUsd).toBeCloseTo(0.25, 5)
+    s.close()
+  })
+
+  it("upsert with the SAME backendId preserves backend_session_id", () => {
+    // Complement of the regression test above — a no-op re-upsert (common
+    // every time we route a new inbound message to a live session) must not
+    // accidentally drop the resume id. Otherwise every turn would restart
+    // the backend session from scratch.
+    const s = mk()
+    s.upsert({ key: "noop", workspace: "W", channelId: "C", threadTs: "t", backendId: "claude" })
+    s.setBackendSessionId("noop", "claude-sdk-abc")
+    s.upsert({ key: "noop", workspace: "W", channelId: "C", threadTs: "t", backendId: "claude" })
+    expect(s.get("noop")!.backendSessionId).toBe("claude-sdk-abc")
+    s.close()
+  })
+
   it("setBackendSessionId persists the sessionId for later resume", () => {
     const s = mk()
     s.upsert({ key: "k2", workspace: "W", channelId: "C", threadTs: "t", backendId: "claude" })

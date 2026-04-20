@@ -109,6 +109,22 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
     CREATE INDEX IF NOT EXISTS sessions_last_active_idx ON sessions(last_active_at);
   `)
 
+  // NOTE: the `backend_session_id = CASE …` clause is load-bearing. Without
+  // it, flipping a channel's backend in slack.json (e.g. codex → gemini) and
+  // restarting the server leaves the DB row with the NEW backend_id but the
+  // OLD backend's sessionId. The next turn blindly passes that foreign id to
+  // `session/load` / SDK resume, which hard-errors (Gemini returns JSON-RPC
+  // -32603 "Invalid session identifier"). Clearing the sessionId whenever
+  // backend_id changes forces a clean session/new on the new backend. The
+  // stale-resume coordinator can still detect the mismatch BEFORE we get
+  // here (via the persisted row's prior backend_id) and prompt the user
+  // for cross-backend history injection; this clause is the defense-in-depth
+  // for legacy rows that predate the coordinator.
+  //
+  // SQLite UPSERT semantics: `sessions.backend_id` in the CASE expression
+  // references the OLD row value regardless of its position in the SET
+  // list (https://sqlite.org/lang_upsert.html §4.2). So evaluating it in
+  // the same SET list that also updates `backend_id` is well-defined.
   const upsertStmt = db.prepare(
     `INSERT INTO sessions (key, workspace, channel_id, thread_ts, backend_id, last_active_at, created_at)
      VALUES ($key, $workspace, $channel, $thread, $backend, $now, $now)
@@ -116,6 +132,10 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
        workspace = excluded.workspace,
        channel_id = excluded.channel_id,
        thread_ts = excluded.thread_ts,
+       backend_session_id = CASE
+         WHEN sessions.backend_id = excluded.backend_id THEN sessions.backend_session_id
+         ELSE NULL
+       END,
        backend_id = excluded.backend_id,
        last_active_at = excluded.last_active_at`,
   )

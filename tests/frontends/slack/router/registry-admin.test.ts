@@ -418,4 +418,110 @@ describe("createSessionRegistry — admin hook wiring", () => {
     expect(entry.totalCostUsd).toBeCloseTo(0.5, 5)
     expect(rec.opened[0]!.phase).toBe("IDLE")
   })
+
+  it("skips resume when persisted backend differs from configured backend", () => {
+    // Regression: before the backend-id guard in registry.ts, a channel whose
+    // config backend was swapped (codex → gemini, etc.) would still feed the
+    // previous backend's sessionId into `session/load`. Gemini replies with
+    // JSON-RPC -32603 and the session dies on open. After the fix the registry
+    // must skip resume when backend_id doesn't match and fall through to a
+    // fresh session/new — leaving the stale-resume coordinator (later commit)
+    // the opportunity to offer cross-backend history injection.
+    const rec = makeRecordingAdminHook()
+    let capturedResume: string | undefined
+    const r = createSessionRegistry({
+      workspace: "W1",
+      idleTimeoutMs: 10_000,
+      admin: rec,
+      store: {
+        get: () => ({
+          key: "slack:W1:C0ADM:main",
+          workspace: "W1",
+          channelId: "C0ADM",
+          threadTs: "main",
+          backendId: "codex", // prior run was codex …
+          backendSessionId: "codex-era-uuid",
+          turns: 3,
+          totalCostUsd: 0.75,
+          lastActiveAt: 0,
+          createdAt: 0,
+        }),
+        upsert() {},
+        setBackendSessionId() {},
+        recordTurn() {},
+        touch() {},
+        delete() {},
+        list: () => [],
+        close() {},
+      },
+      buildHost({ project, sessionConfig }) {
+        capturedResume = sessionConfig.resume
+        void project
+        const fake = createFakeBackend()
+        openFakes.push(fake)
+        return makeHostPair(fake.backend)
+      },
+    })
+    // … current config says gemini.
+    const entry = r.getOrCreate(
+      { workspace: "W1", channelId: "C0ADM" },
+      fakeProject({ backend: "gemini" }),
+      "t1",
+    )
+    // No resume id passed to the backend.
+    expect(capturedResume).toBeUndefined()
+    // `resumed` is false because no id was forwarded — even though the store
+    // HAD a row, the mismatch means we effectively start fresh.
+    expect(entry.resumed).toBe(false)
+    // Prior turn/cost counters are still surfaced so Slack users don't lose
+    // their running total on a backend swap.
+    expect(entry.turns).toBe(3)
+    expect(entry.totalCostUsd).toBeCloseTo(0.75, 5)
+  })
+
+  it("still resumes when persisted backend matches configured backend", () => {
+    // Mirror of the mismatch test to pin down the happy path.
+    let capturedResume: string | undefined
+    const rec = makeRecordingAdminHook()
+    const r = createSessionRegistry({
+      workspace: "W1",
+      idleTimeoutMs: 10_000,
+      admin: rec,
+      store: {
+        get: () => ({
+          key: "slack:W1:C0ADM:main",
+          workspace: "W1",
+          channelId: "C0ADM",
+          threadTs: "main",
+          backendId: "mock",
+          backendSessionId: "same-backend-id",
+          turns: 1,
+          totalCostUsd: 0.1,
+          lastActiveAt: 0,
+          createdAt: 0,
+        }),
+        upsert() {},
+        setBackendSessionId() {},
+        recordTurn() {},
+        touch() {},
+        delete() {},
+        list: () => [],
+        close() {},
+      },
+      buildHost({ project, sessionConfig }) {
+        capturedResume = sessionConfig.resume
+        void project
+        const fake = createFakeBackend()
+        openFakes.push(fake)
+        return makeHostPair(fake.backend)
+      },
+    })
+    const entry = r.getOrCreate(
+      { workspace: "W1", channelId: "C0ADM" },
+      fakeProject({ backend: "mock" }),
+      "t1",
+    )
+    expect(capturedResume).toBe("same-backend-id")
+    expect(entry.resumed).toBe(true)
+  })
 })

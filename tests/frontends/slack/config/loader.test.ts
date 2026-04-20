@@ -129,6 +129,96 @@ describe("loadSlackConfig — filesystem", () => {
   })
 })
 
+describe("loadSlackConfig — admin section", () => {
+  it("fills admin defaults when the key is omitted (disabled + loopback)", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+      },
+      env: {},
+    })
+    expect(resolved.admin.enabled).toBe(false)
+    expect(resolved.admin.host).toBe("127.0.0.1")
+    expect(resolved.admin.port).toBe(4242)
+    expect(resolved.admin.readOnly).toBe(false)
+    expect(resolved.admin.sessionRingSize).toBe(200)
+    // Default token_path is tilde-expanded against HOME when present; with an
+    // empty env the leading `~` may survive — we don't assert the literal value
+    // here, just that the path is a string and non-empty.
+    expect(typeof resolved.admin.tokenPath).toBe("string")
+    expect(resolved.admin.tokenPath.length).toBeGreaterThan(0)
+  })
+
+  it("expands ~ in admin.token_path against HOME", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        admin: { enabled: true, token_path: "~/admin-token" },
+      },
+      env: { HOME: "/home/op" },
+    })
+    expect(resolved.admin.enabled).toBe(true)
+    expect(resolved.admin.tokenPath).toBe("/home/op/admin-token")
+  })
+
+  it("accepts enabled + host override + ring size override", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        admin: {
+          enabled: true,
+          host: "0.0.0.0",
+          port: 5151,
+          read_only: true,
+          session_ring_size: 1000,
+        },
+      },
+      env: { HOME: "/home/op" },
+    })
+    expect(resolved.admin.enabled).toBe(true)
+    expect(resolved.admin.host).toBe("0.0.0.0")
+    expect(resolved.admin.port).toBe(5151)
+    expect(resolved.admin.readOnly).toBe(true)
+    expect(resolved.admin.sessionRingSize).toBe(1000)
+  })
+
+  it("rejects out-of-range port", async () => {
+    await expect(
+      loadSlackConfig({
+        inline: {
+          workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+          admin: { port: 70000 },
+        },
+        env: {},
+      }),
+    ).rejects.toThrow(/Invalid slack config/)
+  })
+
+  it("rejects unknown keys inside admin (strict)", async () => {
+    await expect(
+      loadSlackConfig({
+        inline: {
+          workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+          admin: { enabled: true, extra_key: "nope" },
+        },
+        env: {},
+      }),
+    ).rejects.toThrow(/unrecognized|Unrecognized|Invalid/)
+  })
+
+  it("rejects out-of-range session_ring_size", async () => {
+    await expect(
+      loadSlackConfig({
+        inline: {
+          workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+          admin: { session_ring_size: 5 },
+        },
+        env: {},
+      }),
+    ).rejects.toThrow(/Invalid slack config/)
+  })
+})
+
 describe("resolveSecret", () => {
   it("passes through literal strings", () => {
     expect(resolveSecret("xoxb-literal", {})).toBe("xoxb-literal")

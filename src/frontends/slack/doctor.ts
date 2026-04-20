@@ -40,6 +40,20 @@ export interface SlackDoctorReport {
     url?: string
   }
   findings: DiagnosticFinding[]
+  /**
+   * Admin surface findings — always present (defaults fire on absent
+   * `admin` block) but `enabled=false` means nothing will bind.
+   */
+  admin: {
+    enabled: boolean
+    host: string
+    port: number
+    tokenPath: string
+    readOnly: boolean
+    sessionRingSize: number
+    /** Warn-level note when binding to a non-loopback host. */
+    nonLoopbackWarning?: string
+  }
 }
 
 export interface RunSlackDoctorOpts {
@@ -77,6 +91,22 @@ export async function runSlackDoctor(
   try {
     const auth = await verifyAuth(app)
     const findings = await runBootDiagnostics(app)
+    const admin: SlackDoctorReport["admin"] = {
+      enabled: config.admin.enabled,
+      host: config.admin.host,
+      port: config.admin.port,
+      tokenPath: config.admin.tokenPath,
+      readOnly: config.admin.readOnly,
+      sessionRingSize: config.admin.sessionRingSize,
+    }
+    if (
+      config.admin.enabled &&
+      !isLoopbackHost(config.admin.host)
+    ) {
+      admin.nonLoopbackWarning =
+        `admin.host=${config.admin.host} is not loopback — ensure the port ` +
+        "is firewalled or tunnelled. See team/bantai-slack-monitor-tui.md."
+    }
     return {
       source: config.source,
       mode: config.workspace.mode,
@@ -89,6 +119,7 @@ export async function runSlackDoctor(
         ...(auth.url ? { url: auth.url } : {}),
       },
       findings,
+      admin,
     }
   } finally {
     try {
@@ -124,5 +155,29 @@ export function formatSlackDoctorReport(report: SlackDoctorReport): string {
       lines.push(`  - ${f.code}: ${f.message}`)
     }
   }
+  lines.push("")
+  lines.push("admin:")
+  lines.push(`  enabled:    ${report.admin.enabled ? "yes" : "no"}`)
+  if (report.admin.enabled) {
+    lines.push(`  bind:       ${report.admin.host}:${report.admin.port}`)
+    lines.push(`  token:      ${report.admin.tokenPath} (mode 0600)`)
+    lines.push(`  read-only:  ${report.admin.readOnly ? "yes" : "no"}`)
+    lines.push(`  ring size:  ${report.admin.sessionRingSize}`)
+    if (report.admin.nonLoopbackWarning) {
+      lines.push(`  WARNING:    ${report.admin.nonLoopbackWarning}`)
+    }
+  }
   return lines.join("\n")
+}
+
+/**
+ * Loopback detection — used to decide whether an admin host deserves a
+ * warn line. Accepts 127.0.0.0/8, IPv6 ::1 / [::1], "localhost". Anything
+ * else falls through to "non-loopback" (triggers the warn).
+ */
+function isLoopbackHost(host: string): boolean {
+  if (host === "localhost") return true
+  if (host === "::1" || host === "[::1]") return true
+  if (/^127(\.\d{1,3}){3}$/.test(host)) return true
+  return false
 }

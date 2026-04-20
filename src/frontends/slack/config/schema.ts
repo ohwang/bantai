@@ -303,6 +303,50 @@ export const ChannelOverrideSchema = z
 export type ChannelOverride = z.infer<typeof ChannelOverrideSchema>
 
 // ---------------------------------------------------------------------------
+// [admin]  — optional admin HTTP+WebSocket API.
+//
+// Off by default. When `enabled = true`, the launcher stands up a dedicated
+// `Bun.serve()` on its own host/port (independent of Bolt's HTTP receiver so
+// Socket Mode deployments still get admin). The `bantai slack monitor` TUI
+// is the primary client, but the protocol is framework-agnostic — curl and a
+// future browser viewer can consume it too.
+//
+// See team/bantai-slack-monitor-tui.md for the full rationale.
+// ---------------------------------------------------------------------------
+
+export const AdminConfigSchema = z
+  .object({
+    /** Stand up the admin server. Off by default. */
+    enabled: z.boolean().default(false),
+    /** Bind host. 127.0.0.1 is the security-conservative default. */
+    host: z.string().default("127.0.0.1"),
+    /**
+     * Bind port. 0 tells the OS to pick an ephemeral port — useful for
+     * integration tests that need a free port without hard-coding.
+     */
+    port: z.number().int().min(0).max(65535).default(4242),
+    /**
+     * Where the bearer token is stored on disk, mode 0600. The monitor
+     * reads this file by default. `~` is expanded at load time.
+     */
+    token_path: z.string().default("~/.bantai/slack/admin-token"),
+    /**
+     * When true, every write endpoint (approve / deny / reset / interrupt /
+     * close) rejects with 403 read_only. Useful for "watch but don't touch"
+     * deployments.
+     */
+    read_only: z.boolean().default(false),
+    /**
+     * How many recent events to retain per session for back-fill. A monitor
+     * connecting mid-session gets the tail of this buffer before switching
+     * to live frames. Defaults to 200 — see plan §"Why the ring buffer".
+     */
+    session_ring_size: z.number().int().min(10).max(5000).default(200),
+  })
+  .strict()
+export type AdminConfig = z.infer<typeof AdminConfigSchema>
+
+// ---------------------------------------------------------------------------
 // Top-level SlackConfig
 // ---------------------------------------------------------------------------
 
@@ -334,6 +378,11 @@ export const SlackConfigSchema = z
      *   - Any other string → used verbatim (with `~` expansion).
      */
     store_path: z.string().optional(),
+    /**
+     * Admin HTTP+WS surface. Omitted / empty → admin disabled, which is
+     * the secure default. See `AdminConfigSchema` above for fields.
+     */
+    admin: AdminConfigSchema.prefault({}),
   })
   .strict()
 export type SlackConfig = z.infer<typeof SlackConfigSchema>
@@ -367,8 +416,25 @@ export interface ResolvedSlackConfig {
    * string → persistence disabled (registry uses a no-op store).
    */
   storePath: string
+  /**
+   * Resolved admin surface config. Always present (per-field defaults fire
+   * on an absent `admin` block), but `admin.enabled` gates the launcher:
+   * when false, no Bun.serve is started and no code path touches the port.
+   * `tokenPath` is tilde-expanded at load time so downstream code can read
+   * the file directly.
+   */
+  admin: ResolvedAdminConfig
   /** Where the config was loaded from, for log lines + diagnostics. */
   source: string
+}
+
+export interface ResolvedAdminConfig {
+  enabled: boolean
+  host: string
+  port: number
+  tokenPath: string
+  readOnly: boolean
+  sessionRingSize: number
 }
 
 export function resolveSlackConfig(
@@ -390,7 +456,22 @@ export function resolveSlackConfig(
     channels: parsed.channels,
     mcpServers: parsed.mcp_servers,
     storePath: resolveStorePath(parsed.store_path, env),
+    admin: resolveAdminConfig(parsed.admin, env),
     source,
+  }
+}
+
+function resolveAdminConfig(
+  raw: AdminConfig,
+  env: NodeJS.ProcessEnv,
+): ResolvedAdminConfig {
+  return {
+    enabled: raw.enabled,
+    host: raw.host,
+    port: raw.port,
+    tokenPath: expandHome(raw.token_path, env),
+    readOnly: raw.read_only,
+    sessionRingSize: raw.session_ring_size,
   }
 }
 

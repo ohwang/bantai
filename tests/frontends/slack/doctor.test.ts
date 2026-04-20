@@ -19,6 +19,14 @@ describe("formatSlackDoctorReport", () => {
         url: "https://acme.slack.com/",
       },
       findings: [],
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/home/op/.bantai/slack/admin-token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
     }
     const text = formatSlackDoctorReport(report)
     expect(text).toContain("config:     /home/op/.bantai/slack.json")
@@ -40,6 +48,14 @@ describe("formatSlackDoctorReport", () => {
         { code: "channels.read", message: "probe channels.read threw: missing_scope" },
         { code: "users.read", message: "probe users.read returned error=ratelimited" },
       ],
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "~/.bantai/slack/admin-token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
     }
     const text = formatSlackDoctorReport(report)
     expect(text).toContain("persist:    disabled")
@@ -55,6 +71,14 @@ describe("formatSlackDoctorReport", () => {
       persistenceEnabled: false,
       auth: { botUserId: "U0BOT", botId: "" },
       findings: [],
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/home/op/.bantai/slack/admin-token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
     }
     const text = formatSlackDoctorReport(report)
     expect(text).not.toContain("bot id:")
@@ -125,6 +149,14 @@ describe("runSlackDoctor", () => {
       channels: [],
       mcpServers: {},
       storePath: "/tmp/slack.db",
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/home/op/.bantai/slack/admin-token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
       source: "<inline>",
     }
 
@@ -142,6 +174,7 @@ describe("runSlackDoctor", () => {
     expect(report.auth.botUserId).toBe("U0BOT")
     expect(report.auth.teamId).toBe("T0TEAM")
     expect(report.findings).toEqual([])
+    expect(report.admin.enabled).toBe(false)
   })
 
   it("stops the app even when auth.test throws", async () => {
@@ -185,6 +218,14 @@ describe("runSlackDoctor", () => {
       channels: [],
       mcpServers: {},
       storePath: "",
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/home/op/.bantai/slack/admin-token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
       source: "<inline>",
     }
     await expect(
@@ -240,6 +281,14 @@ describe("runSlackDoctor", () => {
       channels: [],
       mcpServers: {},
       storePath: "",
+      admin: {
+        enabled: true,
+        host: "0.0.0.0",
+        port: 4242,
+        tokenPath: "/home/op/.bantai/slack/admin-token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
       source: "<inline>",
     }
     const report = await runSlackDoctor({
@@ -249,5 +298,76 @@ describe("runSlackDoctor", () => {
     expect(report.findings).toHaveLength(1)
     expect(report.findings[0]!.code).toBe("channels.read")
     expect(report.findings[0]!.message).toContain("missing_scope")
+    // Enabled + non-loopback bind → doctor surfaces the warn.
+    expect(report.admin.enabled).toBe(true)
+    expect(report.admin.nonLoopbackWarning).toBeDefined()
+    expect(report.admin.nonLoopbackWarning).toMatch(/not loopback/)
+  })
+
+  it("formats the admin section with bind + token when enabled", () => {
+    const text = formatSlackDoctorReport({
+      source: "<inline>",
+      mode: "socket",
+      persistenceEnabled: false,
+      auth: { botUserId: "U0B", botId: "B0B" },
+      findings: [],
+      admin: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/home/op/.bantai/slack/admin-token",
+        readOnly: true,
+        sessionRingSize: 200,
+      },
+    })
+    expect(text).toContain("admin:")
+    expect(text).toContain("enabled:    yes")
+    expect(text).toContain("bind:       127.0.0.1:4242")
+    expect(text).toContain("token:      /home/op/.bantai/slack/admin-token (mode 0600)")
+    expect(text).toContain("read-only:  yes")
+    expect(text).toContain("ring size:  200")
+    expect(text).not.toContain("WARNING:")
+  })
+
+  it("formats the admin section with a non-loopback WARNING when applicable", () => {
+    const text = formatSlackDoctorReport({
+      source: "<inline>",
+      mode: "socket",
+      persistenceEnabled: false,
+      auth: { botUserId: "U0B", botId: "B0B" },
+      findings: [],
+      admin: {
+        enabled: true,
+        host: "0.0.0.0",
+        port: 4242,
+        tokenPath: "/t/token",
+        readOnly: false,
+        sessionRingSize: 200,
+        nonLoopbackWarning: "admin.host=0.0.0.0 is not loopback",
+      },
+    })
+    expect(text).toContain("WARNING:    admin.host=0.0.0.0 is not loopback")
+  })
+
+  it("omits detail lines when admin is disabled", () => {
+    const text = formatSlackDoctorReport({
+      source: "<inline>",
+      mode: "socket",
+      persistenceEnabled: false,
+      auth: { botUserId: "U0B", botId: "B0B" },
+      findings: [],
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/t/token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
+    })
+    expect(text).toContain("admin:")
+    expect(text).toContain("enabled:    no")
+    expect(text).not.toContain("bind:")
+    expect(text).not.toContain("token:")
   })
 })

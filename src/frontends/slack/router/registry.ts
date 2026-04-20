@@ -28,7 +28,7 @@
  */
 
 import type { SessionHost } from "../../../session/host"
-import type { AgentBackend, ConversationEvent, PermissionMode, SessionConfig, SessionOrigin, UserMessage } from "../../../protocol/types"
+import type { AgentBackend, AgentEvent, ConversationEvent, PermissionMode, SessionConfig, SessionOrigin, UserMessage } from "../../../protocol/types"
 import { SubagentManager } from "../../../subagents/manager"
 import { createBackend } from "../../../subagents/backend-factory"
 import { createSessionHost } from "../../../session/host"
@@ -36,6 +36,8 @@ import { log } from "../../../utils/logger"
 import type { ProjectConfig } from "./resolver"
 import type { SessionStore } from "../store/sessions"
 import { createNoopSessionStore } from "../store/sessions"
+import { createPhaseTracker } from "../admin/phase"
+import type { SessionPhase, SessionSummary } from "../admin/protocol"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,6 +75,16 @@ export interface SessionEntry {
   resumed: boolean
   /** Pre-restart cumulative cost + turns, read from the store. Zeros for fresh sessions. */
   priorUsage: { turns: number; totalCostUsd: number }
+  /** Cumulative turn count for this session (prior + in-process). */
+  turns: number
+  /** Cumulative cost in USD (prior + in-process). */
+  totalCostUsd: number
+  /** Epoch ms of the last observed AgentEvent, or the open time if none yet. */
+  lastEventAt: number
+  /** Epoch ms the entry was first constructed in-process. */
+  openedAt: number
+  /** Current admin-surface phase (`UNKNOWN` until the first classifying event). */
+  phase: SessionPhase
   /** Push an inbound user turn into the backend. Safe to call any time. */
   send(message: UserMessage): void
   /** Add a view-layer subscriber that will receive every AgentEvent. */
@@ -81,9 +93,10 @@ export interface SessionEntry {
    * Close the host + evict from memory. Idempotent. Does NOT touch the
    * persistent store — an idle-evicted session stays resumable; the next
    * inbound message will rehydrate it through the same store lookup that
-   * runs on a cold start.
+   * runs on a cold start. Passing `reason` lets the admin hook report
+   * WHY we closed (idle timeout vs. explicit reset vs. launcher shutdown).
    */
-  close(): void
+  close(reason?: SessionCloseReason): void
   /**
    * Tear the session down AND forget it in the persistent store. Called
    * on explicit user action (`!bantai new`), not on idle eviction. After
@@ -116,6 +129,19 @@ export interface CreateRegistryOpts {
    * real session activity. Omitted in tests that don't care about metrics.
    */
   metrics?: RegistryMetricsHook
+  /**
+   * Admin-surface hook. When present, the registry publishes lifecycle
+   * events (opened/closed/phase/event) through this interface so the
+   * launcher's admin server (item 7) can fan them out to connected
+   * monitors. Default is a no-op, so nothing downstream has to branch on
+   * whether admin is enabled.
+   */
+  admin?: RegistryAdminHook
+  /**
+   * Clock override for tests. Used to stamp `lastEventAt` /
+   * `openedAt` on the summary deterministically.
+   */
+  now?: () => number
 }
 
 export interface RegistryMetricsHook {
@@ -125,6 +151,35 @@ export interface RegistryMetricsHook {
   onTurnCompleted(addCostUsd: number): void
   onTurnErrored(): void
 }
+
+/**
+ * Admin-surface hook wired to an `AdminBus` by the launcher. The registry
+ * is the only thing that sees every session's event stream plus the open /
+ * close lifecycle, so it's also the only place that can build an accurate
+ * `SessionSummary` + `session_phase` projection without duplicating state
+ * across modules.
+ */
+export interface RegistryAdminHook {
+  /** Emitted once when a new entry is constructed (or rehydrated). */
+  onSessionOpened(summary: SessionSummary): void
+  /**
+   * Emitted for every AgentEvent that flows through the pump — same stream
+   * the view layer subscribes to. The admin server persists these in its
+   * per-session ring buffer + forwards them to keyed WebSocket clients.
+   * SystemEvents (history replay markers) are filtered out upstream — the
+   * admin surface only cares about the agent's own event stream.
+   */
+  onSessionEvent(key: string, event: AgentEvent): void
+  /**
+   * Emitted whenever the derived phase changes (see `admin/phase.ts`). Only
+   * fires on transitions — streaming deltas do NOT flap the label.
+   */
+  onSessionPhase(key: string, phase: SessionPhase): void
+  /** Emitted once when the entry is evicted (idle / reset / shutdown / error). */
+  onSessionClosed(key: string, reason: SessionCloseReason): void
+}
+
+export type SessionCloseReason = "idle" | "reset" | "shutdown" | "error"
 
 export interface BuildHostOpts {
   project: ProjectConfig
@@ -160,6 +215,12 @@ export interface SessionRegistry {
 
   /** Expose open session count for diagnostics. */
   size(): number
+
+  /**
+   * Iterate every live entry. Used by the admin server's `/admin/sessions`
+   * snapshot so a monitor that connects mid-flight sees what's running.
+   */
+  entries(): SessionEntry[]
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +233,8 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
   const buildHost = opts.buildHost ?? defaultBuildHost
   const store: SessionStore = opts.store ?? createNoopSessionStore()
   const metrics: RegistryMetricsHook = opts.metrics ?? noopMetricsHook()
+  const admin: RegistryAdminHook = opts.admin ?? noopAdminHook()
+  const now = opts.now ?? (() => Date.now())
 
   function touchIdle(entry: SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> }) {
     if (entry._idleTimer) clearTimeout(entry._idleTimer)
@@ -226,6 +289,13 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
     let started = false
     let closed = false
 
+    // Rehydrated sessions can skip UNKNOWN → IDLE: the persistent store
+    // already knows they're past their first session_init. Fresh ones stay
+    // UNKNOWN until the first classifying event lands, so the admin view
+    // doesn't flash a false IDLE label while the backend is still booting.
+    const phaseTracker = createPhaseTracker(resumed ? "IDLE" : "UNKNOWN")
+    const openedAt = now()
+
     function pump(): void {
       started = true
       const gen = backend.start(sessionConfig)
@@ -243,6 +313,8 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
                 const addUsd = event.usage?.totalCostUsd ?? 0
                 store.recordTurn(key, addUsd)
                 metrics.onTurnCompleted(addUsd)
+                entry.turns += 1
+                entry.totalCostUsd += addUsd
               } else if (event.type === "turn_start") {
                 metrics.onTurnStarted()
               } else if (event.type === "error" && event.severity === "fatal") {
@@ -250,6 +322,27 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
               }
             } catch (err) {
               log.warn(`slack: session store update failed for ${key}: ${String(err)}`)
+            }
+            entry.lastEventAt = now()
+            // AgentEvents drive the admin surface; SystemEvents (history
+            // replay markers) are TUI-only and never leave this process.
+            if (isAgentEvent(event)) {
+              // Observe phase BEFORE fan-out so admin subscribers can see the
+              // session_phase frame interleaved with the session_event frame.
+              const obs = phaseTracker.observe(event)
+              entry.phase = obs.next
+              try {
+                admin.onSessionEvent(key, event)
+              } catch (err) {
+                log.error(`slack: admin.onSessionEvent threw for ${event.type}: ${String(err)}`)
+              }
+              if (obs.changed) {
+                try {
+                  admin.onSessionPhase(key, obs.next)
+                } catch (err) {
+                  log.error(`slack: admin.onSessionPhase threw for ${event.type}: ${String(err)}`)
+                }
+              }
             }
             // Fan out to subscribers. We snapshot the set so a subscriber
             // that unsubscribes mid-fan-out doesn't skew the iteration.
@@ -279,6 +372,11 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
       routing: { channel: project.channelId, parentTs },
       resumed,
       priorUsage,
+      turns: priorUsage.turns,
+      totalCostUsd: priorUsage.totalCostUsd,
+      lastEventAt: openedAt,
+      openedAt,
+      phase: phaseTracker.current(),
       send(message) {
         if (closed) {
           log.warn(`slack: dropped message to closed session ${key}`)
@@ -293,7 +391,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
         subscribers.add(fn)
         return () => subscribers.delete(fn)
       },
-      close() {
+      close(reason: SessionCloseReason = "idle") {
         if (closed) return
         closed = true
         if (entry._idleTimer) clearTimeout(entry._idleTimer)
@@ -306,6 +404,11 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
         }
         entries.delete(key)
         metrics.onSessionClosed(entries.size)
+        try {
+          admin.onSessionClosed(key, reason)
+        } catch (err) {
+          log.error(`slack: admin.onSessionClosed threw: ${String(err)}`)
+        }
       },
       reset() {
         try {
@@ -313,7 +416,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
         } catch (err) {
           log.warn(`slack: session store delete failed for ${key}: ${String(err)}`)
         }
-        entry.close()
+        entry.close("reset")
       },
     }
     return entry
@@ -331,6 +434,11 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
       entries.set(key, entry)
       touchIdle(entry as SessionEntry & { _idleTimer?: ReturnType<typeof setTimeout> })
       metrics.onSessionOpened(entries.size)
+      try {
+        admin.onSessionOpened(buildSummary(entry))
+      } catch (err) {
+        log.error(`slack: admin.onSessionOpened threw: ${String(err)}`)
+      }
       log.info(
         `slack: opened session ${key} (backend=${project.backend}, cwd=${project.projectDir}${entry.resumed ? ", resumed" : ""})`,
       )
@@ -343,13 +451,50 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
       entries.get(sessionKeyFor(parts))?.close()
     },
     closeAll() {
-      for (const entry of Array.from(entries.values())) entry.close()
+      for (const entry of Array.from(entries.values())) entry.close("shutdown")
     },
     size() {
       return entries.size
     },
+    entries() {
+      return Array.from(entries.values())
+    },
   }
   return registry
+}
+
+/**
+ * Build the admin `SessionSummary` projection from an in-memory entry.
+ * Exported so the admin server's `/admin/sessions` snapshot can reuse the
+ * same shape instead of reinventing it.
+ */
+export function buildSummary(entry: SessionEntry): SessionSummary {
+  const channelLabel = entry.project.channelName ?? entry.project.channelId
+  return {
+    key: entry.key,
+    channelId: entry.project.channelId,
+    threadTs: entry.key.split(":").pop() ?? "main",
+    backend: entry.project.backend,
+    projectName: channelLabel,
+    phase: entry.phase,
+    turns: entry.turns,
+    totalCostUsd: entry.totalCostUsd,
+    lastEventAt: entry.lastEventAt,
+    resumed: entry.resumed,
+  }
+}
+
+/**
+ * Type guard: drop TUI-only SystemEvents (history replay markers) before
+ * the admin hook / phase reducer see them. AgentEvents are what the admin
+ * surface serialises over the wire.
+ */
+function isAgentEvent(event: ConversationEvent): event is AgentEvent {
+  return (
+    event.type !== "history_load_started" &&
+    event.type !== "history_loaded" &&
+    event.type !== "history_load_failed"
+  )
 }
 
 /** Default no-op metrics hook — keeps the pump code path uniform. */
@@ -360,6 +505,16 @@ function noopMetricsHook(): RegistryMetricsHook {
     onTurnStarted() {},
     onTurnCompleted() {},
     onTurnErrored() {},
+  }
+}
+
+/** Default no-op admin hook — lets the registry call `admin.*` unconditionally. */
+function noopAdminHook(): RegistryAdminHook {
+  return {
+    onSessionOpened() {},
+    onSessionEvent() {},
+    onSessionPhase() {},
+    onSessionClosed() {},
   }
 }
 

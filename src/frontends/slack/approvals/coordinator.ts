@@ -44,6 +44,7 @@ import {
   type ApprovalRegistry,
   type PendingApprovalRecord,
 } from "../view/approvals"
+import type { PendingApproval } from "../admin/protocol"
 
 export interface ApprovalHook {
   /**
@@ -129,6 +130,14 @@ export interface CreateCoordinatorOpts {
    * tests that don't care.
    */
   metrics?: ApprovalMetricsHook
+  /**
+   * Optional admin hook. The launcher wires this to the `AdminBus` so
+   * every connected monitor sees `approval_requested` + `approval_resolved`
+   * frames. Absent by default — disabled admin = unchanged behaviour.
+   */
+  admin?: ApprovalAdminHook
+  /** Clock override for the admin hook's `requestedAt` timestamp. */
+  now?: () => number
 }
 
 export interface ApprovalMetricsHook {
@@ -137,16 +146,46 @@ export interface ApprovalMetricsHook {
   onDenied(): void
 }
 
+/**
+ * Admin-surface hook. Called whenever an approval is first tracked and
+ * again when it resolves (by user click / admin REST action / TTL /
+ * launcher shutdown). The launcher wires this to the `AdminBus` so every
+ * connected monitor sees the approval card appear and disappear live.
+ *
+ * Kept separate from `ApprovalMetricsHook` because they carry different
+ * payloads (the admin hook needs the full `PendingApproval` shape so a
+ * mid-session monitor can render the card without re-fetching).
+ */
+export interface ApprovalAdminHook {
+  onRequested(approval: PendingApproval): void
+  onResolved(args: {
+    id: string
+    decision: "allow" | "deny" | "timeout"
+    by: "admin" | "slack" | "timeout" | "shutdown"
+  }): void
+}
+
 export function createApprovalCoordinator(
   opts: CreateCoordinatorOpts,
 ): ApprovalCoordinator {
   const defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_APPROVAL_TTL_MS
   const metrics: ApprovalMetricsHook =
     opts.metrics ?? { onRequested() {}, onApproved() {}, onDenied() {} }
+  const admin: ApprovalAdminHook =
+    opts.admin ?? { onRequested() {}, onResolved() {} }
+  const now = opts.now ?? (() => Date.now())
+
+  function safeAdmin(fn: () => void, label: string): void {
+    try {
+      fn()
+    } catch (err) {
+      log.error(`slack approvals: admin hook ${label} threw: ${String(err)}`)
+    }
+  }
 
   const registry: ApprovalRegistry = createApprovalRegistry({
     onTimeout: (record) => {
-      void finalise(record, "timeout", { userId: "bantai" }).catch((err) =>
+      void finalise(record, "timeout", { userId: "bantai" }, "timeout").catch((err) =>
         log.error(`slack approvals: timeout finalise threw: ${String(err)}`),
       )
     },
@@ -159,6 +198,7 @@ export function createApprovalCoordinator(
     record: PendingApprovalRecord,
     decision: ApprovalDecision | "timeout",
     resolver: { userId: string },
+    by: "admin" | "slack" | "timeout" | "shutdown",
   ): Promise<void> {
     // 1. Update the card in place.
     try {
@@ -208,6 +248,20 @@ export function createApprovalCoordinator(
     } catch (err) {
       log.error(`slack approvals: backend approve/deny threw for ${record.request.id}: ${String(err)}`)
     }
+
+    // 3. Admin hook fan-out. `decision` carries four ApprovalDecision-plus-
+    // timeout variants; flatten to the wire-level `allow | deny | timeout`
+    // set so monitor clients don't have to know about `allowAlways`.
+    const wireDecision: "allow" | "deny" | "timeout" =
+      decision === "allow" || decision === "allowAlways"
+        ? "allow"
+        : decision === "timeout"
+          ? "timeout"
+          : "deny"
+    safeAdmin(
+      () => admin.onResolved({ id: record.request.id, decision: wireDecision, by }),
+      "onResolved",
+    )
   }
 
   return {
@@ -242,6 +296,25 @@ export function createApprovalCoordinator(
                 approvers: binding.approvers,
                 ttlMs,
               })
+              safeAdmin(
+                () =>
+                  admin.onRequested({
+                    id: request.id,
+                    sessionKey: binding.sessionKey,
+                    channelId: channel,
+                    threadTs,
+                    tool: request.tool,
+                    input: request.input,
+                    ...(request.title ? { title: request.title } : {}),
+                    ...(request.description
+                      ? { description: request.description }
+                      : {}),
+                    approvers: binding.approvers,
+                    requestedAt: now(),
+                    ttlMs,
+                  }),
+                "onRequested",
+              )
             } catch (err) {
               log.error(
                 `slack approvals: failed to post approval card for ${request.id}: ${String(err)}. ` +
@@ -272,7 +345,7 @@ export function createApprovalCoordinator(
               // visible update and the backend call.
               return
             }
-            await finalise(res.record, "timeout", { userId: "bantai" })
+            await finalise(res.record, "timeout", { userId: "bantai" }, "shutdown")
           })()
         },
       }
@@ -296,7 +369,7 @@ export function createApprovalCoordinator(
         }
         return { kind: "unknown", permissionId: parsed.id }
       }
-      await finalise(res.record, res.decision, { userId: res.resolverUserId })
+      await finalise(res.record, res.decision, { userId: res.resolverUserId }, "slack")
       return { kind: "resolved", permissionId: parsed.id }
     },
 
@@ -305,7 +378,7 @@ export function createApprovalCoordinator(
     closeAll() {
       const outstanding = registry.closeAll()
       for (const record of outstanding) {
-        void finalise(record, "timeout", { userId: "bantai" }).catch((err) =>
+        void finalise(record, "timeout", { userId: "bantai" }, "shutdown").catch((err) =>
           log.error(`slack approvals: closeAll finalise threw: ${String(err)}`),
         )
       }

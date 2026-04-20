@@ -245,6 +245,7 @@ export function SyncProvider(props: ParentProps) {
       messages.setState("streamingText", "")
       messages.setState("streamingThinking", "")
       messages.setState("activeTasks", reconcile([]))
+      messages.setState("todos", reconcile([]))
       messages.setState("backgrounded", false)
       messages.setState("streamingOutputTokens", 0)
       messages.setState("lastTurnFiles", undefined)

@@ -235,6 +235,14 @@ export function StatusBar(props: { hint?: string | null }) {
 
       {/* Line 2: permission mode indicator (left-aligned) + rate-limit row (right-aligned) */}
       <box height={1} flexDirection="row" paddingLeft={2} paddingRight={1}>
+        {/* Follow-mode pill — read via accessor so the runtime-mutable config
+            rule is respected. Config is only ever set at launch today, but
+            the pattern keeps the component safe if that ever changes. */}
+        <Show when={Boolean(agent.config.readOnly)}>
+          <text fg={colors.accent.highlight} attributes={TextAttributes.BOLD}>
+            {"FOLLOW "}
+          </text>
+        </Show>
         <text fg={permModeColor()}>{"\u25CF "}</text>
         <text fg={colors.permission.modeLabel}>{permissionModeLabel(permMode())}</text>
         {data.sandboxHint() && (

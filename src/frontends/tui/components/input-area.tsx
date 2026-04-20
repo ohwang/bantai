@@ -245,7 +245,14 @@ export function InputArea() {
   let hintShownCount = 0
   const MAX_HINT_SHOWS = 5
 
+  // Read follow-mode flag via an accessor so the gating stays reactive
+  // (AGENTS.md: never snapshot runtime-mutable config values into a const).
+  const isReadOnly = () => Boolean(agent.config.readOnly)
+
   const placeholder = () => {
+    if (isReadOnly()) {
+      return "👀 Following (read-only). Interact in Slack to drive this session."
+    }
     if (session.resuming) return "Loading session history…"
     if (session.sessionState === "INITIALIZING") return "Type a message to start..."
     if (session.sessionState === "RUNNING") return "Type to queue a message..."
@@ -263,6 +270,7 @@ export function InputArea() {
   }
 
   const isDisabled = () =>
+    isReadOnly() ||
     session.resuming ||
     session.sessionState === "WAITING_FOR_PERM" ||
     session.sessionState === "WAITING_FOR_ELIC" ||
@@ -405,6 +413,19 @@ export function InputArea() {
   }
 
   const submit = async () => {
+    // Read-only follow mode: swallow whatever was typed and show a banner.
+    // This is belt-and-braces — the textarea is already disabled via
+    // `focused={!isDisabled() ...}` — but keeps an errant paste-then-Enter
+    // from slipping through and writing to the backend's sendMessage.
+    if (isReadOnly()) {
+      if (textareaRef) resetInputState(textareaRef, setLineCount, setAttachedImageCount)
+      sync.pushEvent({
+        type: "system_message",
+        text: "Read-only follow session — interact in the originating frontend (Slack) to drive this session.",
+        ephemeral: true,
+      })
+      return
+    }
     if (isDisabled()) return
     if (!textareaRef) return
     let text = expandPasteRefs(textareaRef.plainText?.trim() ?? "")

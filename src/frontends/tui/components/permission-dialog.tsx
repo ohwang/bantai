@@ -25,6 +25,7 @@ import { colors } from "../theme/tokens"
 import { Divider, ShortcutBar, ShortcutHint } from "./primitives"
 import { truncatePathMiddle } from "../../../utils/truncate"
 import type { PermissionRequestEvent, PermissionUpdate } from "../../../protocol/types"
+import { log } from "../../../utils/logger"
 
 // Max lines to show in content preview
 const MAX_PREVIEW_LINES = 20
@@ -308,6 +309,19 @@ export function PermissionDialog() {
     if (currentId && currentId !== lastDebouncePermId) {
       lastDebouncePermId = currentId
       justActed = false
+    }
+  })
+
+  // Dev assertion: a permission dialog must never open in read-only follow
+  // mode. The FollowBackend translator never emits permission_request, so
+  // reaching this branch means something is broken upstream (spurious
+  // event, stale state). Log loudly — cheaper to catch than to debug.
+  createEffect(() => {
+    if (agent.config.readOnly && state.pendingPermission) {
+      log.error(
+        "Permission dialog opened in read-only follow mode — this should not happen",
+        { permissionId: state.pendingPermission.id },
+      )
     }
   })
 

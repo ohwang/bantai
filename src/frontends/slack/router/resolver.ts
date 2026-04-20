@@ -77,6 +77,12 @@ export interface ProjectConfig {
    */
   threadRequireExplicitMention: boolean
   /**
+   * Max prior thread messages to fetch + prepend as context on a fresh
+   * session created by a mid-thread @-mention. 0 disables the fetch.
+   * See schema comment for `thread_history_limit`.
+   */
+  threadHistoryLimit: number
+  /**
    * Compile `[[slack_buttons:…]]` / `[[slack_select:…]]` directives
    * and trailing `Options: …` lines from agent final text into Block
    * Kit interactive actions.
@@ -171,6 +177,8 @@ export function resolveProjectForChannel(
     threadRequireExplicitMention:
       override?.thread_require_explicit_mention ??
       defaults.thread_require_explicit_mention,
+    threadHistoryLimit:
+      override?.thread_history_limit ?? defaults.thread_history_limit,
     interactiveReplies:
       override?.interactive_replies ?? defaults.interactive_replies,
     debounceMs: override?.debounce_ms ?? defaults.debounce_ms,

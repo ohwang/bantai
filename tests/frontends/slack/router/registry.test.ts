@@ -137,6 +137,7 @@ function fakeProject(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     showCost: false,
     autoJoinThreads: true,
     threadRequireExplicitMention: false,
+    threadHistoryLimit: 0,
     interactiveReplies: false,
     debounceMs: 0,
     nativeStreaming: false,

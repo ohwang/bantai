@@ -96,6 +96,26 @@ export const DefaultsSchema = z
      */
     thread_require_explicit_mention: z.boolean().default(false),
     /**
+     * When the bot is @-mentioned mid-thread for the first time (no prior
+     * session for this thread), fetch up to N most-recent prior messages
+     * via `conversations.replies` and prepend them as a `<slack_thread_history>`
+     * preamble on the first turn. Each prior message is annotated with
+     * author display name, role (user/assistant), and timestamp so the
+     * agent sees who said what when.
+     *
+     * Default 20 — enough for a typical discussion thread without blowing
+     * the context window. Set to 0 to disable (previous behaviour: agent
+     * only sees the triggering mention). Thread replies after the first
+     * turn are not re-prefetched — the live session accumulates its own
+     * history from that point on.
+     *
+     * Only runs on fresh sessions (not rehydrated from the persistent
+     * store), so a restart doesn't double-include prior context. Fetch
+     * failures are logged and skipped — the agent still gets the current
+     * message.
+     */
+    thread_history_limit: z.number().int().nonnegative().default(20),
+    /**
      * Compile `[[slack_buttons: …]]` / `[[slack_select: …]]` directives
      * and trailing `Options: a, b, c.` lines from the agent's final reply
      * into Block Kit interactive actions. Clicking a button feeds a new
@@ -224,6 +244,7 @@ export const ChannelOverrideSchema = z
     verbosity: VerbosityLevelSchema.optional(),
     require_mention: z.boolean().optional(),
     thread_require_explicit_mention: z.boolean().optional(),
+    thread_history_limit: z.number().int().nonnegative().optional(),
     interactive_replies: z.boolean().optional(),
     debounce_ms: z.number().int().nonnegative().optional(),
     native_streaming: z.boolean().optional(),

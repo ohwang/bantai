@@ -33,6 +33,10 @@ import {
 import { parseInteractiveReplyActionId } from "./view/interactive-replies"
 import type { AttachmentFetcher } from "./inbox/attachments"
 import {
+  fetchThreadHistory,
+  formatThreadHistory,
+} from "./inbox/thread-history"
+import {
   buildDefaultSendAdapter,
   createEventRenderer,
   type EventRenderer,
@@ -390,6 +394,13 @@ async function dispatchMessageBatch(
     botUserId: ctx.botUserId,
   })
 
+  // Capture whether a session already exists for this thread *before*
+  // getOrCreate mutates the registry. Used below to decide whether to
+  // prefetch thread history: a fresh session + mid-thread trigger
+  // means the bot was just pulled into an existing conversation and
+  // needs the prior context to make sense of the current message.
+  const hadExistingSession = !!ctx.registry.peek(sessionParts)
+
   const entry = ctx.registry.getOrCreate(
     sessionParts,
     project,
@@ -444,6 +455,36 @@ async function dispatchMessageBatch(
     renderer.setTriggerTs(turn.triggerTs)
   }
 
+  // Prefetch thread history when the bot is pulled into an existing
+  // thread for the first time. Three conditions must all hold:
+  //   1. the trigger has a threadTs (user replied inside a thread)
+  //   2. no session existed before this dispatch (first time this
+  //      thread is getting a session)
+  //   3. the entry wasn't rehydrated from the persistence store
+  //      (a resumed session already carries its own history in the
+  //      backend — re-injecting the thread would double-count)
+  //   4. the project opts in via `thread_history_limit > 0`
+  // The prefix becomes part of turn.text so the downstream attachment
+  // path (which wraps turn.text with `ingested.textHint`) carries it
+  // through unchanged.
+  const triggeredMidThread = !!last.event.threadTs
+  const shouldPrefetchHistory =
+    triggeredMidThread &&
+    !hadExistingSession &&
+    !entry.resumed &&
+    project.threadHistoryLimit > 0
+  if (shouldPrefetchHistory) {
+    const prefix = await buildThreadHistoryPrefix(ctx, {
+      channelId: channel,
+      threadTs: last.event.threadTs!,
+      currentMessageTs: last.event.ts,
+      limit: project.threadHistoryLimit,
+    })
+    if (prefix) {
+      turn.text = `${prefix}\n\n${turn.text}`
+    }
+  }
+
   // Pool attachments across the batch — a user who drops two images in
   // quick succession expects the agent to see both in the same turn.
   const incomingFiles = entries.flatMap((e) =>
@@ -466,6 +507,49 @@ async function dispatchMessageBatch(
   }
 
   entry.send({ text: turn.text })
+}
+
+/**
+ * Fetch + format the prior thread messages as a `<slack_thread_history>`
+ * preamble. Returns undefined on empty / error so the caller can fall
+ * back to the bare turn text.
+ */
+async function buildThreadHistoryPrefix(
+  ctx: RoutingCtx,
+  args: {
+    channelId: string
+    threadTs: string
+    currentMessageTs: string
+    limit: number
+  },
+): Promise<string | undefined> {
+  try {
+    const messages = await fetchThreadHistory({
+      app: ctx.app,
+      channelId: args.channelId,
+      threadTs: args.threadTs,
+      currentMessageTs: args.currentMessageTs,
+      limit: args.limit,
+    })
+    if (messages.length === 0) return undefined
+    const prefix = await formatThreadHistory({
+      messages,
+      botUserId: ctx.botUserId,
+      userCache: ctx.userCache,
+    })
+    if (prefix) {
+      log.info(
+        `slack: prepended thread history (${messages.length} msg) for new session in ${args.channelId}:${args.threadTs}`,
+      )
+    }
+    return prefix
+  } catch (err) {
+    // Non-fatal — the current message alone is still useful.
+    log.warn(
+      `slack: thread-history prefetch failed for ${args.channelId}:${args.threadTs}: ${String(err)}`,
+    )
+    return undefined
+  }
 }
 
 // ---------------------------------------------------------------------------

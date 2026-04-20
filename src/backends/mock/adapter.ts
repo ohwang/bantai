@@ -79,6 +79,7 @@ export class MockAdapter extends BaseAdapter {
       ],
       models: [
         { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+        { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
         { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
       ],
     })
@@ -147,6 +148,7 @@ export class MockAdapter extends BaseAdapter {
   async availableModels(): Promise<ModelInfo[]> {
     return [
       { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
       { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
     ]
   }

@@ -6,6 +6,7 @@
 
 /** Map raw API model IDs to friendly display names */
 export const MODEL_NAMES: Record<string, string> = {
+  "claude-opus-4-7": "Opus 4.7",
   "claude-opus-4-6": "Opus 4.6",
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-haiku-4-5-20251001": "Haiku 4.5",
@@ -37,6 +38,7 @@ export const MODEL_NAMES: Record<string, string> = {
  * These are hardcoded fallbacks when the SDK doesn't report dynamically.
  */
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "claude-opus-4-7": 1_000_000,
   "claude-opus-4-6": 1_000_000,
   "claude-sonnet-4-6": 200_000,
   "claude-haiku-4-5-20251001": 200_000,
@@ -55,9 +57,15 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
 
-/** Short aliases used by Claude Code's settings (e.g., "opus", "sonnet", "haiku") */
+/** Short aliases used by Claude Code's settings (e.g., "opus", "sonnet", "haiku").
+ *
+ * Policy: aliases track the latest shipped version, matching Anthropic's API
+ * convention where bare `opus`/`sonnet`/`haiku` resolve to the newest model in
+ * the family. When a new version ships (e.g. Opus 4.7), bump the alias here
+ * rather than pinning users to the previous release.
+ */
 const MODEL_ALIASES: Record<string, string> = {
-  "opus": "Opus 4.6",
+  "opus": "Opus 4.7",
   "sonnet": "Sonnet 4.6",
   "haiku": "Haiku 4.5",
 }

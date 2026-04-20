@@ -21,6 +21,7 @@ export function idleSession(overrides?: Partial<SessionContextState>): Partial<S
       ],
       models: [
         { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", contextWindow: 200_000 },
+        { id: "claude-opus-4-7", name: "Claude Opus 4.7", contextWindow: 1_000_000 },
         { id: "claude-opus-4-6", name: "Claude Opus 4.6", contextWindow: 1_000_000 },
       ],
       account: { email: "dev@example.com", plan: "Team" },

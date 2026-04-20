@@ -54,7 +54,7 @@ function buildOptions(): BackendOption[] {
     } else if (descriptor.id === "codex") {
       models = ["gpt-5", "gpt-5-codex", "o4-mini"]
     } else if (descriptor.id === "mock") {
-      models = ["claude-sonnet-4-6", "claude-opus-4-6"]
+      models = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-6"]
     }
     return { descriptor, models }
   })

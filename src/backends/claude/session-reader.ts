@@ -71,7 +71,7 @@ function stripImagePlaceholders(text: string): string {
 // so we detect them explicitly and log the skip instead of dropping blindly.
 // ---------------------------------------------------------------------------
 
-type SyntheticReason =
+export type SyntheticReason =
   | "compaction_summary"
   | "slash_command_marker"
   | "local_command_caveat"
@@ -89,7 +89,16 @@ const SYNTHETIC_PREFIXES: ReadonlyArray<{ prefix: string; reason: SyntheticReaso
   { prefix: "<local-command-stderr>", reason: "local_command_stderr" },
 ]
 
-function detectSyntheticReason(
+/**
+ * Detect whether a user-role JSONL entry is an SDK-synthesised turn rather
+ * than real user input.
+ *
+ * Exported so follow-mode's translator can reuse the exact same rules the
+ * resume reader uses — duplicating this detection is how "user messages
+ * vanished on resume" shipped. If you're adding another JSONL consumer,
+ * call this instead of reimplementing the prefix checks.
+ */
+export function detectSyntheticReason(
   text: string,
   entry: { isMeta?: boolean },
 ): SyntheticReason | null {

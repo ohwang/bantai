@@ -4,9 +4,12 @@
  * project directory the session is cd'd into, the session id (for resume
  * later), the configured verbosity, and a hint on control commands.
  *
- * Block Kit: header + section (mrkdwn body) + context block. Actions
- * (change model / reset / silence) are plan §5 S4 work — the Block Kit
- * interaction layer lands with approvals.
+ * Block Kit: a single context block holding the whole thing — deliberately
+ * light / muted, following Slack's "metadata" affordance. The info reads as
+ * small gray text so it doesn't compete with the first agent turn right
+ * below it. No header, no code-style highlighting on values (both make the
+ * banner read as "shouty"). The session id gets its own line so it's a
+ * clean single-click selection when someone wants to resume later.
  *
  * Pure-shape builders live in `buildSessionBanner()` so they're
  * snapshot-testable; the adapter-driven `postSessionBanner()` is a thin
@@ -39,13 +42,14 @@ export function buildSessionBanner(input: BannerInputs): {
   blocks: KnownBlock[]
 } {
   const { project } = input
-  const title = input.resumed ? ":arrows_counterclockwise: bantai session resumed" : ":rocket: bantai session started"
-  const bodyLines = [
-    `*backend*  \`${project.backend}\``,
-    `*model*  \`${project.model ?? "<default>"}\``,
-    `*project*  \`${project.channelName ? `${project.channelName} — ` : ""}${project.projectDir}\``,
-    `*session*  \`${input.sessionId ?? "<pending>"}\``,
-    `*verbosity*  \`${project.verbosity}\``,
+  const title = input.resumed ? "bantai session resumed" : "bantai session started"
+  const lines = [
+    title,
+    `backend ${project.backend}`,
+    `model ${project.model ?? "<default>"}`,
+    `project ${project.projectDir}`,
+    `session ${input.sessionId ?? "<pending>"}`,
+    `verbosity ${project.verbosity}`,
   ]
   if (input.resumed) {
     const r = input.resumed
@@ -53,26 +57,19 @@ export function buildSessionBanner(input: BannerInputs): {
     if (typeof r.priorTurns === "number") parts.push(`${r.priorTurns} prior turns`)
     if (typeof r.priorCostUsd === "number") parts.push(`cost ~ $${r.priorCostUsd.toFixed(3)}`)
     if (r.lastActive) parts.push(`last active ${r.lastActive}`)
-    if (parts.length > 0) bodyLines.push(`*resume*  ${parts.join(" · ")}`)
+    if (parts.length > 0) lines.push(`resume ${parts.join(" · ")}`)
   }
   const participants = input.participants ?? []
-  const contextText =
+  const trailer =
     participants.length > 0
-      ? `Participants: ${participants.map((p) => `\`@${p}\``).join("  ")}`
-      : `type \`!bantai help\` for control commands`
+      ? `participants ${participants.map((p) => `@${p}`).join("  ")}`
+      : `type !bantai help for control commands`
+  lines.push(trailer)
 
   const blocks: KnownBlock[] = [
     {
-      type: "header",
-      text: { type: "plain_text", text: title, emoji: true },
-    },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: bodyLines.join("\n") },
-    },
-    {
       type: "context",
-      elements: [{ type: "mrkdwn", text: contextText }],
+      elements: [{ type: "mrkdwn", text: lines.join("\n") }],
     },
   ]
 

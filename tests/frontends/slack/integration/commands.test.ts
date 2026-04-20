@@ -85,7 +85,8 @@ describe("slack frontend S3 — banner + !bantai commands", () => {
     // Banner text fallback mentions backend + model + project (plan §5).
     expect(banner.text ?? "").toMatch(/bantai/i)
     expect(Array.isArray(banner.blocks)).toBe(true)
-    expect(banner.blocks!.length).toBeGreaterThanOrEqual(2)
+    expect(banner.blocks!.length).toBeGreaterThanOrEqual(1)
+    expect((banner.blocks![0] as { type?: string }).type).toBe("context")
   })
 
   it("responds to '!bantai help' without driving the backend", async () => {

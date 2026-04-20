@@ -210,6 +210,15 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
     return "Thinking\u2026"
   }
 
+  // Reactive accessor: whether the inline spinner block is currently rendered.
+  // Used to pick which TaskChecklist variant (inline vs standalone) shows, so
+  // the checklist stays visible continuously — including mid-stream — instead
+  // of flashing out each time assistant text streams in. Matches Claude Code.
+  const spinnerVisible = () =>
+    session.sessionState === "RUNNING" &&
+    !state.backgrounded &&
+    !state.streamingText
+
   // Auto-scroll to bottom when permission/elicitation dialog appears
   // so the user can see and interact with it immediately.
   // Uses queueMicrotask to defer until after the current reactive pass
@@ -453,11 +462,7 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
               Hidden while text is actively streaming since that already signals progress.
               Inline TaskChecklist sits directly below the spinner during active runs. */}
           <box flexDirection="column">
-            <Show when={
-              session.sessionState === "RUNNING" &&
-              !state.backgrounded &&
-              !state.streamingText
-            }>
+            <Show when={spinnerVisible()}>
               <box marginTop={1} paddingLeft={2} flexDirection="column">
                 <StreamingSpinner label={spinnerLabel()} elapsedSeconds={turnElapsed()} outputTokens={state.streamingOutputTokens || session.cost.outputTokens} />
                 <Show when={state.todos.length > 0}>
@@ -467,11 +472,12 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
             </Show>
           </box>
 
-          {/* Standalone TaskChecklist — shown between turns / when idle so the
-              user can see the active task list without a running spinner.
-              Gated on NOT being in RUNNING, mirroring Claude Code. */}
+          {/* Standalone TaskChecklist — shown whenever the inline spinner is
+              NOT rendered but todos exist: mid-stream, during permission
+              dialogs, while backgrounded, and while idle. Keeps the checklist
+              visible continuously, matching Claude Code. */}
           <box flexDirection="column">
-            <Show when={session.sessionState !== "RUNNING" && state.todos.length > 0}>
+            <Show when={!spinnerVisible() && state.todos.length > 0}>
               <TaskChecklist todos={state.todos} isStandalone={true} />
             </Show>
           </box>

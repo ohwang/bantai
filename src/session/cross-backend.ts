@@ -275,7 +275,8 @@ export function parseCodexSessionWithSummary(filePath: string): ParsedSession {
       filePath,
       error: err instanceof Error ? err.message : String(err),
     })
-    return { blocks: [], summary: emptySummary }
+    // Codex has no TodoWrite equivalent — always return an empty todos list.
+    return { blocks: [], summary: emptySummary, todos: [] }
   }
 
   const blocks: Block[] = []
@@ -477,7 +478,9 @@ export function parseCodexSessionWithSummary(filePath: string): ParsedSession {
     usage,
   })
 
-  return { blocks, summary }
+  // Codex has no TodoWrite-equivalent built-in; the TUI todo panel only lights
+  // up for Claude-origin sessions. Always return an empty list.
+  return { blocks, summary, todos: [] }
 }
 
 // ---------------------------------------------------------------------------
@@ -529,7 +532,8 @@ export function parseGeminiSessionWithSummary(filePath: string): ParsedSession {
       filePath,
       error: err instanceof Error ? err.message : String(err),
     })
-    return { blocks: [], summary: emptySummary }
+    // Gemini has no TodoWrite equivalent — always return an empty todos list.
+    return { blocks: [], summary: emptySummary, todos: [] }
   }
 
   let session: any
@@ -540,7 +544,7 @@ export function parseGeminiSessionWithSummary(filePath: string): ParsedSession {
       filePath,
       error: err instanceof Error ? err.message : String(err),
     })
-    return { blocks: [], summary: emptySummary }
+    return { blocks: [], summary: emptySummary, todos: [] }
   }
 
   const blocks: Block[] = []
@@ -688,7 +692,9 @@ export function parseGeminiSessionWithSummary(filePath: string): ParsedSession {
     usage,
   })
 
-  return { blocks, summary }
+  // Gemini has no TodoWrite-equivalent built-in; the TUI todo panel only lights
+  // up for Claude-origin sessions. Always return an empty list.
+  return { blocks, summary, todos: [] }
 }
 
 // ---------------------------------------------------------------------------

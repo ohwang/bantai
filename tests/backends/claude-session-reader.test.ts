@@ -248,3 +248,174 @@ describe("readSessionHistory — robustness", () => {
     expect(summary.turnCount).toBe(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// TodoWrite reconstruction on resume
+//
+// Motivation: when a session is resumed, the UI rebuilds ConversationState by
+// reading JSONL directly — it never replays the live reducer path. That meant
+// `ConversationState.todos` was never populated from history, so any active
+// TodoWrite checklist silently vanished on resume. The reader now tracks the
+// LAST TodoWrite tool_use in the transcript (reducer semantics: full-list
+// replacement, so earlier calls are superseded) and returns its todos via the
+// extended ParsedSession shape.
+// ---------------------------------------------------------------------------
+
+describe("readSessionHistory — TodoWrite reconstruction", () => {
+  it("returns empty todos when the session has no TodoWrite calls", () => {
+    writeJsonl([
+      {
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text: "hello" }] },
+        uuid: "u1",
+        timestamp: "2026-04-18T00:00:00Z",
+      },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "hi back" }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        uuid: "a1",
+        timestamp: "2026-04-18T00:00:01Z",
+      },
+    ])
+    const { todos } = readSessionHistory(SESSION_ID, projectCwd)
+    expect(todos).toEqual([])
+  })
+
+  it("reconstructs todos from a single TodoWrite call", () => {
+    const items = [
+      { content: "Write tests", activeForm: "Writing tests", status: "pending" as const },
+      { content: "Fix bug", activeForm: "Fixing bug", status: "in_progress" as const },
+      { content: "Ship it", activeForm: "Shipping it", status: "completed" as const },
+    ]
+    writeJsonl([
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "I'll track this." },
+            {
+              type: "tool_use",
+              id: "toolu_todo_1",
+              name: "TodoWrite",
+              input: { todos: items },
+            },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+        uuid: "a1",
+        timestamp: "2026-04-18T00:00:00Z",
+      },
+    ])
+    const { todos } = readSessionHistory(SESSION_ID, projectCwd)
+    expect(todos).toEqual(items)
+  })
+
+  it("only returns the LAST TodoWrite call when there are several", () => {
+    // Earlier calls are superseded by later ones — matches the reducer's
+    // full-list replacement semantics. If the reader kept the first call by
+    // mistake, the resumed checklist would show a stale, already-worked list.
+    const first = [
+      { content: "Draft design", activeForm: "Drafting design", status: "completed" as const },
+      { content: "Review with team", activeForm: "Reviewing with team", status: "pending" as const },
+    ]
+    const second = [
+      { content: "Implement feature", activeForm: "Implementing feature", status: "in_progress" as const },
+      { content: "Add tests", activeForm: "Adding tests", status: "pending" as const },
+      { content: "Update docs", activeForm: "Updating docs", status: "pending" as const },
+    ]
+    writeJsonl([
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_todo_1",
+              name: "TodoWrite",
+              input: { todos: first },
+            },
+          ],
+          usage: { input_tokens: 5, output_tokens: 2 },
+        },
+        uuid: "a1",
+        timestamp: "2026-04-18T00:00:00Z",
+      },
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_todo_1", content: "ok" }],
+        },
+        uuid: "u1",
+        timestamp: "2026-04-18T00:00:01Z",
+      },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_todo_2",
+              name: "TodoWrite",
+              input: { todos: second },
+            },
+          ],
+          usage: { input_tokens: 6, output_tokens: 3 },
+        },
+        uuid: "a2",
+        timestamp: "2026-04-18T00:00:02Z",
+      },
+    ])
+    const { todos } = readSessionHistory(SESSION_ID, projectCwd)
+    expect(todos).toEqual(second)
+  })
+
+  it("drops malformed todo items but keeps the valid ones", () => {
+    // The helper's defensive filtering is the single source of truth for
+    // validation — we inherit it here so protocol drift (e.g. a renamed
+    // status) surfaces as a log.warn from one place, not two.
+    writeJsonl([
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_todo_mixed",
+              name: "TodoWrite",
+              input: {
+                todos: [
+                  // Valid.
+                  { content: "Valid task", activeForm: "Doing valid task", status: "pending" },
+                  // Malformed — unknown status.
+                  { content: "Bad status", activeForm: "Breaking", status: "frobnicated" },
+                  // Malformed — missing activeForm.
+                  { content: "No active form", status: "pending" },
+                  // Another valid one after a malformed one, to ensure the
+                  // filter doesn't short-circuit on the first bad entry.
+                  { content: "Another valid", activeForm: "Doing another", status: "completed" },
+                ],
+              },
+            },
+          ],
+          usage: { input_tokens: 2, output_tokens: 1 },
+        },
+        uuid: "a1",
+        timestamp: "2026-04-18T00:00:00Z",
+      },
+    ])
+    const { todos } = readSessionHistory(SESSION_ID, projectCwd)
+    expect(todos).toEqual([
+      { content: "Valid task", activeForm: "Doing valid task", status: "pending" },
+      { content: "Another valid", activeForm: "Doing another", status: "completed" },
+    ])
+  })
+})

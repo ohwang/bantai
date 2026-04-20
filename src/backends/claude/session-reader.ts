@@ -38,8 +38,10 @@ import type {
   ParsedSession,
   SessionResumeSummary,
   SessionResumeUsage,
+  TodoItem,
   ToolStatus,
 } from "../../protocol/types"
+import { synthesizeTodosUpdatedEvent } from "./event-mapper"
 
 /** Encode a cwd path to the Claude project directory key format */
 function encodeProjectKey(cwd: string): string {
@@ -270,11 +272,19 @@ export function readSessionHistory(
       filePath,
       error: err instanceof Error ? err.message : String(err),
     })
-    return { blocks: [], summary: emptySummary }
+    return { blocks: [], summary: emptySummary, todos: [] }
   }
 
   const blocks: Block[] = []
   const lines = raw.split("\n")
+
+  // Track the `input` of the most-recently-seen TodoWrite tool_use. The
+  // reducer treats `todos_updated` as a full-list replacement, so only the
+  // LAST TodoWrite call in the transcript matters — earlier calls are
+  // superseded. We defer parsing/validation until after the loop so we reuse
+  // the single source of truth (`synthesizeTodosUpdatedEvent`) — that
+  // helper already filters malformed items and warns on protocol drift.
+  let lastTodoWriteInput: unknown = undefined
 
   // Usage aggregation. Claude's per-message `usage` contains fields that are
   // DISJOINT (input + cache_read + cache_creation = total prompt tokens for
@@ -405,6 +415,11 @@ export function readSessionHistory(
 
             case "tool_use":
               toolCallCount++
+              if (block.name === "TodoWrite") {
+                // Record the latest TodoWrite input; only the LAST call in
+                // the transcript survives (reducer uses replacement semantics).
+                lastTodoWriteInput = block.input ?? {}
+              }
               blocks.push({
                 type: "tool",
                 id: block.id,
@@ -451,16 +466,30 @@ export function readSessionHistory(
     filePath,
   }
 
+  // Reconstruct the todo checklist from the last TodoWrite call in history.
+  // Reusing `synthesizeTodosUpdatedEvent` keeps validation + warn-on-drift
+  // behaviour identical to the live event path — if we diverged, we'd ship
+  // two subtly different rules for the same shape, which is how the
+  // "user messages vanish on resume" class of bug keeps resurfacing.
+  let todos: TodoItem[] = []
+  if (lastTodoWriteInput !== undefined) {
+    const event = synthesizeTodosUpdatedEvent(lastTodoWriteInput)
+    if (event.type === "todos_updated") {
+      todos = event.todos
+    }
+  }
+
   log.info("Session history loaded", {
     sessionId,
     blocks: blocks.length,
     users: blocks.filter((b) => b.type === "user").length,
     assistants: blocks.filter((b) => b.type === "assistant").length,
     tools: blocks.filter((b) => b.type === "tool").length,
+    todos: todos.length,
     usage,
   })
 
-  return { blocks, summary }
+  return { blocks, summary, todos }
 }
 
 /** Find the most recently modified session in a project directory */

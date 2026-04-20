@@ -473,6 +473,12 @@ export interface SessionResumeSummary {
 export interface ParsedSession {
   blocks: Block[]
   summary: SessionResumeSummary
+  /** Todo list reconstructed from the last TodoWrite tool_use in the session
+   *  history. The reducer's live path replaces `ConversationState.todos`
+   *  wholesale on each TodoWrite, so only the LAST call in the transcript
+   *  matters — earlier calls are superseded. Backends without a TodoWrite
+   *  equivalent (Codex, Gemini) always return `[]`. */
+  todos: TodoItem[]
 }
 
 /** Union of all agent events */

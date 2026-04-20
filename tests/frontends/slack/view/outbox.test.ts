@@ -10,7 +10,15 @@ import {
 interface Call {
   kind: "post" | "update"
   channel: string
+  /**
+   * Body captured from the args. Populated from `markdownText` when the
+   * outbox sends raw markdown (the default for agent reply bodies) and
+   * from `text` on the mrkdwn path — tests can just assert on `text`
+   * without caring which wire field carried it.
+   */
   text: string
+  /** Which wire field the body arrived on, for tests that need to check. */
+  bodyField: "text" | "markdownText"
   threadTs?: string
   ts?: string
   identity?: OutboundIdentity
@@ -29,10 +37,14 @@ function createFakeAdapter(opts: { failPostAt?: number; failUpdateAt?: number } 
       if (opts.failPostAt !== undefined && counter.n === opts.failPostAt) {
         throw new Error(`simulated post failure on call ${counter.n}`)
       }
+      const bodyField: "text" | "markdownText" =
+        args.markdownText !== undefined ? "markdownText" : "text"
+      const text = args.markdownText !== undefined ? args.markdownText : args.text
       calls.push({
         kind: "post",
         channel: args.channel,
-        text: args.text,
+        text,
+        bodyField,
         threadTs: args.threadTs,
         ...(args.identity ? { identity: args.identity } : {}),
       })
@@ -43,11 +55,15 @@ function createFakeAdapter(opts: { failPostAt?: number; failUpdateAt?: number } 
       if (opts.failUpdateAt !== undefined && counter.n === opts.failUpdateAt) {
         throw new Error(`simulated update failure on call ${counter.n}`)
       }
+      const bodyField: "text" | "markdownText" =
+        args.markdownText !== undefined ? "markdownText" : "text"
+      const text = args.markdownText !== undefined ? args.markdownText : args.text
       calls.push({
         kind: "update",
         channel: args.channel,
         ts: args.ts,
-        text: args.text,
+        text,
+        bodyField,
       })
     },
   }
@@ -390,8 +406,15 @@ describe("createOutboundStream — currentText", () => {
   })
 })
 
-describe("createOutboundStream — markdown → mrkdwn conversion", () => {
-  it("converts markdown in the initial draft post", async () => {
+describe("createOutboundStream — raw markdown pass-through", () => {
+  // The outbox forwards raw GitHub-flavoured markdown via Slack's
+  // `markdown_text` wire field (see send-adapter.ts → compileBody).
+  // Crucially, the body is NOT run through the mrkdwn converter on the
+  // way in — Slack renders GFM natively (tables, fenced code, task
+  // lists, headers). These tests lock in the pass-through so we don't
+  // silently regress to mrkdwn conversion and lose table rendering.
+
+  it("sends the draft post as markdown_text, verbatim", async () => {
     const { adapter, calls } = createFakeAdapter()
     const stream = createOutboundStream({
       adapter,
@@ -401,10 +424,11 @@ describe("createOutboundStream — markdown → mrkdwn conversion", () => {
     stream.append("**bold** and _italic_")
     await drain()
     const draft = calls.find((c) => c.kind === "post")!
-    expect(draft.text).toBe("*bold* and _italic_")
+    expect(draft.bodyField).toBe("markdownText")
+    expect(draft.text).toBe("**bold** and _italic_")
   })
 
-  it("converts markdown in throttled intermediate updates", async () => {
+  it("sends throttled intermediate updates as markdown_text, verbatim", async () => {
     const { adapter, calls } = createFakeAdapter()
     let t = 0
     const stream = createOutboundStream({
@@ -420,11 +444,12 @@ describe("createOutboundStream — markdown → mrkdwn conversion", () => {
     stream.append(" more")
     await drain(60)
     const update = calls.find((c) => c.kind === "update")!
-    expect(update.text).toBe("*bold* more")
+    expect(update.bodyField).toBe("markdownText")
+    expect(update.text).toBe("**bold** more")
     await stream.stop()
   })
 
-  it("converts markdown in the tier-2 final stop update", async () => {
+  it("sends the tier-2 final update as markdown_text, verbatim", async () => {
     const { adapter, calls } = createFakeAdapter()
     const stream = createOutboundStream({
       adapter,
@@ -435,7 +460,28 @@ describe("createOutboundStream — markdown → mrkdwn conversion", () => {
     await drain()
     await stream.stop()
     const finalCall = calls.at(-1)!
-    expect(finalCall.text).toBe("*Heading*\n\n• item one\n• item two")
+    expect(finalCall.bodyField).toBe("markdownText")
+    expect(finalCall.text).toBe("# Heading\n\n- item one\n- item two")
+  })
+
+  it("preserves GFM tables verbatim (the whole reason this path exists)", async () => {
+    const { adapter, calls } = createFakeAdapter()
+    const stream = createOutboundStream({
+      adapter,
+      channel: "C1",
+      threadTs: "100.0",
+    })
+    const table = [
+      "| a | b |",
+      "| --- | --- |",
+      "| 1 | 2 |",
+    ].join("\n")
+    stream.append(table)
+    await drain()
+    await stream.stop()
+    // Tables must survive as raw markdown — the pipes are the whole point.
+    expect(calls.at(-1)!.text).toBe(table)
+    expect(calls.at(-1)!.bodyField).toBe("markdownText")
   })
 
   it("flushes overflow as extra postMessage chunks at stop() (tier-2)", async () => {

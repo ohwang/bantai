@@ -42,11 +42,21 @@ function harness(opts: { toolOutputFileLines?: number; fileClient?: SlackFileCli
     async postMessage(args) {
       counter++
       const ts = `ts${counter}`
-      sends.push({ kind: "post", text: args.text, ts, blocks: args.blocks })
+      sends.push({
+        kind: "post",
+        text: args.markdownText ?? args.text ?? "",
+        ts,
+        blocks: args.blocks,
+      })
       return { ts, channel: args.channel }
     },
     async updateMessage(args) {
-      sends.push({ kind: "update", text: args.text, ts: args.ts, blocks: args.blocks })
+      sends.push({
+        kind: "update",
+        text: args.markdownText ?? args.text ?? "",
+        ts: args.ts,
+        blocks: args.blocks,
+      })
     },
   }
   const reactionAdapter: ReactionAdapter = {

@@ -18,17 +18,24 @@ function makeAdapter() {
   const updates: Array<{ channel: string; ts: string; text: string; blocks?: unknown[] }> = []
   let autoTs = 2000
   const adapter: SendAdapter = {
-    async postMessage({ channel, threadTs, text, blocks }) {
+    async postMessage(args) {
+      const body = args.markdownText ?? args.text ?? ""
       posts.push({
-        channel,
-        ...(threadTs !== undefined ? { threadTs } : {}),
-        text,
-        ...(blocks ? { blocks } : {}),
+        channel: args.channel,
+        ...(args.threadTs !== undefined ? { threadTs: args.threadTs } : {}),
+        text: body,
+        ...(args.blocks ? { blocks: args.blocks } : {}),
       })
-      return { ts: String(autoTs++), channel }
+      return { ts: String(autoTs++), channel: args.channel }
     },
-    async updateMessage({ channel, ts, text, blocks }) {
-      updates.push({ channel, ts, text, ...(blocks ? { blocks } : {}) })
+    async updateMessage(args) {
+      const body = args.markdownText ?? args.text ?? ""
+      updates.push({
+        channel: args.channel,
+        ts: args.ts,
+        text: body,
+        ...(args.blocks ? { blocks: args.blocks } : {}),
+      })
     },
   }
   return { adapter, posts, updates }

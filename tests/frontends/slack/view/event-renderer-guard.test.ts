@@ -25,11 +25,11 @@ function capturingSendAdapter(): {
   const adapter: SendAdapter = {
     async postMessage(args) {
       counter++
-      texts.push(args.text)
+      texts.push(args.markdownText ?? args.text ?? "")
       return { ts: `ts${counter}`, channel: args.channel }
     },
     async updateMessage(args) {
-      texts.push(args.text)
+      texts.push(args.markdownText ?? args.text ?? "")
     },
   }
   return { adapter, texts }

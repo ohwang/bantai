@@ -10,15 +10,22 @@
  *
  * Phases:
  *   - Tier 2 (current): draft `chat.postMessage` → throttled `chat.update`.
+ *     Body text is sent via Slack's `markdown_text` field (raw GFM) so
+ *     tables, fenced code, headers, and task lists render natively.
  *   - Tier 3 fallback: when either the draft post or an update call throws,
  *     we switch to "buffer locally, post everything on stop()" mode with
- *     `markdownToSlackMrkdwnChunks` chunking. That survives rate limits,
- *     retention throttles, and the workspace opting out of `chat.update`
- *     (rare, but supported).
+ *     `chunkRawMarkdown` chunking at Slack's 12k markdown_text limit.
+ *     That survives rate limits, retention throttles, and the workspace
+ *     opting out of `chat.update` (rare, but supported).
  *   - Tier 1 (`chat.startStream`) is plan §6's native path — minislack
  *     doesn't implement it yet, and real Slack only exposes it on paid
  *     workspaces with the Assistant API. Adding it is a drop-in for the
  *     `SendAdapter` interface below; deferred to a later phase.
+ *
+ * Sends that carry short strings with heavy Slack mrkdwn affordances
+ * (`<@U…>` mentions, `<!date^…>`, banner / approval / elicitation copy)
+ * stay on the `text:` path with `markdownToSlackMrkdwn` conversion —
+ * those are owned elsewhere in the frontend, not here.
  *
  * The outbox is pure of Bolt types — only `SendAdapter` methods are
  * called. Tests wire in a fake SendAdapter so they don't need a live
@@ -26,33 +33,52 @@
  */
 
 import type { KnownBlock } from "@slack/types"
-import { markdownToSlackMrkdwn, markdownToSlackMrkdwnChunks } from "./format"
+import { chunkRawMarkdown, SLACK_MARKDOWN_TEXT_LIMIT } from "./markdown-chunk"
 import { log } from "../../../utils/logger"
 
 // ---------------------------------------------------------------------------
 // SendAdapter — narrow surface the outbox talks to.
 // ---------------------------------------------------------------------------
 
+interface OutboundBodyBase {
+  channel: string
+  threadTs?: string
+  blocks?: unknown[]
+  /**
+   * Optional per-post identity override. Requires `chat:write.customize`
+   * scope on the bot token; when the scope is missing, the adapter
+   * retries once without the identity fields so the post still lands
+   * with the default workspace identity.
+   */
+  identity?: OutboundIdentity
+}
+
+/**
+ * A send carries EITHER Slack mrkdwn (`text`) or raw GFM markdown
+ * (`markdownText`), never both — Slack rejects the combination with
+ * `markdown_text_conflict`. When `blocks` are attached alongside
+ * `markdownText`, the adapter wraps it in a leading `{ type: "markdown" }`
+ * block so a single payload carries both the rich body and the
+ * interactive actions.
+ */
+export type OutboundPostArgs = OutboundBodyBase &
+  (
+    | { text: string; markdownText?: undefined }
+    | { markdownText: string; text?: undefined }
+  )
+
+export type OutboundUpdateArgs = {
+  channel: string
+  ts: string
+  blocks?: unknown[]
+} & (
+  | { text: string; markdownText?: undefined }
+  | { markdownText: string; text?: undefined }
+)
+
 export interface SendAdapter {
-  postMessage(args: {
-    channel: string
-    text: string
-    threadTs?: string
-    blocks?: unknown[]
-    /**
-     * Optional per-post identity override. Requires `chat:write.customize`
-     * scope on the bot token; when the scope is missing, the adapter
-     * retries once without the identity fields so the post still lands
-     * with the default workspace identity.
-     */
-    identity?: OutboundIdentity
-  }): Promise<{ ts: string; channel: string }>
-  updateMessage(args: {
-    channel: string
-    ts: string
-    text: string
-    blocks?: unknown[]
-  }): Promise<void>
+  postMessage(args: OutboundPostArgs): Promise<{ ts: string; channel: string }>
+  updateMessage(args: OutboundUpdateArgs): Promise<void>
 }
 
 export interface OutboundIdentity {
@@ -67,7 +93,13 @@ export interface OutboxOpts {
   threadTs: string
   /** Minimum ms between chat.update calls (default 250ms per plan §6). */
   minUpdateMs?: number
-  /** Max chars per chat.update body (default 2900). */
+  /**
+   * Max chars per chat.update body (default `SLACK_MARKDOWN_TEXT_LIMIT`,
+   * 11,500). Slack's `markdown_text` accepts up to 12,000 chars per
+   * message — the default keeps a 500-char safety margin. Callers can
+   * shrink this for tests that want to exercise the chunker with small
+   * inputs.
+   */
   maxChunkLen?: number
   /** Test hook: override Date.now for deterministic throttling. */
   now?: () => number
@@ -131,7 +163,7 @@ export interface OutboundStream {
 
 export function createOutboundStream(opts: OutboxOpts): OutboundStream {
   const minUpdateMs = opts.minUpdateMs ?? 250
-  const maxChunkLen = opts.maxChunkLen ?? 2900
+  const maxChunkLen = opts.maxChunkLen ?? SLACK_MARKDOWN_TEXT_LIMIT
   const now = opts.now ?? Date.now
 
   let accumulator = ""
@@ -196,10 +228,11 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
     if (draftStarted || stopped || fellBack) return
     draftStarted = true
     try {
+      const body = visibleHead(accumulator, maxChunkLen)
       const res = await opts.adapter.postMessage({
         channel: opts.channel,
         threadTs: opts.threadTs,
-        text: markdownToSlackMrkdwn(visibleHead(accumulator, maxChunkLen)) || placeholderText(),
+        markdownText: body.length > 0 ? body : placeholderText(),
         ...(opts.identity ? { identity: opts.identity } : {}),
       })
       draftTs = res.ts
@@ -217,13 +250,13 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       return
     }
     if (!draftTs) return
-    const body = markdownToSlackMrkdwn(visibleHead(accumulator, maxChunkLen))
+    const body = visibleHead(accumulator, maxChunkLen)
     if (body.length === 0) return
     try {
       await opts.adapter.updateMessage({
         channel: opts.channel,
         ts: draftTs,
-        text: body,
+        markdownText: body,
       })
       lastFlushAt = now()
     } catch (err) {
@@ -293,7 +326,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
               await opts.adapter.postMessage({
                 channel: opts.channel,
                 threadTs: opts.threadTs,
-                text: accumulator || placeholderText(),
+                markdownText: accumulator || placeholderText(),
                 blocks: finalBlocks,
                 ...(opts.identity ? { identity: opts.identity } : {}),
               })
@@ -314,7 +347,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
       }
 
       const postTier3 = async () => {
-        const chunks = markdownToSlackMrkdwnChunks(accumulator, maxChunkLen)
+        const chunks = chunkRawMarkdown(accumulator, maxChunkLen)
         // If the accumulator is empty we still emit nothing — the caller
         // (event-renderer) guarantees this path is only taken when the turn
         // produced text or the caller deliberately wants an empty ack, so no
@@ -329,7 +362,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
             await opts.adapter.postMessage({
               channel: opts.channel,
               threadTs: opts.threadTs,
-              text: chunk,
+              markdownText: chunk,
               ...(attachBlocks ? { blocks: finalBlocks } : {}),
               ...(opts.identity ? { identity: opts.identity } : {}),
             })
@@ -356,14 +389,14 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
         return
       }
       if (draftTs) {
-        const chunks = markdownToSlackMrkdwnChunks(accumulator, maxChunkLen)
+        const chunks = chunkRawMarkdown(accumulator, maxChunkLen)
         const firstChunk = chunks.length > 0 ? chunks[0]! : placeholderText()
         const overflowChunks = chunks.slice(1)
         try {
           await opts.adapter.updateMessage({
             channel: opts.channel,
             ts: draftTs,
-            text: firstChunk,
+            markdownText: firstChunk,
             ...(overflowChunks.length === 0 && finalBlocks ? { blocks: finalBlocks } : {}),
           })
         } catch (err) {
@@ -378,7 +411,7 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
             await opts.adapter.postMessage({
               channel: opts.channel,
               threadTs: opts.threadTs,
-              text: overflowChunks[i]!,
+              markdownText: overflowChunks[i]!,
               ...(isLast && finalBlocks != null ? { blocks: finalBlocks } : {}),
               ...(opts.identity ? { identity: opts.identity } : {}),
             })
@@ -406,15 +439,22 @@ export function createOutboundStream(opts: OutboxOpts): OutboundStream {
 
 /** Placeholder text for an empty draft post so Slack doesn't reject it. */
 function placeholderText(): string {
-  return "…" // an ellipsis — visually matches "still working" and survives mrkdwn.
+  return "…" // an ellipsis — visually matches "still working" and renders the same under either mrkdwn or markdown_text.
 }
 
 /**
  * Return the visible head of `text` that fits within `maxLen`. When the
  * accumulator exceeds the limit we show a trailing ellipsis so the reader
  * knows there's more arriving — the overflow is flushed at `stop()` as
- * additional messages via the tier-3 chunker. This matches Slack's 3000-
- * char cap on a single text block.
+ * additional messages via `chunkRawMarkdown`. `maxLen` defaults to
+ * Slack's `markdown_text` per-message limit (11,500 chars with a small
+ * safety margin under the documented 12,000 cap).
+ *
+ * Note: during mid-stream updates, this may slice through a fenced code
+ * block or pipe-table mid-row; Slack renders the partial markdown
+ * best-effort until the next flush arrives with a fuller prefix. At
+ * `stop()`, `chunkRawMarkdown` always emits fence-balanced chunks, so
+ * the final on-screen state is always well-formed.
  */
 function visibleHead(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text

@@ -30,13 +30,18 @@ function harness(triggerTs?: string) {
       sends.push({
         kind: "post",
         channel: args.channel,
-        text: args.text,
+        text: args.markdownText ?? args.text ?? "",
         threadTs: args.threadTs,
       })
       return { ts: `ts${counter}`, channel: args.channel }
     },
     async updateMessage(args) {
-      sends.push({ kind: "update", channel: args.channel, text: args.text, ts: args.ts })
+      sends.push({
+        kind: "update",
+        channel: args.channel,
+        text: args.markdownText ?? args.text ?? "",
+        ts: args.ts,
+      })
     },
   }
   const reactionAdapter: ReactionAdapter = {

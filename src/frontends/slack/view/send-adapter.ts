@@ -7,11 +7,31 @@
  * The SendAdapter interface itself lives in `./outbox.ts` alongside the
  * streaming state machine that defined it — this file is just the
  * Bolt-backed implementation.
+ *
+ * ## text vs markdownText
+ *
+ * A send carries EITHER Slack mrkdwn (`text`) or raw GFM markdown
+ * (`markdownText`), never both — Slack rejects the combination with
+ * `markdown_text_conflict`. Agent reply bodies go via `markdownText`
+ * so tables, fenced code, headers, and task lists render natively;
+ * short banner / approval / elicitation strings stay on `text` for
+ * mrkdwn's `<@U…>` and `<!date^…>` affordances.
+ *
+ * When `blocks` are attached alongside `markdownText`, the adapter
+ * prepends a `{ type: "markdown", text: markdownText }` block to the
+ * blocks array so a single payload carries both the rich body and the
+ * interactive actions — Slack only accepts the `markdown_text` top-level
+ * arg when there are no blocks, so this is the way.
  */
 
 import type { App } from "@slack/bolt"
-import type { KnownBlock } from "@slack/types"
-import type { OutboundIdentity, SendAdapter } from "./outbox"
+import type { KnownBlock, MarkdownBlock } from "@slack/types"
+import type {
+  OutboundIdentity,
+  OutboundPostArgs,
+  OutboundUpdateArgs,
+  SendAdapter,
+} from "./outbox"
 import { withBlockKitFallback } from "./blocks/fallback"
 import { log } from "../../../utils/logger"
 
@@ -39,15 +59,11 @@ export function buildDefaultSendAdapter(
 ): SendAdapter {
   return {
     async postMessage(args) {
-      const safe = applyBlockKitFallback({
-        text: args.text,
-        ...(args.blocks ? { blocks: args.blocks as KnownBlock[] } : {}),
-      })
+      const body = compileBody(args)
       const baseArgs = {
         channel: args.channel,
-        text: safe.text,
         ...(args.threadTs ? { thread_ts: args.threadTs } : {}),
-        ...(safe.blocks ? { blocks: safe.blocks as never } : {}),
+        ...bodyToWire(body),
       }
       const withIdentity = args.identity
         ? { ...baseArgs, ...identityFields(args.identity) }
@@ -67,21 +83,107 @@ export function buildDefaultSendAdapter(
       return { ts, channel }
     },
     async updateMessage(args) {
-      const safe = applyBlockKitFallback({
-        text: args.text,
-        ...(args.blocks ? { blocks: args.blocks as KnownBlock[] } : {}),
-      })
+      const body = compileBody(args)
       const res = await app.client.chat.update({
         channel: args.channel,
         ts: args.ts,
-        text: safe.text,
-        ...(safe.blocks ? { blocks: safe.blocks as never } : {}),
-      })
+        ...bodyToWire(body),
+      } as never)
       if (!res.ok) {
         throw new Error(`chat.update failed: ${res.error ?? "unknown"}`)
       }
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Body compilation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Internal representation of the resolved outbound body after:
+ *   - resolving the markdownText+blocks combo into a single blocks
+ *     payload with a leading MarkdownBlock,
+ *   - running the block-kit size-limit fallback,
+ *   - deciding whether the final wire form uses `markdown_text` (no
+ *     blocks, rich body) or `text` (+ optional blocks).
+ */
+type CompiledBody =
+  | { kind: "markdown_text"; markdownText: string }
+  | { kind: "text"; text: string; blocks?: KnownBlock[] }
+
+function compileBody(args: OutboundPostArgs | OutboundUpdateArgs): CompiledBody {
+  // markdownText path: agent body, raw GFM markdown.
+  if (args.markdownText !== undefined) {
+    const md = args.markdownText
+    const extraBlocks = (args.blocks as KnownBlock[] | undefined) ?? undefined
+
+    // No blocks — send as top-level markdown_text.
+    if (!extraBlocks || extraBlocks.length === 0) {
+      return { kind: "markdown_text", markdownText: md }
+    }
+
+    // blocks + markdownText: wrap md in a MarkdownBlock and prepend it.
+    // The notification-preview `text` uses a trimmed snippet of the
+    // markdown body so Slack's push / unread preview says something
+    // useful rather than "Shared a Block Kit message".
+    const markdownBlock: MarkdownBlock = { type: "markdown", text: md }
+    const merged = [markdownBlock, ...extraBlocks]
+    const fallback = withBlockKitFallback({
+      text: previewFromMarkdown(md),
+      blocks: merged,
+    })
+    logBlockFallback(merged, fallback.blocks)
+    if (fallback.blocks) {
+      return { kind: "text", text: fallback.text, blocks: fallback.blocks }
+    }
+    // Block kit fallback collapsed to plain text — prefer sending the
+    // full raw markdown (not the short preview) so the body renders.
+    return { kind: "markdown_text", markdownText: md }
+  }
+
+  // text path: mrkdwn. Unchanged behaviour.
+  const text = args.text
+  const extraBlocks = (args.blocks as KnownBlock[] | undefined) ?? undefined
+  if (!extraBlocks || extraBlocks.length === 0) {
+    return { kind: "text", text }
+  }
+  const fallback = withBlockKitFallback({ text, blocks: extraBlocks })
+  logBlockFallback(extraBlocks, fallback.blocks)
+  return fallback.blocks
+    ? { kind: "text", text: fallback.text, blocks: fallback.blocks }
+    : { kind: "text", text: fallback.text }
+}
+
+function bodyToWire(body: CompiledBody): Record<string, unknown> {
+  if (body.kind === "markdown_text") {
+    return { markdown_text: body.markdownText }
+  }
+  return {
+    text: body.text,
+    ...(body.blocks ? { blocks: body.blocks as never } : {}),
+  }
+}
+
+/**
+ * Trim a raw-markdown body down to a short notification preview. Strips
+ * fences / table pipes / heading markers so the push preview reads
+ * cleanly on a lock screen. Capped at ~100 chars to fit mobile previews.
+ */
+function previewFromMarkdown(md: string): string {
+  const lines = md.split("\n")
+  for (const line of lines) {
+    const stripped = line
+      .replace(/^#{1,6}\s*/, "")
+      .replace(/^[-*+]\s+/, "")
+      .replace(/^\s*>\s?/, "")
+      .replace(/[`*_~]/g, "")
+      .trim()
+    if (stripped.length > 0 && !stripped.startsWith("```") && !stripped.startsWith("|")) {
+      return stripped.length > 100 ? `${stripped.slice(0, 99)}…` : stripped
+    }
+  }
+  return "…"
 }
 
 /**
@@ -90,17 +192,15 @@ export function buildDefaultSendAdapter(
  * can find the culprit in the session log — a silent demotion to
  * plain-text can be confusing when designing a card.
  */
-function applyBlockKitFallback(input: {
-  text: string
-  blocks?: KnownBlock[]
-}): { text: string; blocks?: KnownBlock[] } {
-  const out = withBlockKitFallback(input)
-  if (input.blocks && input.blocks.length > 0 && !out.blocks) {
+function logBlockFallback(
+  beforeBlocks: KnownBlock[] | undefined,
+  afterBlocks: KnownBlock[] | undefined,
+): void {
+  if (beforeBlocks && beforeBlocks.length > 0 && !afterBlocks) {
     log.warn(
-      `slack send-adapter: block kit payload exceeded limits (${input.blocks.length} blocks) — falling back to plain text`,
+      `slack send-adapter: block kit payload exceeded limits (${beforeBlocks.length} blocks) — falling back to plain text`,
     )
   }
-  return out
 }
 
 function identityFields(

@@ -267,8 +267,13 @@ export const ChannelOverrideSchema = z
      * — either `defaults.system_prompt` or this channel's
      * `system_prompt_replace`. When no base is set, the append text becomes
      * the full system prompt. The append text is always concatenated last.
+     *
+     * Accepts a single string or an array of strings. Arrays are joined with
+     * a blank-line separator so per-channel guidance can be authored as a
+     * list of small, independent instructions rather than one monolithic
+     * paragraph.
      */
-    system_prompt_append: z.string().optional(),
+    system_prompt_append: z.union([z.string(), z.array(z.string())]).optional(),
     approvers: z.array(z.string()).optional(),
     verbosity: VerbosityLevelSchema.optional(),
     require_mention: z.boolean().optional(),

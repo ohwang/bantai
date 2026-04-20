@@ -253,7 +253,10 @@ export function resolveMcpServersForChannel(
  *   - `channelAppend`      — `channels[].system_prompt_append`; always
  *                            concatenated LAST with a blank-line separator,
  *                            so per-channel guidance overrides anything
- *                            earlier in the composed prompt
+ *                            earlier in the composed prompt. May be a single
+ *                            string or an array of strings — array entries
+ *                            are joined with a blank-line separator and
+ *                            empty entries are skipped.
  *
  * Returns undefined when no component is set — backends then fall back to
  * their own default system prompt. Exported for unit tests.
@@ -261,13 +264,21 @@ export function resolveMcpServersForChannel(
 export function composeSystemPrompt(
   defaultPrompt: string | undefined,
   channelReplace: string | undefined,
-  channelAppend: string | undefined,
+  channelAppend: string | string[] | undefined,
 ): string | undefined {
   const base = channelReplace ?? defaultPrompt
-  if (channelAppend) {
-    return base ? `${base}\n\n${channelAppend}` : channelAppend
+  const appendText = normalizeAppend(channelAppend)
+  if (appendText) {
+    return base ? `${base}\n\n${appendText}` : appendText
   }
   return base
+}
+
+function normalizeAppend(raw: string | string[] | undefined): string | undefined {
+  if (raw === undefined) return undefined
+  const parts = Array.isArray(raw) ? raw : [raw]
+  const joined = parts.filter((p) => p.length > 0).join("\n\n")
+  return joined.length > 0 ? joined : undefined
 }
 
 function resolveEnvRefs(

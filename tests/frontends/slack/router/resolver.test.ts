@@ -265,6 +265,26 @@ describe("composeSystemPrompt", () => {
       "only-replace",
     )
   })
+
+  it("append as an array joins entries with a blank-line separator", () => {
+    expect(composeSystemPrompt("default", undefined, ["one", "two", "three"])).toBe(
+      "default\n\none\n\ntwo\n\nthree",
+    )
+  })
+
+  it("append as a single-element array behaves like a plain string", () => {
+    expect(composeSystemPrompt("default", undefined, ["only"])).toBe(
+      "default\n\nonly",
+    )
+  })
+
+  it("empty append array is treated as no append", () => {
+    expect(composeSystemPrompt("default", undefined, [])).toBe("default")
+  })
+
+  it("append array with only empty strings is treated as no append", () => {
+    expect(composeSystemPrompt("default", undefined, ["", ""])).toBe("default")
+  })
 })
 
 describe("resolveProjectForChannel — system prompt composition", () => {
@@ -312,6 +332,23 @@ describe("resolveProjectForChannel — system prompt composition", () => {
     })
     const proj = resolveProjectForChannel(cfg, "C0BOTH", { launchCwd: "/cwd" })
     expect(proj.systemPrompt).toBe("channel-base\n\nchannel-extra")
+  })
+
+  it("channel.system_prompt_append accepts an array and joins with blank lines", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: { system_prompt: "workspace-base" },
+      channels: [
+        {
+          id: "C0ARR",
+          system_prompt_append: ["first-append", "second-append"],
+        },
+      ],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0ARR", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBe(
+      "workspace-base\n\nfirst-append\n\nsecond-append",
+    )
   })
 
   it("no defaults, no channel overrides → undefined (backend default)", async () => {

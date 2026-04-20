@@ -158,7 +158,12 @@ Each entry in `channels[]` scopes its fields to one channel ID:
       // system_prompt_append is always concatenated LAST (with a blank-line
       // separator), whether on top of defaults.system_prompt or on top of
       // system_prompt_replace. Both are optional; omit either or both.
-      "system_prompt_append": "Focus on the backend service; ignore the frontend subtree.",
+      // `system_prompt_append` accepts a single string or an array of strings
+      // (array entries are joined with blank-line separators).
+      "system_prompt_append": [
+        "Focus on the backend service; ignore the frontend subtree.",
+        "The current channel is #eng-backend (channel ID C_YOUR_CHANNEL)."
+      ],
       "turn_timeout_s": 300,               // auto-interrupt a turn after 5 min
       "max_budget_usd": 10                 // stop turn streaming if session cost exceeds $10
     },

@@ -143,6 +143,11 @@ export async function verifyAuth(app: App): Promise<{
  *     public channel (all do).
  *   - users.list(limit=1) — exercises `users:read`.
  *   - reactions.list(limit=1) — exercises `reactions:read`.
+ *   - auth.test + inspect response_metadata.scopes — confirms the
+ *     install actually granted `commands` (without which the `/bantai`
+ *     slash-command surface is silently inert: the app never receives
+ *     the `slash_commands` envelope and users see Slack's generic
+ *     "command not found" error).
  *
  * Non-probe: `chat:write` is validated indirectly when the bot tries to
  * post its first message. We intentionally don't fire a probe post to
@@ -179,7 +184,57 @@ export async function runBootDiagnostics(
   await probe("reactions.read", () =>
     app.client.reactions.list({ limit: 1 }),
   )
+  await probeCommandsScope(app, findings)
   return findings
+}
+
+/**
+ * Verify the install granted the `commands` OAuth scope. Slack returns
+ * the granted scope list in the `x-oauth-scopes` response header on any
+ * API call; `@slack/web-api` surfaces it on `response_metadata.scopes`.
+ *
+ * We re-fire `auth.test` here (cheap, idempotent, same call doctor made
+ * earlier for identity) and inspect the scope list. Missing scopes
+ * register as a `commands.scope` finding so operators see exactly
+ * which permission is absent instead of debugging "why does /bantai
+ * do nothing?" the hard way.
+ *
+ * When the response doesn't surface `response_metadata.scopes` at all
+ * (older minislack fakes, unusual transports) we don't emit a false
+ * negative — the probe just no-ops. That's a deliberate trade-off: we
+ * only warn when we have POSITIVE evidence the scope is missing.
+ */
+async function probeCommandsScope(
+  app: App,
+  findings: DiagnosticFinding[],
+): Promise<void> {
+  try {
+    const res = (await app.client.auth.test()) as {
+      ok?: boolean
+      response_metadata?: { scopes?: string[] }
+    }
+    const scopes = res.response_metadata?.scopes
+    if (!Array.isArray(scopes)) {
+      // No header exposed — nothing we can claim one way or the other.
+      return
+    }
+    if (!scopes.includes("commands")) {
+      findings.push({
+        code: "commands.scope",
+        message:
+          "bot token is missing the `commands` OAuth scope — `/bantai` " +
+          "slash commands will not reach this app. Add `commands` in the " +
+          "Slack app manifest and reinstall to the workspace.",
+      })
+    }
+  } catch (err) {
+    const anyErr = err as { data?: { error?: string }; message?: string }
+    const errCode = anyErr.data?.error ?? anyErr.message ?? String(err)
+    findings.push({
+      code: "commands.scope",
+      message: `probe commands.scope threw: ${errCode}`,
+    })
+  }
 }
 
 function withApiSuffix(url: string): string {

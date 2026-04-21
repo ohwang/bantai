@@ -167,7 +167,9 @@ describe("runSlackDoctor", () => {
       createApp: () => fakeApp as never,
     })
 
-    expect(calls).toEqual(["start", "auth.test", "stop"])
+    // Two auth.test calls: one for identity (verifyAuth), one for the
+    // commands-scope probe inside runBootDiagnostics.
+    expect(calls).toEqual(["start", "auth.test", "auth.test", "stop"])
     expect(report.source).toBe("<inline>")
     expect(report.mode).toBe("socket")
     expect(report.persistenceEnabled).toBe(true)

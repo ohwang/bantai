@@ -232,6 +232,28 @@ export const DefaultsSchema = z
       })
       .optional(),
     /**
+     * Path to a file whose contents become `defaults.system_prompt`. Useful
+     * for long prompts where inlining them as JSON strings — even as an
+     * array — would clutter the config file. The file is read verbatim
+     * (no template expansion) at load time.
+     *
+     * Path resolution:
+     *   - Absolute path (e.g. `/etc/bantai/system-prompt.md`) → used as-is.
+     *   - Tilde-prefixed (e.g. `~/bantai/prompt.md`) → expanded against
+     *     `$HOME`.
+     *   - Relative path (e.g. `./prompts/base.md`) → resolved against the
+     *     directory of the config file on disk. Relative paths are NOT
+     *     supported for inline configs (tests / in-process harnesses) —
+     *     use an absolute path there.
+     *
+     * Mutually exclusive with `system_prompt`: setting both is a load-time
+     * error so the operator doesn't accidentally mask one with the other.
+     * Missing file → load-time error (fail-fast, the agent shouldn't
+     * silently boot with no system prompt when the operator clearly
+     * intended one).
+     */
+    system_prompt_file: z.string().optional(),
+    /**
      * Optional Slack channel id (e.g. `C0ABCDEF`) that receives a one-line
      * diff summary after every non-noop config reload and the zod error
      * card on every reload rejection. When absent, the operator has no

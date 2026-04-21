@@ -43,6 +43,7 @@ export async function loadSlackConfig(
   const env = opts.env ?? process.env
   if (opts.inline !== undefined) {
     const parsed = parseSlackConfig(opts.inline, "<inline>")
+    await applySystemPromptFile(parsed, "<inline>", env)
     return resolveSlackConfig(parsed, "<inline>", env)
   }
 
@@ -52,6 +53,7 @@ export async function loadSlackConfig(
       const raw = await readFile(candidate, "utf8")
       const jsoncParsed = parseJsoncOrThrow(raw, candidate)
       const parsed = parseSlackConfig(jsoncParsed, candidate)
+      await applySystemPromptFile(parsed, candidate, env)
       return resolveSlackConfig(parsed, candidate, env)
     }
   }
@@ -82,6 +84,85 @@ async function fileExists(p: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * If `defaults.system_prompt_file` is set, read the target file and inject
+ * its contents into `defaults.system_prompt`. Rules:
+ *
+ *   - `system_prompt` + `system_prompt_file` both set → load-time error.
+ *     The operator should pick one source of truth so there's no ambiguity
+ *     about which string the backend ends up seeing.
+ *   - Relative path → resolved against the directory of the config file on
+ *     disk. For inline configs (`sourceLabel === "<inline>"`) there is no
+ *     config-file directory, so relative paths are rejected — inline
+ *     callers (tests, in-process harnesses) must pass absolute paths.
+ *   - Leading `~/` → expanded against $HOME.
+ *   - File missing / unreadable → load-time error with the attempted path,
+ *     so "silent empty prompt" can't slip into production.
+ *
+ * Mutates `parsed` in place. `system_prompt_file` is left on the object
+ * for observability — downstream consumers only read `system_prompt`.
+ */
+async function applySystemPromptFile(
+  parsed: SlackConfig,
+  sourceLabel: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const filePath = parsed.defaults.system_prompt_file
+  if (filePath === undefined) return
+
+  if (parsed.defaults.system_prompt !== undefined) {
+    throw new Error(
+      `Invalid slack config at ${sourceLabel}: ` +
+        `defaults.system_prompt and defaults.system_prompt_file are mutually exclusive. ` +
+        `Pick one — either inline the prompt, or point at a file.`,
+    )
+  }
+
+  const resolvedPath = resolveSystemPromptFilePath(filePath, sourceLabel, env)
+  let contents: string
+  try {
+    contents = await readFile(resolvedPath, "utf8")
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Invalid slack config at ${sourceLabel}: ` +
+        `failed to read defaults.system_prompt_file at ${resolvedPath} — ${reason}`,
+    )
+  }
+  parsed.defaults.system_prompt = contents
+}
+
+/**
+ * Resolve the `system_prompt_file` path to an absolute path. See
+ * `applySystemPromptFile` for the resolution rules.
+ */
+function resolveSystemPromptFilePath(
+  filePath: string,
+  sourceLabel: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (filePath.startsWith("~")) {
+    const home = env.HOME ?? env.USERPROFILE ?? ""
+    if (!home) {
+      throw new Error(
+        `Invalid slack config at ${sourceLabel}: ` +
+          `defaults.system_prompt_file uses ~ but $HOME is not set`,
+      )
+    }
+    return `${home}${filePath.slice(1)}`
+  }
+  if (path.isAbsolute(filePath)) return filePath
+  if (sourceLabel === "<inline>") {
+    throw new Error(
+      `Invalid slack config at ${sourceLabel}: ` +
+        `defaults.system_prompt_file="${filePath}" is relative, ` +
+        `but inline configs have no config-file directory to resolve against. ` +
+        `Pass an absolute path (or a ~-prefixed one) for inline use.`,
+    )
+  }
+  return path.resolve(path.dirname(sourceLabel), filePath)
 }
 
 /**

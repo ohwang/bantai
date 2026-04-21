@@ -166,6 +166,116 @@ describe("loadSlackConfig — defaults.system_prompt array form", () => {
   })
 })
 
+describe("loadSlackConfig — defaults.system_prompt_file", () => {
+  it("reads the prompt from an absolute path (inline mode)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-sp-file-"))
+    const promptPath = path.join(dir, "system-prompt.md")
+    await writeFile(promptPath, "prompt-from-file\n\nline two", "utf8")
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt_file: promptPath },
+      },
+      env: {},
+    })
+    expect(resolved.defaults.system_prompt).toBe("prompt-from-file\n\nline two")
+  })
+
+  it("resolves a relative path against the config file directory", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-sp-file-"))
+    const cfgDir = path.join(dir, ".bantai")
+    await mkdir(cfgDir, { recursive: true })
+    // Prompt lives alongside the config file.
+    await writeFile(path.join(cfgDir, "prompt.md"), "hello from sibling", "utf8")
+    await writeFile(
+      path.join(cfgDir, "slack.json"),
+      JSON.stringify({
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt_file: "./prompt.md" },
+      }),
+      "utf8",
+    )
+    const resolved = await loadSlackConfig({ cwd: dir, env: {} })
+    expect(resolved.defaults.system_prompt).toBe("hello from sibling")
+  })
+
+  it("expands ~ against HOME", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "bantai-sp-home-"))
+    await writeFile(path.join(home, "prompt.md"), "tilde-resolved", "utf8")
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt_file: "~/prompt.md" },
+      },
+      env: { HOME: home },
+    })
+    expect(resolved.defaults.system_prompt).toBe("tilde-resolved")
+  })
+
+  it("rejects a relative path under inline mode (no config dir)", async () => {
+    await expect(
+      loadSlackConfig({
+        inline: {
+          workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+          defaults: { system_prompt_file: "./prompts/base.md" },
+        },
+        env: {},
+      }),
+    ).rejects.toThrow(/relative.*inline configs have no config-file directory/s)
+  })
+
+  it("rejects when system_prompt and system_prompt_file are both set", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-sp-file-"))
+    const promptPath = path.join(dir, "p.md")
+    await writeFile(promptPath, "x", "utf8")
+    await expect(
+      loadSlackConfig({
+        inline: {
+          workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+          defaults: {
+            system_prompt: "inline",
+            system_prompt_file: promptPath,
+          },
+        },
+        env: {},
+      }),
+    ).rejects.toThrow(/mutually exclusive/)
+  })
+
+  it("errors with the attempted path when the file is missing", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-sp-file-"))
+    const missing = path.join(dir, "nope.md")
+    await expect(
+      loadSlackConfig({
+        inline: {
+          workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+          defaults: { system_prompt_file: missing },
+        },
+        env: {},
+      }),
+    ).rejects.toThrow(new RegExp(`failed to read .*${missing.replace(/[.]/g, "\\.")}`))
+  })
+
+  it("flows the file contents into resolveProjectForChannel", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-sp-file-"))
+    const promptPath = path.join(dir, "p.md")
+    await writeFile(promptPath, "base-from-file", "utf8")
+    const { resolveProjectForChannel } = await import(
+      "../../../../src/frontends/slack/router/resolver"
+    )
+    const cfg = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt_file: promptPath },
+        channels: [{ id: "C0FILE", system_prompt_append: "channel-extra" }],
+      },
+      env: {},
+    })
+    const proj = resolveProjectForChannel(cfg, "C0FILE", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBe("base-from-file\n\nchannel-extra")
+  })
+})
+
 describe("loadSlackConfig — filesystem", () => {
   it("loads from <cwd>/.bantai/slack.json when present (with JSONC comments + trailing commas)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "bantai-slack-cfg-"))

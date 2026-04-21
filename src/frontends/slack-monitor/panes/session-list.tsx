@@ -70,11 +70,17 @@ interface SessionRowProps {
 function SessionRow(props: SessionRowProps) {
   const s = props.summary
   const phaseHex = () => phaseColor(s.phase)
+  // The first-user-message line is the row's visual anchor — if the
+  // capture missed the message (resume before the new pump landed), we
+  // still want the row to be three lines tall so clicking / highlighting
+  // doesn't jitter by a row-height as sessions acquire their preview.
+  const preview = () => s.firstUserMessage?.trim() || "(waiting for first message…)"
   return (
     <box
       flexDirection="row"
       backgroundColor={props.selected ? mc.selection.rowBg : mc.panelBg}
       paddingLeft={props.selected ? 0 : 1}
+      marginBottom={1}
     >
       {props.selected ? (
         <text fg={mc.selection.accent} attributes={TextAttributes.BOLD}>
@@ -82,14 +88,19 @@ function SessionRow(props: SessionRowProps) {
         </text>
       ) : null}
       <box flexDirection="column" flexGrow={1}>
+        {/* Line 1: project / channel — the human-meaningful row label. */}
+        <text fg={mc.text.primary} attributes={TextAttributes.BOLD}>
+          {displayName(s.projectName, s.channelId)}
+        </text>
+        {/* Line 2: first user message (italic, dim) — gives the row context. */}
+        <text
+          fg={s.firstUserMessage ? mc.text.secondary : mc.text.muted}
+          attributes={TextAttributes.ITALIC}
+        >
+          {preview()}
+        </text>
+        {/* Line 3: status · backend · turns · cost. */}
         <box flexDirection="row">
-          <text fg={mc.text.primary} attributes={TextAttributes.BOLD}>
-            {displayName(s.projectName, s.channelId)}
-          </text>
-          <text fg={mc.text.muted}> · </text>
-          <text fg={mc.text.secondary}>{s.threadTs}</text>
-        </box>
-        <box flexDirection="row" marginTop={0}>
           <text fg={phaseHex()}>{phaseLabel(s.phase)}</text>
           <text fg={mc.text.muted}> · </text>
           <text fg={mc.text.secondary}>{s.backend}</text>

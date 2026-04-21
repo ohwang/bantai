@@ -59,9 +59,25 @@ export const SESSION_PHASES: readonly SessionPhase[] = [
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-session token accounting, accumulated server-side from every
+ * `turn_complete.usage` event. Every field defaults to 0 for backends
+ * that don't report them; summing them is how the monitor's right-hand
+ * pane renders the "input / output / cache read / cache write / cost"
+ * breakdown, and how it validates that the individual counters add up
+ * to the top-line cost.
+ */
+export interface SessionUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  totalCostUsd: number
+}
+
+/**
  * Minimal per-session projection that the left-pane list renders. Keep
  * this tight — every summary ships on the initial snapshot AND on every
- * session_opened / session_phase frame.
+ * session_opened / session_phase / session_summary frame.
  */
 export interface SessionSummary {
   /** Full session key (`slack:<workspace>:<channelId>:<threadTs|main>`). */
@@ -84,17 +100,52 @@ export interface SessionSummary {
   lastEventAt: number
   /** True when this entry was rehydrated from the persistent store. */
   resumed: boolean
+  /**
+   * First user message for this session, truncated server-side. Drives
+   * the "what is this thread about?" label in the monitor's session
+   * list. Undefined until the first inbound user turn arrives.
+   */
+  firstUserMessage?: string
+  /**
+   * Cumulative token usage breakdown. Summed from every
+   * `turn_complete.usage` event the backend emits. Zeroed on fresh
+   * sessions; rehydrated entries inherit prior `totalCostUsd` + `turns`
+   * from the persistent store but start at zero for the per-kind token
+   * counters (the store doesn't persist them today).
+   */
+  usage: SessionUsage
+  /**
+   * Most recent per-API-call context window fill, in tokens. Populated
+   * from `cost_update.contextTokens`. `undefined` when no call has
+   * landed yet. More accurate than `usage.inputTokens` (cumulative
+   * across API calls) for computing the "X% of the context window is
+   * full" gauge.
+   */
+  contextTokens?: number
+  /**
+   * Model context-window size in tokens, when known. Sourced from the
+   * first ModelInfo on session_init. Backends that don't advertise it
+   * leave this undefined and the monitor renders a `—`.
+   */
+  contextWindow?: number
+  /**
+   * Currently-active model id. Populated from session_init.models[0]
+   * and updated on `model_changed` events.
+   */
+  model?: string
 }
 
 /**
  * Session detail — returned from GET `/admin/sessions/:key`. Superset of
  * SessionSummary, plus fields that are too bulky for every summary push.
+ *
+ * `model` is intentionally re-declared here with `?:` so both the
+ * summary-level (advertised by the backend) and the detail-level
+ * (project-configured) views can coexist.
  */
 export interface SessionDetail extends SessionSummary {
   /** Absolute working directory the backend is running against. */
   cwd: string
-  /** Currently-selected model (when known). */
-  model?: string
   /** Permission mode the session was opened with. */
   permissionMode?: string
   /** Epoch ms the session entry was first constructed in-process. */
@@ -183,6 +234,15 @@ export type AdminFrame =
       reason: "idle" | "reset" | "shutdown" | "error"
     }
   | { type: "session_phase"; key: string; phase: SessionPhase }
+  /**
+   * Live SessionSummary refresh. Emitted whenever a field that the
+   * list pane / details tab renders changes — first user message,
+   * turn count, cumulative cost / token breakdown, context fill, or
+   * the active model. Kept separate from `session_phase` so clients
+   * that only care about phase transitions don't have to parse the
+   * whole summary on every cost_update.
+   */
+  | { type: "session_summary"; summary: SessionSummary }
   | { type: "session_event"; key: string; event: AgentEvent }
   | { type: "approval_requested"; approval: PendingApproval }
   | {

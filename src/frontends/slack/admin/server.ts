@@ -201,6 +201,9 @@ function frameMatchesFilter(frame: AdminFrame, filter: ClientFilter): boolean {
     case "session_opened":
       key = frame.summary.key
       break
+    case "session_summary":
+      key = frame.summary.key
+      break
     case "session_closed":
     case "session_phase":
     case "session_event":

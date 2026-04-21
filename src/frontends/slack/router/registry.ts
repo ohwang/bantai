@@ -37,7 +37,16 @@ import type { ProjectConfig } from "./resolver"
 import type { SessionStore } from "../store/sessions"
 import { createNoopSessionStore } from "../store/sessions"
 import { createPhaseTracker } from "../admin/phase"
-import type { SessionPhase, SessionSummary } from "../admin/protocol"
+import type { SessionPhase, SessionSummary, SessionUsage } from "../admin/protocol"
+
+/**
+ * Hard cap on the `firstUserMessage` copy carried in the admin wire
+ * SessionSummary. Kept small so every snapshot / session_summary frame
+ * stays under a few kilobytes. The monitor UI truncates further for
+ * display; this is just a worst-case server-side bound so a wall-of-text
+ * Slack message doesn't fatten the admin protocol.
+ */
+const FIRST_USER_MESSAGE_MAX_CHARS = 240
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,6 +94,27 @@ export interface SessionEntry {
   openedAt: number
   /** Current admin-surface phase (`UNKNOWN` until the first classifying event). */
   phase: SessionPhase
+  /**
+   * Cumulative per-kind token + cost counters. Summed server-side from
+   * every `turn_complete.usage` event so the admin UI can show an
+   * "input / output / cache read / cache write" breakdown that adds up
+   * to the top-line cost without the monitor having to derive it from
+   * the event tail.
+   */
+  usage: SessionUsage
+  /** Most recent per-API-call context token count. Sourced from `cost_update`. */
+  lastContextTokens?: number
+  /** Model context-window size in tokens (from session_init), when known. */
+  contextWindow?: number
+  /** Currently-active model id (session_init or model_changed). */
+  model?: string
+  /**
+   * Snapshot of the first user message surfaced to the backend. Captured
+   * from `entry.send()` so it works for every Slack inbound path (DM,
+   * channel, thread) without having to reach into the inbox pipeline.
+   * Truncated to `FIRST_USER_MESSAGE_MAX_CHARS` server-side.
+   */
+  firstUserMessage?: string
   /** Push an inbound user turn into the backend. Safe to call any time. */
   send(message: UserMessage): void
   /** Add a view-layer subscriber that will receive every AgentEvent. */
@@ -175,6 +205,15 @@ export interface RegistryAdminHook {
    * fires on transitions — streaming deltas do NOT flap the label.
    */
   onSessionPhase(key: string, phase: SessionPhase): void
+  /**
+   * Emitted whenever a field that the admin SessionSummary carries
+   * changes — first user message capture, turn_complete usage roll-up,
+   * cost_update context-token refresh, model_changed, session_init
+   * context window. Separate from `onSessionPhase` so clients that
+   * only track phase transitions don't have to pay the cost of
+   * parsing a whole summary on every cost_update.
+   */
+  onSessionSummaryChanged(key: string, summary: SessionSummary): void
   /** Emitted once when the entry is evicted (idle / reset / shutdown / error). */
   onSessionClosed(key: string, reason: SessionCloseReason): void
 }
@@ -321,15 +360,63 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
             // Persist the backend session id the first time it lands so a
             // post-crash restart can resume; accumulate cost + turn count
             // on turn_complete so `!bantai cost` survives restarts.
+            //
+            // Also fold per-kind token counters + context-window metadata
+            // onto the live entry so the admin surface can ship a
+            // breakdown that matches what the TUI's cost widget shows.
+            // `summaryDirty` flips whenever a field that SessionSummary
+            // serialises changes; we flush a single summary frame at the
+            // bottom of each iteration rather than emitting one per
+            // mutation so a flurry of streaming deltas doesn't saturate
+            // the admin WebSocket.
+            let summaryDirty = false
             try {
-              if (event.type === "session_init" && event.sessionId) {
-                store.setBackendSessionId(key, event.sessionId)
+              if (event.type === "session_init") {
+                if (event.sessionId) {
+                  store.setBackendSessionId(key, event.sessionId)
+                }
+                const firstModel = event.models[0]
+                if (firstModel?.id && entry.model !== firstModel.id) {
+                  entry.model = firstModel.id
+                  summaryDirty = true
+                }
+                if (
+                  firstModel?.contextWindow &&
+                  entry.contextWindow !== firstModel.contextWindow
+                ) {
+                  entry.contextWindow = firstModel.contextWindow
+                  summaryDirty = true
+                }
+              } else if (event.type === "model_changed") {
+                if (entry.model !== event.model) {
+                  entry.model = event.model
+                  summaryDirty = true
+                }
               } else if (event.type === "turn_complete") {
                 const addUsd = event.usage?.totalCostUsd ?? 0
                 store.recordTurn(key, addUsd)
                 metrics.onTurnCompleted(addUsd)
                 entry.turns += 1
                 entry.totalCostUsd += addUsd
+                if (event.usage) {
+                  entry.usage.inputTokens += event.usage.inputTokens ?? 0
+                  entry.usage.outputTokens += event.usage.outputTokens ?? 0
+                  entry.usage.cacheReadTokens += event.usage.cacheReadTokens ?? 0
+                  entry.usage.cacheWriteTokens += event.usage.cacheWriteTokens ?? 0
+                  entry.usage.totalCostUsd += event.usage.totalCostUsd ?? 0
+                }
+                summaryDirty = true
+              } else if (event.type === "cost_update") {
+                // cost_update carries the per-API-call context fill. It
+                // does NOT contribute to the cumulative usage — turn_complete
+                // is the authoritative source for that, so we only refresh
+                // the context-fill gauge here to avoid double-counting.
+                if (typeof event.contextTokens === "number") {
+                  if (entry.lastContextTokens !== event.contextTokens) {
+                    entry.lastContextTokens = event.contextTokens
+                    summaryDirty = true
+                  }
+                }
               } else if (event.type === "turn_start") {
                 metrics.onTurnStarted()
               } else if (event.type === "error" && event.severity === "fatal") {
@@ -356,6 +443,15 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
                   admin.onSessionPhase(key, obs.next)
                 } catch (err) {
                   log.error(`slack: admin.onSessionPhase threw for ${event.type}: ${String(err)}`)
+                }
+              }
+              if (summaryDirty) {
+                try {
+                  admin.onSessionSummaryChanged(key, buildSummary(entry))
+                } catch (err) {
+                  log.error(
+                    `slack: admin.onSessionSummaryChanged threw for ${event.type}: ${String(err)}`,
+                  )
                 }
               }
             }
@@ -392,10 +488,36 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
       lastEventAt: openedAt,
       openedAt,
       phase: phaseTracker.current(),
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        // Seed the cost field with the rehydrated `priorUsage.totalCostUsd`
+        // so the monitor breakdown's cost row matches the top-line cost
+        // counter across restarts. Per-kind token counts aren't persisted
+        // today, so they start at 0 — the UI renders that honestly ("0"
+        // rather than lying with a fake total).
+        totalCostUsd: priorUsage.totalCostUsd,
+      },
       send(message) {
         if (closed) {
           log.warn(`slack: dropped message to closed session ${key}`)
           return
+        }
+        // Capture the first user message for the admin surface so the
+        // monitor's session list can show "what is this thread about?"
+        // in place of the opaque thread ts. Truncate server-side so a
+        // wall-of-text Slack prompt doesn't fatten every summary frame.
+        if (!entry.firstUserMessage && message.text) {
+          entry.firstUserMessage = truncateFirstUserMessage(message.text)
+          try {
+            admin.onSessionSummaryChanged(key, buildSummary(entry))
+          } catch (err) {
+            log.error(
+              `slack: admin.onSessionSummaryChanged threw on first message capture: ${String(err)}`,
+            )
+          }
         }
         if (!started) pump()
         backend.sendMessage(message)
@@ -485,7 +607,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
  */
 export function buildSummary(entry: SessionEntry): SessionSummary {
   const channelLabel = entry.project.channelName ?? entry.project.channelId
-  return {
+  const summary: SessionSummary = {
     key: entry.key,
     channelId: entry.project.channelId,
     threadTs: entry.key.split(":").pop() ?? "main",
@@ -496,7 +618,37 @@ export function buildSummary(entry: SessionEntry): SessionSummary {
     totalCostUsd: entry.totalCostUsd,
     lastEventAt: entry.lastEventAt,
     resumed: entry.resumed,
+    usage: { ...entry.usage },
   }
+  if (entry.firstUserMessage) summary.firstUserMessage = entry.firstUserMessage
+  if (entry.lastContextTokens !== undefined)
+    summary.contextTokens = entry.lastContextTokens
+  if (entry.contextWindow !== undefined)
+    summary.contextWindow = entry.contextWindow
+  const advertisedModel = entry.model ?? entry.project.model
+  if (advertisedModel) summary.model = advertisedModel
+  return summary
+}
+
+/**
+ * Trim a user turn's raw text down to a first-sentence-ish preview that
+ * fits in the admin surface's one-line session label. We strip Slack
+ * mrkdwn-y noise and collapse whitespace so the preview stays readable
+ * when the user pasted multi-line text. The hard char cap prevents a
+ * single wall-of-text turn from blowing up the summary frame.
+ */
+function truncateFirstUserMessage(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim()
+  if (!collapsed) return ""
+  // Prefer the first "sentence" (up to terminal punctuation) when it's
+  // short enough — matches user expectations for an at-a-glance label.
+  const sentenceEnd = collapsed.search(/[.!?](\s|$)/)
+  const preview =
+    sentenceEnd > 0 && sentenceEnd < FIRST_USER_MESSAGE_MAX_CHARS
+      ? collapsed.slice(0, sentenceEnd + 1)
+      : collapsed
+  if (preview.length <= FIRST_USER_MESSAGE_MAX_CHARS) return preview
+  return preview.slice(0, FIRST_USER_MESSAGE_MAX_CHARS - 1) + "…"
 }
 
 /**
@@ -529,6 +681,7 @@ function noopAdminHook(): RegistryAdminHook {
     onSessionOpened() {},
     onSessionEvent() {},
     onSessionPhase() {},
+    onSessionSummaryChanged() {},
     onSessionClosed() {},
   }
 }

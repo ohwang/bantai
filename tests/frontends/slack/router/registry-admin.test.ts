@@ -170,6 +170,7 @@ interface RecordedAdmin extends RegistryAdminHook {
   opened: SessionSummary[]
   events: Array<{ key: string; event: AgentEvent }>
   phases: Array<{ key: string; phase: SessionPhase }>
+  summaries: Array<{ key: string; summary: SessionSummary }>
   closed: Array<{ key: string; reason: SessionCloseReason }>
 }
 
@@ -178,6 +179,7 @@ function makeRecordingAdminHook(): RecordedAdmin {
     opened: [] as SessionSummary[],
     events: [] as Array<{ key: string; event: AgentEvent }>,
     phases: [] as Array<{ key: string; phase: SessionPhase }>,
+    summaries: [] as Array<{ key: string; summary: SessionSummary }>,
     closed: [] as Array<{ key: string; reason: SessionCloseReason }>,
     onSessionOpened(summary: SessionSummary) {
       rec.opened.push(summary)
@@ -187,6 +189,9 @@ function makeRecordingAdminHook(): RecordedAdmin {
     },
     onSessionPhase(key: string, phase: SessionPhase) {
       rec.phases.push({ key, phase })
+    },
+    onSessionSummaryChanged(key: string, summary: SessionSummary) {
+      rec.summaries.push({ key, summary })
     },
     onSessionClosed(key: string, reason: SessionCloseReason) {
       rec.closed.push({ key, reason })
@@ -343,6 +348,9 @@ describe("createSessionRegistry — admin hook wiring", () => {
       },
       onSessionClosed() {
         throw new Error("boom-close")
+      },
+      onSessionSummaryChanged() {
+        throw new Error("boom-summary")
       },
     }
     const r = createSessionRegistry({

@@ -299,6 +299,8 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
         adminBus.publish({ type: "session_event", key, event }),
       onSessionPhase: (key, phase) =>
         adminBus.publish({ type: "session_phase", key, phase }),
+      onSessionSummaryChanged: (_key, summary) =>
+        adminBus.publish({ type: "session_summary", summary }),
       onSessionClosed: (key, reason) =>
         adminBus.publish({ type: "session_closed", key, reason }),
     },

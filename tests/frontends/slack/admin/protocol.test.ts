@@ -34,6 +34,17 @@ const sampleSummary: SessionSummary = {
   totalCostUsd: 0.07,
   lastEventAt: 1_700_000_000_000,
   resumed: false,
+  usage: {
+    inputTokens: 150,
+    outputTokens: 40,
+    cacheReadTokens: 25,
+    cacheWriteTokens: 10,
+    totalCostUsd: 0.07,
+  },
+  firstUserMessage: "Review the auth refactor.",
+  contextTokens: 5_200,
+  contextWindow: 200_000,
+  model: "claude-sonnet-4-5",
 }
 
 const sampleDetail: SessionDetail = {

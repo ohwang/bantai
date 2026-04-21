@@ -48,6 +48,13 @@ function summary(key: string, extra: Partial<SessionSummary> = {}): SessionSumma
     totalCostUsd: 0,
     lastEventAt: 0,
     resumed: false,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalCostUsd: 0,
+    },
     ...extra,
   }
 }

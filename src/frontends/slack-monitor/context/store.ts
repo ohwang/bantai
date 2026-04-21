@@ -147,6 +147,19 @@ export function applyFrame(
       }
       return
     }
+    case "session_summary": {
+      // Live summary refresh — first user message capture, cumulative
+      // usage + cost roll-up, context-window fill, model_changed. We
+      // tolerate the case where `session_opened` hasn't landed yet (a
+      // monitor that reconnects mid-session can race frames) by
+      // registering the key lazily.
+      const key = frame.summary.key
+      draft.sessions[key] = frame.summary
+      if (!draft.sessionOrder.includes(key)) {
+        draft.sessionOrder.push(key)
+      }
+      return
+    }
     case "session_closed": {
       delete draft.sessions[frame.key]
       delete draft.events[frame.key]

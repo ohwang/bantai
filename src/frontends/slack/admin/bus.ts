@@ -60,6 +60,8 @@ export function frameKey(frame: AdminFrame): string | null {
   switch (frame.type) {
     case "session_opened":
       return frame.summary.key
+    case "session_summary":
+      return frame.summary.key
     case "session_closed":
     case "session_phase":
     case "session_event":

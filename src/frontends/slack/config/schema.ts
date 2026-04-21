@@ -4,6 +4,7 @@
  * The file layout is described in plan-slack-integration.md §3.1.
  */
 
+import path from "node:path"
 import { z } from "zod"
 
 // ---------------------------------------------------------------------------
@@ -490,12 +491,36 @@ export function resolveSlackConfig(
       slackApiUrl: parsed.workspace.slack_api_url,
     },
     defaults: parsed.defaults,
-    channels: parsed.channels,
+    channels: parsed.channels.map((c) => resolveChannelProjectDir(c, source, env)),
     mcpServers: parsed.mcp_servers,
     storePath: resolveStorePath(parsed.store_path, env),
     admin: resolveAdminConfig(parsed.admin, env),
     source,
   }
+}
+
+/**
+ * Normalize `project_dir` on a channel to an absolute path. Rules mirror
+ * `defaults.system_prompt_file` in the loader:
+ *   - absolute path → as-is
+ *   - `~/...`       → expanded against $HOME
+ *   - relative path → resolved against the directory of the config file on
+ *                     disk. Inline configs (source === "<inline>") have no
+ *                     on-disk directory, so relative paths pass through
+ *                     unchanged — tests and in-process harnesses are free
+ *                     to interpret them against process.cwd as before.
+ */
+function resolveChannelProjectDir(
+  channel: ChannelOverride,
+  source: string,
+  env: NodeJS.ProcessEnv,
+): ChannelOverride {
+  const raw = channel.project_dir
+  if (raw === undefined) return channel
+  if (raw.startsWith("~")) return { ...channel, project_dir: expandHome(raw, env) }
+  if (path.isAbsolute(raw)) return channel
+  if (source === "<inline>") return channel
+  return { ...channel, project_dir: path.resolve(path.dirname(source), raw) }
 }
 
 function resolveAdminConfig(

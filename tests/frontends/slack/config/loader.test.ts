@@ -276,6 +276,69 @@ describe("loadSlackConfig — defaults.system_prompt_file", () => {
   })
 })
 
+describe("loadSlackConfig — channels[].project_dir path resolution", () => {
+  it("resolves a relative project_dir against the config file directory", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-proj-dir-"))
+    const cfgDir = path.join(dir, ".bantai")
+    await mkdir(cfgDir, { recursive: true })
+    await writeFile(
+      path.join(cfgDir, "slack.json"),
+      JSON.stringify({
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        channels: [
+          { id: "C_SIBLING", project_dir: "./sibling" },
+          { id: "C_PARENT", project_dir: "../peer" },
+          { id: "C_SELF", project_dir: "." },
+        ],
+      }),
+      "utf8",
+    )
+    const resolved = await loadSlackConfig({ cwd: dir, env: {} })
+    expect(resolved.channels[0]!.project_dir).toBe(path.join(cfgDir, "sibling"))
+    expect(resolved.channels[1]!.project_dir).toBe(path.join(dir, "peer"))
+    expect(resolved.channels[2]!.project_dir).toBe(cfgDir)
+  })
+
+  it("leaves absolute project_dir untouched", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bantai-proj-dir-"))
+    const cfgDir = path.join(dir, ".bantai")
+    await mkdir(cfgDir, { recursive: true })
+    await writeFile(
+      path.join(cfgDir, "slack.json"),
+      JSON.stringify({
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        channels: [{ id: "C_ABS", project_dir: "/tmp/abs-project" }],
+      }),
+      "utf8",
+    )
+    const resolved = await loadSlackConfig({ cwd: dir, env: {} })
+    expect(resolved.channels[0]!.project_dir).toBe("/tmp/abs-project")
+  })
+
+  it("expands ~ in project_dir against HOME", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "bantai-home-"))
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        channels: [{ id: "C_TILDE", project_dir: "~/work/repo" }],
+      },
+      env: { HOME: home },
+    })
+    expect(resolved.channels[0]!.project_dir).toBe(`${home}/work/repo`)
+  })
+
+  it("passes relative project_dir through unchanged for inline configs", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        channels: [{ id: "C_INLINE", project_dir: "./rel" }],
+      },
+      env: {},
+    })
+    expect(resolved.channels[0]!.project_dir).toBe("./rel")
+  })
+})
+
 describe("loadSlackConfig — filesystem", () => {
   it("loads from <cwd>/.bantai/slack.json when present (with JSONC comments + trailing commas)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "bantai-slack-cfg-"))

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { ClaudeAdapter } from "../../src/backends/claude/adapter"
+import { ClaudeAdapter, TODO_REMINDER_TEXT, onUserPromptSubmitReminder } from "../../src/backends/claude/adapter"
 import { mapSDKMessage, mapStreamEvent, mapAssistantMessage, ToolStreamState } from "../../src/backends/claude/event-mapper"
 import { parseElicitationInput, handlePermission } from "../../src/backends/claude/permission-bridge"
 import { AsyncQueue } from "../../src/utils/async-queue"
@@ -124,6 +124,77 @@ describe("ClaudeAdapter", () => {
       const opts = (adapter as any).buildOptions({ systemPrompt: "custom prompt" })
       expect(opts.systemPrompt).toBe("custom prompt")
       adapter.close()
+    })
+  })
+
+  describe("UserPromptSubmit TodoWrite reminder hook", () => {
+    // Regression: Claude Code itself injects a per-turn <system-reminder>
+    // about TodoWrite via a UserPromptSubmit hook — the SDK preset alone
+    // does NOT include this, and without it Opus 4.7 / Haiku 4.5 skip
+    // TodoWrite even on clearly multi-step work.
+
+    it("registers a UserPromptSubmit hook in buildOptions when config.hooks is undefined", () => {
+      const adapter = new ClaudeAdapter()
+      const opts = (adapter as any).buildOptions({})
+      expect(opts.hooks).toBeDefined()
+      expect(Array.isArray(opts.hooks.UserPromptSubmit)).toBe(true)
+      expect(opts.hooks.UserPromptSubmit.length).toBeGreaterThanOrEqual(1)
+      const matcher = opts.hooks.UserPromptSubmit[0]
+      expect(Array.isArray(matcher.hooks)).toBe(true)
+      expect(matcher.hooks.length).toBeGreaterThanOrEqual(1)
+      adapter.close()
+    })
+
+    it("merges user-provided UserPromptSubmit matchers with our TodoWrite reminder", () => {
+      const adapter = new ClaudeAdapter()
+      const userHook = async () => ({})
+      const opts = (adapter as any).buildOptions({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [userHook] }],
+        },
+      })
+      const matchers = opts.hooks.UserPromptSubmit
+      expect(Array.isArray(matchers)).toBe(true)
+      // User's matcher preserved
+      expect(matchers[0].hooks).toContain(userHook)
+      // Our matcher appended (total length 2, our hook in the second matcher)
+      expect(matchers.length).toBe(2)
+      expect(matchers[1].hooks.length).toBe(1)
+      adapter.close()
+    })
+
+    it("onUserPromptSubmitReminder returns hookSpecificOutput with TodoWrite reminder text", async () => {
+      const controller = new AbortController()
+      const result = await onUserPromptSubmitReminder(
+        {
+          hook_event_name: "UserPromptSubmit",
+          prompt: "Plan a refactor of the auth module",
+          session_id: "s",
+          transcript_path: "/tmp/t",
+          cwd: "/tmp",
+          permission_mode: "default",
+        } as any,
+        undefined,
+        { signal: controller.signal },
+      )
+      expect(result).toHaveProperty("hookSpecificOutput")
+      const out = (result as any).hookSpecificOutput
+      expect(out.hookEventName).toBe("UserPromptSubmit")
+      expect(typeof out.additionalContext).toBe("string")
+      expect(out.additionalContext).toContain("TodoWrite")
+      expect(out.additionalContext).toContain("<system-reminder>")
+      expect(out.additionalContext).toContain("</system-reminder>")
+      expect(TODO_REMINDER_TEXT).toContain("TodoWrite")
+    })
+
+    it("onUserPromptSubmitReminder no-ops for non-UserPromptSubmit inputs", async () => {
+      const controller = new AbortController()
+      const result = await onUserPromptSubmitReminder(
+        { hook_event_name: "PreToolUse" } as any,
+        undefined,
+        { signal: controller.signal },
+      )
+      expect(result).toEqual({})
     })
   })
 

@@ -10,7 +10,7 @@
  * - Process lifecycle management (SIGINT/SIGTERM/SIGHUP cleanup)
  */
 
-import { query as sdkQuery, listSessions as sdkListSessions, type Options as SDKOptions, type SDKUserMessage as SDKUserMsg, type ModelInfo as SDKModelInfo } from "@anthropic-ai/claude-agent-sdk"
+import { query as sdkQuery, listSessions as sdkListSessions, type Options as SDKOptions, type SDKUserMessage as SDKUserMsg, type ModelInfo as SDKModelInfo, type HookCallback, type HookCallbackMatcher, type HookJSONOutput } from "@anthropic-ai/claude-agent-sdk"
 import { getDiagnosticsSdkMcpConfig } from "../../mcp/server"
 import { getCrossagentSdkMcpConfig } from "../../subagents/mcp-tools"
 import { log } from "../../utils/logger"
@@ -47,6 +47,52 @@ import { mapSDKMessage, ToolStreamState } from "./event-mapper"
 const TODO_SYSTEM_PROMPT_APPEND = `When doing multi-step work (3+ distinct actions or planning a task with multiple phases), call the TodoWrite tool BEFORE starting execution. Populate it with ALL planned steps as pending items so the user can see both the plan and the progress. Mark items in_progress as you start them and completed as you finish. Keep the list as the authoritative view of your work — don't rely on narrating steps in text. If you discover new work mid-task, add it as a pending item immediately.
 
 Skip TodoWrite only for trivial single-step tasks or purely conversational responses.`
+
+// ---------------------------------------------------------------------------
+// Per-turn TodoWrite reminder — injected via a UserPromptSubmit hook
+// ---------------------------------------------------------------------------
+//
+// The `claude_code` preset + static system-prompt append (above) alone are
+// not enough: across Opus 4.7 and Haiku 4.5 runs, neither model actually
+// called TodoWrite for clearly multi-step user prompts. Claude Code proper
+// ensures TodoWrite usage by injecting a per-turn `<system-reminder>` via a
+// UserPromptSubmit hook — the SDK presets do NOT include that hook, so we
+// recreate it here. The SDK injects `additionalContext` into the model's
+// context for the incoming turn.
+export const TODO_REMINDER_TEXT = `The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user`
+
+export const onUserPromptSubmitReminder: HookCallback = async (
+  input,
+  _toolUseID,
+  _options,
+): Promise<HookJSONOutput> => {
+  if (input.hook_event_name !== "UserPromptSubmit") {
+    return {} // no-op for wrong event type
+  }
+  return {
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit" as const,
+      additionalContext: `<system-reminder>${TODO_REMINDER_TEXT}</system-reminder>`,
+    },
+  }
+}
+
+/**
+ * Build the SDK `hooks` option with our TodoWrite reminder registered as a
+ * UserPromptSubmit hook. If `userHooks` already contains UserPromptSubmit
+ * matchers (e.g. a caller-configured hook set), our matcher is appended so
+ * both run. For all other hook events, the user's matchers are passed
+ * through unchanged.
+ */
+export function mergeUserPromptSubmitHook(
+  userHooks?: Partial<Record<string, HookCallbackMatcher[]>>,
+): SDKOptions["hooks"] {
+  const ourMatcher: HookCallbackMatcher = { hooks: [onUserPromptSubmitReminder] }
+  const merged: Partial<Record<string, HookCallbackMatcher[]>> = { ...(userHooks ?? {}) }
+  const existing = merged.UserPromptSubmit
+  merged.UserPromptSubmit = existing && existing.length > 0 ? [...existing, ourMatcher] : [ourMatcher]
+  return merged as SDKOptions["hooks"]
+}
 
 // ---------------------------------------------------------------------------
 // Debug log payload builder for SDK messages
@@ -781,6 +827,15 @@ export class ClaudeAdapter implements AgentBackend {
       // updatedPermissions is typed as unknown[] (we pass through SDK values
       // without importing PermissionUpdate from the SDK in the bridge module)
       canUseTool: createCanUseTool(this.bridgeState) as SDKOptions["canUseTool"],
+      // Inject TodoWrite system-reminder on every user prompt. Claude Code
+      // itself does this via a UserPromptSubmit hook; the SDK preset alone
+      // doesn't, and without it Opus 4.7 / Haiku 4.5 skip TodoWrite even on
+      // clearly multi-step work. If a caller extends SessionConfig with
+      // their own `hooks` in the future, the user's UserPromptSubmit
+      // matchers are preserved and our matcher is appended.
+      hooks: mergeUserPromptSubmitHook(
+        (config as { hooks?: Partial<Record<string, HookCallbackMatcher[]>> }).hooks,
+      ),
       includePartialMessages: true,
       ...(config.thinking ? { thinking: config.thinking } : {}),
       ...(config.effort ? { effort: config.effort } : {}),

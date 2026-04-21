@@ -30,8 +30,6 @@ export interface MetadataPaneProps {
   store: MonitorStore
   /** Optional enriched detail (from GET /admin/sessions/:key). */
   detail: SessionDetail | null
-  /** Width hint from parent. */
-  width: number
 }
 
 export function MetadataPane(props: MetadataPaneProps) {
@@ -45,8 +43,7 @@ export function MetadataPane(props: MetadataPaneProps) {
   return (
     <box
       flexDirection="column"
-      width={props.width}
-      flexShrink={0}
+      flexGrow={1}
       backgroundColor={mc.panelBg}
       padding={1}
     >
@@ -86,7 +83,7 @@ export function MetadataPane(props: MetadataPaneProps) {
           <Show when={props.detail?.cwd}>
             <KV
               label="cwd"
-              value={truncateMiddle(props.detail?.cwd ?? "", props.width - 10)}
+              value={truncateMiddle(props.detail?.cwd ?? "", 48)}
             />
           </Show>
           <Show when={props.detail?.permissionMode}>

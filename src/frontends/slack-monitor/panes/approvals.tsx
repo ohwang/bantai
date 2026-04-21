@@ -22,7 +22,6 @@ import { mc } from "../theme"
 
 export interface ApprovalsPaneProps {
   store: MonitorStore
-  width: number
   /** Which approval is currently highlighted. */
   selectedId: string | null
   /** True when admin is in read-only mode — disable action hints. */
@@ -42,7 +41,6 @@ export function ApprovalsPane(props: ApprovalsPaneProps) {
   return (
     <box
       flexDirection="column"
-      width={props.width}
       flexShrink={0}
       backgroundColor={mc.panelBg}
       padding={1}

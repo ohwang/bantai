@@ -1,10 +1,11 @@
 /**
  * Root component for `bantai slack monitor`.
  *
- * Composes the three panes (session list / event stream / metadata) over
- * a thin top-of-screen banner + status bar. Handles cross-cutting
- * keyboard shortcuts per AGENTS.md rule — `q`, `?`, and `R` sit at the
- * top of the root `useKeyboard` so they always win over pane-local
+ * Composes two columns — the session list on the left, a tabbed
+ * events/details pane plus a persistent approvals pane on the right —
+ * over a thin top-of-screen banner + status bar. Handles cross-cutting
+ * keyboard shortcuts per AGENTS.md rule — `q`, `?`, `R`, and Tab sit at
+ * the top of the root `useKeyboard` so they always win over pane-local
  * handlers. Navigation (`j` / `k` / ↑ / ↓) runs after that and only
  * mutates the selection when there's something to select.
  *
@@ -26,7 +27,7 @@ import {
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { TextAttributes, type KeyEvent } from "@opentui/core"
 import type { AdminContext } from "./context/admin-context"
-import { sortSessionsByActivity } from "./context/store"
+import { sortSessionsByActivity, type MonitorStore } from "./context/store"
 import { SessionList } from "./panes/session-list"
 import { EventStream } from "./panes/event-stream"
 import { MetadataPane } from "./panes/metadata"
@@ -46,12 +47,16 @@ export interface MonitorAppProps {
   onExit?: () => void
 }
 
-// The left / right pane widths are fixed so pane rows don't reflow as
-// the terminal resizes; only the centre stream stretches. We cap the
-// monitor to a minimum usable terminal width (80c) — narrower than that
-// the layout is unreadable anyway.
+// The left pane width is fixed so session-list rows don't reflow as
+// the terminal resizes; the right column (tabbed events/details +
+// persistent approvals) stretches to fill. We cap the monitor to a
+// minimum usable terminal width (80c) — narrower than that the layout
+// is unreadable anyway.
 const LEFT_WIDTH = 34
-const RIGHT_WIDTH = 40
+
+/** Which tab the right-hand pane is currently showing. */
+type RightTab = "events" | "details"
+const TAB_ORDER: ReadonlyArray<RightTab> = ["events", "details"]
 
 export function MonitorApp(props: MonitorAppProps) {
   const dims = useTerminalDimensions()
@@ -70,6 +75,18 @@ export function MonitorApp(props: MonitorAppProps) {
     createSignal<string | null>(null)
   const [approvalFeedback, setApprovalFeedback] = createSignal<Feedback>(null)
   let approvalFeedbackTimer: ReturnType<typeof setTimeout> | undefined
+
+  // Which tab the right-hand pane is showing. Tab / Shift-Tab cycles;
+  // clicking a tab header (handled in `RightPane`) jumps directly. The
+  // events tab is the default because that's the monitor's core job.
+  const [activeTab, setActiveTab] = createSignal<RightTab>("events")
+  function cycleTab(delta: 1 | -1): void {
+    const cur = activeTab()
+    const idx = TAB_ORDER.indexOf(cur)
+    const next =
+      TAB_ORDER[(idx + delta + TAB_ORDER.length) % TAB_ORDER.length] ?? cur
+    setActiveTab(next)
+  }
 
   const sessions = createMemo(() => sortSessionsByActivity(props.ctx.store.state))
   const selectedKey = createMemo(() => props.ctx.store.state.selectedSessionKey)
@@ -147,6 +164,10 @@ export function MonitorApp(props: MonitorAppProps) {
     }
     if (event.name === "R" || (event.shift && event.name === "r")) {
       void refreshSnapshot()
+      return
+    }
+    if (event.name === "tab") {
+      cycleTab(event.shift ? -1 : 1)
       return
     }
     // --- Help overlay eats the rest when open, so nav keys don't fire. ---
@@ -320,9 +341,10 @@ export function MonitorApp(props: MonitorAppProps) {
     }
   }
 
-  // Adaptive widths: on narrow terminals give the centre all the slack.
+  // Adaptive left-column width: on narrow terminals cede as much as
+  // possible to the right pane, which now carries both the event stream
+  // and the details tab.
   const leftWidth = () => Math.min(LEFT_WIDTH, Math.floor(dims().width * 0.35))
-  const rightWidth = () => Math.min(RIGHT_WIDTH, Math.floor(dims().width * 0.4))
 
   return (
     <box flexDirection="column" backgroundColor={mc.bg} width={dims().width} height={dims().height}>
@@ -330,26 +352,128 @@ export function MonitorApp(props: MonitorAppProps) {
       <BannerBar ctx={props.ctx} />
       <box flexDirection="row" flexGrow={1}>
         <SessionList store={props.ctx.store} width={leftWidth()} />
-        <EventStream store={props.ctx.store} />
-        <box flexDirection="column" width={rightWidth()} flexShrink={0}>
-          <MetadataPane
-            store={props.ctx.store}
-            detail={detail()}
-            width={rightWidth()}
-          />
-          <ApprovalsPane
-            store={props.ctx.store}
-            width={rightWidth()}
-            selectedId={selectedApprovalId()}
-            readOnly={readOnly()}
-            feedback={approvalFeedback()}
-          />
-        </box>
+        <RightPane
+          store={props.ctx.store}
+          detail={detail()}
+          activeTab={activeTab()}
+          onSelectTab={setActiveTab}
+          selectedApprovalId={selectedApprovalId()}
+          readOnly={readOnly()}
+          approvalFeedback={approvalFeedback()}
+        />
       </box>
       <StatusBar baseUrl={props.baseUrl} ctx={props.ctx} />
       <Show when={showHelp()}>
         <HelpOverlay onDismiss={() => setShowHelp(false)} />
       </Show>
+    </box>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Right-hand pane — tabbed events / details + persistent approvals.
+// ---------------------------------------------------------------------------
+
+interface RightPaneProps {
+  store: MonitorStore
+  detail: SessionDetail | null
+  activeTab: RightTab
+  onSelectTab: (tab: RightTab) => void
+  selectedApprovalId: string | null
+  readOnly: boolean
+  approvalFeedback: Feedback
+}
+
+function RightPane(props: RightPaneProps) {
+  return (
+    <box flexDirection="column" flexGrow={1}>
+      <TabBar active={props.activeTab} onSelect={props.onSelectTab} />
+      {/*
+        Keep BOTH panes mounted and hide the inactive one via `visible` so
+        the EventStream scrollbox keeps its scroll state across tab
+        switches. The alternative — a `<Show>` that unmounts the tail —
+        re-ran the sticky-bottom sync every time the user flipped back to
+        the stream, which was janky when live deltas were flowing in.
+      */}
+      <box
+        flexDirection="column"
+        flexGrow={1}
+        visible={props.activeTab === "events"}
+      >
+        <EventStream store={props.store} />
+      </box>
+      <box
+        flexDirection="column"
+        flexGrow={1}
+        visible={props.activeTab === "details"}
+      >
+        <MetadataPane store={props.store} detail={props.detail} />
+      </box>
+      <ApprovalsPane
+        store={props.store}
+        selectedId={props.selectedApprovalId}
+        readOnly={props.readOnly}
+        feedback={props.approvalFeedback}
+      />
+    </box>
+  )
+}
+
+interface TabBarProps {
+  active: RightTab
+  onSelect: (tab: RightTab) => void
+}
+
+function TabBar(props: TabBarProps) {
+  return (
+    <box
+      flexDirection="row"
+      backgroundColor={mc.panelBg}
+      paddingLeft={1}
+      paddingRight={1}
+      flexShrink={0}
+    >
+      <TabHeader
+        label="Events"
+        active={props.active === "events"}
+        onClick={() => props.onSelect("events")}
+      />
+      <text fg={mc.text.muted}>  </text>
+      <TabHeader
+        label="Session details"
+        active={props.active === "details"}
+        onClick={() => props.onSelect("details")}
+      />
+      <box flexGrow={1} />
+      <text fg={mc.text.muted} attributes={TextAttributes.ITALIC}>
+        Tab ↹ switch
+      </text>
+    </box>
+  )
+}
+
+function TabHeader(props: {
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  // Clickable header. The whole box is the hit-target — OpenTUI routes
+  // the mouse event through the outer box, so putting `onMouseDown` on
+  // the header box (not the text) means padding is clickable too.
+  return (
+    <box
+      flexDirection="row"
+      backgroundColor={props.active ? mc.selection.rowBg : mc.panelBg}
+      paddingLeft={1}
+      paddingRight={1}
+      onMouseDown={() => props.onClick()}
+    >
+      <text
+        fg={props.active ? mc.text.primary : mc.text.secondary}
+        attributes={props.active ? TextAttributes.BOLD : undefined}
+      >
+        {props.label}
+      </text>
     </box>
   )
 }
@@ -434,6 +558,7 @@ function StatusBar(props: { baseUrl: string; ctx: AdminContext }) {
       flexShrink={0}
     >
       <text fg={mc.text.muted}>↑/↓ nav  </text>
+      <text fg={mc.text.muted}>Tab switch pane  </text>
       <text fg={mc.text.muted}>a/d approve/deny  </text>
       <text fg={mc.text.muted}>i interrupt  </text>
       <text fg={mc.text.muted}>o open in Slack  </text>
@@ -500,6 +625,7 @@ function HelpOverlay(_props: { onDismiss: () => void }) {
       <text fg={mc.text.secondary}>k / ↑          previous session</text>
       <text fg={mc.text.secondary}>g              first session</text>
       <text fg={mc.text.secondary}>G              last session</text>
+      <text fg={mc.text.secondary}>Tab / S-Tab    switch events ↔ session details</text>
       <text fg={mc.text.secondary}>[ / ]          cycle approvals</text>
       <text fg={mc.text.secondary}>a              approve selected</text>
       <text fg={mc.text.secondary}>A              approve + allow always</text>

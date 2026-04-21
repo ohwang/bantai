@@ -51,6 +51,12 @@ import { postSessionBanner } from "./view/banner"
 import type { UserCache } from "./view/user-cache"
 import { parseControlCommand } from "./commands/parser"
 import { dispatchCommand, type CommandContext } from "./commands/dispatch"
+import {
+  classifyVisibility,
+  parseSlashText,
+  requiresThread,
+  THREAD_REQUIRED_HINT,
+} from "./commands/slash-adapter"
 import type { ApprovalCoordinator } from "./approvals/coordinator"
 import type { ElicitationCoordinator } from "./elicitations/coordinator"
 import type { SessionStore } from "./store/sessions"
@@ -281,6 +287,18 @@ export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
         } catch (err) {
           log.debug(`slack: shutdown ephemeral post failed: ${String(err)}`)
         }
+      } else if (event.kind === "slash_command") {
+        // Slash commands MUST ack within 3s or Slack surfaces
+        // "operation_timeout" to the user. Fire an ephemeral ack so the
+        // operator sees the shutdown banner instead of a raw timeout.
+        try {
+          await event.ack({
+            response_type: "ephemeral",
+            text: ":zzz: bantai is shutting down — please retry in a moment",
+          })
+        } catch (err) {
+          log.debug(`slack: shutdown slash ack failed: ${String(err)}`)
+        }
       }
       return
     }
@@ -343,6 +361,10 @@ export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
       if (res.kind === "malformed") {
         log.debug(`slack: unrecognised view_submission ignored: ${event.callbackId}`)
       }
+      return
+    }
+    if (event.kind === "slash_command") {
+      await handleSlashCommand(ctx, event)
       return
     }
     if (event.kind !== "message" && event.kind !== "app_mention") {
@@ -917,6 +939,174 @@ interface CommandRouteArgs {
     workspace: string
     channelId: string
     threadTs: string
+  }
+}
+
+/**
+ * Slash-command dispatcher — entry point for every `/bantai …` invocation.
+ *
+ * The pipeline diverges from the `!bantai`-in-a-message path in two ways:
+ *
+ *   1. The response lands via Bolt's `ack()` callback rather than a fresh
+ *      `chat.postMessage`. We wrap the `CommandContext.sendReply` so the
+ *      FIRST call flows into the ack body (tagged `ephemeral` or
+ *      `in_channel` per `classifyVisibility`). A hypothetical second reply
+ *      from the same dispatch falls through to `chat.postMessage` via the
+ *      shared SendAdapter — but none of today's commands emit two
+ *      messages, so that branch is defensive rather than exercised.
+ *   2. We skip `decideGate` entirely. A slash command is an explicit,
+ *      Slack-authorised user action — the workspace's install grant is
+ *      the authorization. Channel-gating (workspace with a configured
+ *      `channels[]` list) still runs, because the bot has no project to
+ *      mutate in an unknown channel.
+ *
+ * Thread-scoped commands (`stop`, `new`, `verbosity`, `model <id>`)
+ * refuse to run without a `thread_ts` in the payload — there's no single
+ * "active" session to mutate at the channel level. We respond with an
+ * ephemeral "invoke inside a thread" hint rather than guessing.
+ */
+async function handleSlashCommand(
+  ctx: RoutingCtx,
+  event: Extract<InboundSlackEvent, { kind: "slash_command" }>,
+): Promise<void> {
+  const project = mutableProjectFor(ctx, event.channel)
+
+  // Channel-configuration guard — mirrors the message path. An unconfigured
+  // channel means the bot has no `projectDir` to act on; rather than fall
+  // back to `launchCwd` (likely the wrong repo), tell the user what to
+  // add to slack.json. Posted ephemerally so it doesn't spam the channel.
+  if (
+    ctx.config.channels.length > 0 &&
+    !isChannelConfigured(ctx.config, event.channel)
+  ) {
+    await event.ack({
+      response_type: "ephemeral",
+      text:
+        `:wave: I'm not configured for <#${event.channel}> yet. Add the ` +
+        `channel id under \`channels\` in \`slack.json\` (at least ` +
+        `\`id\` + \`project_dir\`) and re-run \`bantai slack doctor\`.`,
+    })
+    log.info(
+      `slack: slash command in unconfigured channel ${event.channel} — ephemeral nudge`,
+    )
+    return
+  }
+
+  const command = parseSlashText(event.text)
+
+  // Thread-scope gate (plan D2). Channel-level reads (help, status,
+  // settings, cost, model-list) pass through; thread-scoped writes
+  // bounce with a short hint so the user knows what to do next.
+  if (requiresThread(command) && !event.threadTs) {
+    await event.ack({ response_type: "ephemeral", text: THREAD_REQUIRED_HINT })
+    return
+  }
+
+  const visibility = classifyVisibility(command)
+
+  // `threadTs` in the CommandContext is used by `status` to print the
+  // thread anchor in the resolved-config dump. At channel level there's
+  // no thread — substitute a friendly placeholder rather than an empty
+  // backtick pair.
+  const threadTsForContext = event.threadTs ?? "<channel-level>"
+
+  // Session lookup: only meaningful when we actually have a thread.
+  // Channel-level commands treat `existing` as undefined and the
+  // dispatcher falls back to the project-config snapshot (availableModels
+  // returns [], cumulativeUsage returns "no cost tracked yet", etc.).
+  const sessionParts = event.threadTs
+    ? {
+        workspace: ctx.workspaceId,
+        channelId: event.channel,
+        threadTs: event.threadTs,
+      }
+    : undefined
+  const existing = sessionParts ? ctx.registry.peek(sessionParts) : undefined
+
+  // Single-shot ack: the FIRST `sendReply` call becomes the ack body; any
+  // subsequent reply (defensive — no command emits two today) is posted
+  // via `chat.postMessage` so the user still sees it. The transport-layer
+  // `safeAck` wrapper in events.ts further guards against double-ack.
+  let acked = false
+  const adapter = ctx.sendAdapter
+
+  const commandCtx: CommandContext = {
+    async sendReply(text) {
+      if (!acked) {
+        acked = true
+        try {
+          await event.ack({ response_type: visibility, text })
+        } catch (err) {
+          log.error(`slack slash: ack failed: ${String(err)}`)
+        }
+        return
+      }
+      // Defensive follow-up path. Channel-level (no thread): ephemeral so
+      // the wider channel stays quiet. Thread-level: regular threaded
+      // reply so participants see the state change.
+      try {
+        if (event.threadTs) {
+          await adapter.postMessage({
+            channel: event.channel,
+            threadTs: event.threadTs,
+            text,
+          })
+        } else {
+          await ctx.app.client.chat.postEphemeral({
+            channel: event.channel,
+            user: event.user,
+            text,
+          })
+        }
+      } catch (err) {
+        log.error(`slack slash: follow-up sendReply failed: ${String(err)}`)
+      }
+    },
+    interrupt() {
+      existing?.host.backend.interrupt()
+    },
+    async setModel(model) {
+      if (existing) await existing.host.backend.setModel(model)
+      ctx.projectOverrides.set(project.channelId, { ...project, model })
+      rememberRuntimeOverride(ctx, project.channelId, { model })
+    },
+    async resetSession() {
+      existing?.reset()
+    },
+    setVerbosity(level: VerbosityLevel) {
+      ctx.projectOverrides.set(project.channelId, { ...project, verbosity: level })
+      rememberRuntimeOverride(ctx, project.channelId, { verbosity: level })
+    },
+    async availableModels() {
+      if (!existing) return []
+      const list = await existing.host.backend.availableModels()
+      return list.map((m) => m.id)
+    },
+    cumulativeUsage() {
+      const renderer = existing ? ctx.renderers.get(existing) : undefined
+      return mergeCumulativeUsage(
+        renderer?.cumulativeUsage(),
+        existing?.priorUsage,
+      )
+    },
+    project,
+    workspace: ctx.workspaceId,
+    channel: event.channel,
+    threadTs: threadTsForContext,
+  }
+
+  await dispatchCommand(command, commandCtx)
+
+  // If dispatchCommand didn't end up calling sendReply (e.g. a future
+  // no-op command), we still owe Slack an ack. Fire an empty one so the
+  // command doesn't render as a 3-second timeout to the user.
+  if (!acked) {
+    acked = true
+    try {
+      await event.ack({})
+    } catch (err) {
+      log.error(`slack slash: fallback empty ack failed: ${String(err)}`)
+    }
   }
 }
 

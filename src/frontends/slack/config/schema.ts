@@ -213,8 +213,24 @@ export const DefaultsSchema = z
      * `system_prompt_replace` or extend it via `system_prompt_append` —
      * the append text is always concatenated last with a blank-line
      * separator. Omit to leave the backend's own default in effect.
+     *
+     * Accepts a single string or an array of strings. Arrays are joined
+     * with a blank-line separator so a long workspace-wide prompt can be
+     * authored as a list of small paragraphs rather than one line with
+     * embedded `\n` escapes — JSON has no multi-line string literal, so
+     * this is the idiomatic way to keep individual physical lines short.
+     * An empty array, or an array whose entries are all empty strings,
+     * normalises to undefined (no prompt set) — matches the behaviour of
+     * `system_prompt_append`.
      */
-    system_prompt: z.string().optional(),
+    system_prompt: z
+      .union([z.string(), z.array(z.string())])
+      .transform((v) => {
+        if (!Array.isArray(v)) return v
+        const joined = v.filter((p) => p.length > 0).join("\n\n")
+        return joined.length > 0 ? joined : undefined
+      })
+      .optional(),
     /**
      * Optional Slack channel id (e.g. `C0ABCDEF`) that receives a one-line
      * diff summary after every non-noop config reload and the zod error

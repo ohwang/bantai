@@ -76,6 +76,96 @@ describe("loadSlackConfig — inline", () => {
   })
 })
 
+describe("loadSlackConfig — defaults.system_prompt array form", () => {
+  it("accepts a plain string (backwards compatible)", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt: "single-line prompt" },
+      },
+      env: {},
+    })
+    expect(resolved.defaults.system_prompt).toBe("single-line prompt")
+  })
+
+  it("joins an array of strings with blank-line separators", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: {
+          system_prompt: [
+            "First paragraph about Slack context.",
+            "Second paragraph about concision.",
+            "Third paragraph about tool use.",
+          ],
+        },
+      },
+      env: {},
+    })
+    expect(resolved.defaults.system_prompt).toBe(
+      "First paragraph about Slack context.\n\n" +
+        "Second paragraph about concision.\n\n" +
+        "Third paragraph about tool use.",
+    )
+  })
+
+  it("single-element array behaves like a plain string", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt: ["only-entry"] },
+      },
+      env: {},
+    })
+    expect(resolved.defaults.system_prompt).toBe("only-entry")
+  })
+
+  it("empty array normalises to undefined (no prompt set)", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt: [] },
+      },
+      env: {},
+    })
+    expect(resolved.defaults.system_prompt).toBeUndefined()
+  })
+
+  it("array of only empty strings normalises to undefined", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt: ["", ""] },
+      },
+      env: {},
+    })
+    expect(resolved.defaults.system_prompt).toBeUndefined()
+  })
+
+  it("array entries that are empty strings are skipped", async () => {
+    const resolved = await loadSlackConfig({
+      inline: {
+        workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+        defaults: { system_prompt: ["first", "", "third"] },
+      },
+      env: {},
+    })
+    expect(resolved.defaults.system_prompt).toBe("first\n\nthird")
+  })
+
+  it("rejects non-string array entries", async () => {
+    await expect(
+      loadSlackConfig({
+        inline: {
+          workspace: { mode: "socket", bot_token: "xoxb", app_token: "xapp" },
+          defaults: { system_prompt: ["ok", 42] },
+        },
+        env: {},
+      }),
+    ).rejects.toThrow(/Invalid slack config/)
+  })
+})
+
 describe("loadSlackConfig — filesystem", () => {
   it("loads from <cwd>/.bantai/slack.json when present (with JSONC comments + trailing commas)", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "bantai-slack-cfg-"))

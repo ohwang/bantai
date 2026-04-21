@@ -503,6 +503,22 @@ describe("resolveProjectForChannel — system prompt composition", () => {
     )
   })
 
+  it("defaults.system_prompt accepts an array and joins with blank lines before channel append", async () => {
+    const cfg = await makeConfig({
+      workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },
+      defaults: {
+        system_prompt: ["base-line-one", "base-line-two"],
+      },
+      channels: [
+        { id: "C0DARR", system_prompt_append: "channel-extra" },
+      ],
+    })
+    const proj = resolveProjectForChannel(cfg, "C0DARR", { launchCwd: "/cwd" })
+    expect(proj.systemPrompt).toBe(
+      "base-line-one\n\nbase-line-two\n\nchannel-extra",
+    )
+  })
+
   it("no defaults, no channel overrides → undefined (backend default)", async () => {
     const cfg = await makeConfig({
       workspace: { mode: "socket", bot_token: "xoxb-x", app_token: "xapp-x" },

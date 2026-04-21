@@ -188,6 +188,34 @@ Each entry in `channels[]` scopes its fields to one channel ID:
 
 Two different repos, two different backends, two different approver lists — one bot process, no cross-talk.
 
+## Authoring long system prompts
+
+JSON has no multi-line string literal, so the naive option for a long `defaults.system_prompt` is one physical line with embedded `\n` escapes. Two friendlier forms are supported:
+
+**Array-of-strings** — each entry is joined with a blank-line separator. Same convention as `system_prompt_append` on channel entries:
+
+```jsonc
+"defaults": {
+  "system_prompt": [
+    "You are interacting with the user through Slack.",
+    "Each Slack channel is an agent project, each session is a thread.",
+    "Use the Slack MCP tools to retrieve context when it's relevant.",
+    "Prefer concise replies — Slack UX favours short turns."
+  ]
+}
+```
+
+**External file** — for prose-heavy prompts, put the text in its own file and point at it with `system_prompt_file`:
+
+```jsonc
+"defaults": {
+  "system_prompt_file": "./prompts/base.md"   // relative to this config file
+  // also supported: absolute paths, and "~/bantai/prompt.md"
+}
+```
+
+`system_prompt` and `system_prompt_file` are mutually exclusive — setting both is a load-time error. A missing file is also a load-time error, so the bot won't silently boot with no system prompt.
+
 ## Control commands (per-channel)
 
 Any user in the channel can run these in-thread by typing `!bantai <cmd>`:

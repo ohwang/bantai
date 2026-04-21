@@ -274,6 +274,14 @@ describe("event-renderer — paragraph breaks across content-block boundaries", 
   // "first ending.\n\nSecond start" into "first ending.Second start" in the
   // final Slack message. These tests guard the text_delta→boundary→text_delta
   // path end-to-end (renderer + mrkdwn round-trip via the outbox).
+  //
+  // The injected separator is `\n\n<NBSP>\n\n` — two paragraph breaks around
+  // a paragraph containing a non-breaking space. A plain `\n\n` is a GFM
+  // paragraph break, but Slack's `markdown_text` uses tight paragraph
+  // margins and the boundary reads as a single line break in dense agentic
+  // replies. An NBSP-bearing paragraph renders as an actual blank line so
+  // multi-message replies stay scannable.
+  const PARA_BREAK = "\n\n\u00A0\n\n"
   function primaryText(sends: Array<{ kind: "post" | "update"; text: string }>) {
     // Tool cards hit the adapter too — filter to the draft/update pair that
     // belongs to the streaming reply body. Tool cards carry "*Read*" or
@@ -296,7 +304,9 @@ describe("event-renderer — paragraph breaks across content-block boundaries", 
     const text = primaryText(h.sends)
     expect(text).toContain("First paragraph ending:")
     expect(text).toContain("Second paragraph after tool.")
-    expect(text).toMatch(/First paragraph ending:\n\nSecond paragraph after tool\./)
+    expect(text).toContain(
+      `First paragraph ending:${PARA_BREAK}Second paragraph after tool.`,
+    )
   })
 
   it("injects a blank line between two text blocks separated by a mid-turn turn_start (agentic step)", async () => {
@@ -315,7 +325,7 @@ describe("event-renderer — paragraph breaks across content-block boundaries", 
       { type: "turn_complete" },
     ])
     await drain(100)
-    expect(primaryText(h.sends)).toMatch(/Step 1\.\n\nStep 2\./)
+    expect(primaryText(h.sends)).toContain(`Step 1.${PARA_BREAK}Step 2.`)
   })
 
   it("does not inject anything before the first text_delta of a fresh turn", async () => {
@@ -390,6 +400,8 @@ describe("event-renderer — paragraph breaks across content-block boundaries", 
       { type: "turn_complete" },
     ])
     await drain(100)
-    expect(primaryText(h.sends)).toMatch(/Before thinking\.\n\nAfter thinking\./)
+    expect(primaryText(h.sends)).toContain(
+      `Before thinking.${PARA_BREAK}After thinking.`,
+    )
   })
 })

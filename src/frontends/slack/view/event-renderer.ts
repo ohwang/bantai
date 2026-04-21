@@ -290,12 +290,30 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
    *
    * This flag flips to `true` on any non-text-delta event that represents
    * a content-block boundary (tool_use_start/_end, mid-turn turn_start,
-   * thinking_delta). The next `text_delta` injects `\n\n` before its
-   * payload — but only when the accumulator already has content, so the
-   * very first text delta of a turn stays clean. The flag clears after
-   * the text_delta consumes it.
+   * thinking_delta). The next `text_delta` prepends `PARAGRAPH_BREAK` in
+   * the SAME append call as the text payload — but only when the
+   * accumulator already has content, so the very first text delta of a
+   * turn stays clean. The flag clears after the text_delta consumes it.
+   *
+   * Why prepend in the same append rather than `s.append("\n\n")` first?
+   * The tier-1 native streaming path (chat.appendStream) forwards each
+   * append as its own wire-level delta; a whitespace-only delta can be
+   * coalesced away by the server or by intermediate throttling, which
+   * silently erased the paragraph break in real Slack even though the
+   * tier-2 accumulator looked correct. Keeping the separator glued to
+   * the next text makes the delta non-empty and bulletproof.
    */
   let needsBreakBeforeNextText = false
+  /**
+   * Paragraph separator injected at content-block boundaries. A plain
+   * `\n\n` is a GFM paragraph break, but Slack's `markdown_text`
+   * renderer uses very tight paragraph margins — in a dense agentic
+   * reply with many short "Now let me…" messages the boundary reads as
+   * a single line break. A paragraph containing a non-breaking space
+   * renders as an actual blank line, matching the user expectation of
+   * scannable multi-paragraph replies.
+   */
+  const PARAGRAPH_BREAK = "\n\n\u00A0\n\n"
   /** permission_request ids we've handed off to approvals but not yet heard
    *  a permission_response for. Used to auto-deny on interrupt/destroy. */
   const pendingApprovals = new Set<string>()
@@ -799,10 +817,9 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
         case "text_delta":
           if (verbosity !== "silent") {
             const s = ensureStream()
-            if (needsBreakBeforeNextText && s.currentText().length > 0) {
-              s.append("\n\n")
-            }
-            s.append(event.text)
+            const injectBreak =
+              needsBreakBeforeNextText && s.currentText().length > 0
+            s.append(injectBreak ? `${PARAGRAPH_BREAK}${event.text}` : event.text)
             needsBreakBeforeNextText = false
           }
           break

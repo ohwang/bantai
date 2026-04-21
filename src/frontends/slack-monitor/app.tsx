@@ -34,6 +34,7 @@ import { ApprovalsPane } from "./panes/approvals"
 import type { SessionDetail } from "../slack/admin/protocol"
 import { mc } from "./theme"
 import { log } from "../../utils/logger"
+import { openSlackThread } from "./utils/open-in-slack"
 
 type Feedback = { tone: "info" | "warn" | "error"; message: string } | null
 
@@ -206,6 +207,10 @@ export function MonitorApp(props: MonitorAppProps) {
       void handleInterrupt()
       return
     }
+    if (event.name === "o" && !event.shift && !event.ctrl) {
+      void handleOpenInSlack()
+      return
+    }
   })
 
   function cycleApproval(delta: 1 | -1): void {
@@ -267,6 +272,28 @@ export function MonitorApp(props: MonitorAppProps) {
     } catch (err) {
       flashFeedback("error", `interrupt ${key} failed: ${String(err)}`)
     }
+  }
+
+  // Client-side only — opens the native Slack app at the thread via the
+  // `slack://` deep link. NOT gated by readOnly: it doesn't touch server
+  // state, it just hands a URL to the OS opener. Silently a no-op if no
+  // session is selected so stray `o` presses don't flash noisy banners.
+  async function handleOpenInSlack(): Promise<void> {
+    const key = selectedKey()
+    if (!key) return
+    const result = await openSlackThread(key)
+    if (result.ok) {
+      flashFeedback("info", `opened ${key} in Slack`)
+      return
+    }
+    if (result.reason === "invalid-key") {
+      flashFeedback("warn", `cannot open ${key} in Slack: unrecognised key shape`)
+      return
+    }
+    log.warn(
+      `slack-monitor: open-in-slack launch failed for ${key}: ${String(result.error)}`,
+    )
+    flashFeedback("error", `open in Slack failed: ${String(result.error)}`)
   }
 
   async function refreshSnapshot(): Promise<void> {
@@ -409,6 +436,7 @@ function StatusBar(props: { baseUrl: string; ctx: AdminContext }) {
       <text fg={mc.text.muted}>↑/↓ nav  </text>
       <text fg={mc.text.muted}>a/d approve/deny  </text>
       <text fg={mc.text.muted}>i interrupt  </text>
+      <text fg={mc.text.muted}>o open in Slack  </text>
       <text fg={mc.text.muted}>R refresh  </text>
       <text fg={mc.text.muted}>? help  </text>
       <text fg={mc.text.muted}>q quit</text>
@@ -477,6 +505,7 @@ function HelpOverlay(_props: { onDismiss: () => void }) {
       <text fg={mc.text.secondary}>A              approve + allow always</text>
       <text fg={mc.text.secondary}>d              deny selected</text>
       <text fg={mc.text.secondary}>i              interrupt selected session</text>
+      <text fg={mc.text.secondary}>o              open thread in Slack app</text>
       <text fg={mc.text.secondary}>R              refresh snapshot</text>
       <text fg={mc.text.secondary}>?              toggle this help</text>
       <text fg={mc.text.secondary}>q / Ctrl-C     quit</text>

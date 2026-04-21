@@ -305,27 +305,13 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
   })
   const dedup = createDedupCache()
-  // Thread-participation TTL — `defaults.thread_participation_ttl_s` in
-  // slack.json, seconds → ms. Defaults to 24h via the schema. Lift it to
-  // let the bot pick threads back up a week later; set 0 to force an
-  // explicit @bantai on every re-engagement.
-  const threadParticipationTtlMs =
-    config.defaults.thread_participation_ttl_s * 1000
-  // Bounded cleanup on boot so the persisted table doesn't grow forever.
-  // Best-effort — a no-op store returns 0 here. Logged at debug so the
-  // first line operators see on startup stays the "loaded config" banner.
-  try {
-    const dropped = store.pruneThreadPosts(Date.now() - threadParticipationTtlMs)
-    if (dropped > 0) {
-      log.debug(`slack: pruned ${dropped} stale thread-participation row(s)`)
-    }
-  } catch (err) {
-    log.warn(`slack: thread-participation prune failed: ${String(err)}`)
-  }
-  const threadParticipation = createThreadParticipationCache({
-    store,
-    ttlMs: threadParticipationTtlMs,
-  })
+  // Thread-participation: store-backed when persistence is enabled, else
+  // in-memory. Row exists → bot participated in this thread → gate
+  // accepts follow-up messages without requiring `@bantai`. No TTL — a
+  // thread stays "known" for the lifetime of the store; the operator can
+  // always force an explicit-mention policy per channel with
+  // `thread_require_explicit_mention`.
+  const threadParticipation = createThreadParticipationCache({ store })
   // Tier-1 native-stream factory. Handed to the routing layer so each
   // renderer can opt in. Channels that keep `native_streaming: false`
   // never touch this capability — the factory returning a no-op would

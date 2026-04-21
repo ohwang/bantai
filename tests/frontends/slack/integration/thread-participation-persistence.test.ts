@@ -266,7 +266,7 @@ describe("slack frontend — thread-participation persistence across restart", (
         "../../../../src/frontends/slack/store/sessions"
       )
       const inspect = createSessionStore({ path: storePath })
-      expect(inspect.hasThreadPost(generalId, threadTs, 0)).toBe(true)
+      expect(inspect.hasThreadPost(generalId, threadTs)).toBe(true)
       inspect.close()
     }
 

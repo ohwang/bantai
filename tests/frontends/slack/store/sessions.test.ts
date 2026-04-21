@@ -302,43 +302,26 @@ describe("createSessionStore — pending_resume_prompts", () => {
 describe("createSessionStore — thread_participation", () => {
   it("recordThreadPost + hasThreadPost round-trip", () => {
     const s = mk()
-    const now = Date.now()
     s.recordThreadPost("C1", "t1")
-    // Cutoff well below now → row passes.
-    expect(s.hasThreadPost("C1", "t1", now - 60_000)).toBe(true)
+    expect(s.hasThreadPost("C1", "t1")).toBe(true)
     // Different (channel, thread) → miss.
-    expect(s.hasThreadPost("C1", "t2", now - 60_000)).toBe(false)
-    expect(s.hasThreadPost("C2", "t1", now - 60_000)).toBe(false)
+    expect(s.hasThreadPost("C1", "t2")).toBe(false)
+    expect(s.hasThreadPost("C2", "t1")).toBe(false)
     s.close()
   })
 
-  it("hasThreadPost respects the cutoffMs filter", () => {
-    const s = mk()
-    s.recordThreadPost("C1", "old")
-    // Cutoff AFTER the recorded time → row excluded.
-    expect(s.hasThreadPost("C1", "old", Date.now() + 60_000)).toBe(false)
-    s.close()
-  })
-
-  it("recordThreadPost is idempotent — same (channel, thread) updates last_post_at", () => {
+  it("recordThreadPost is idempotent — same (channel, thread) doesn't error on re-record", () => {
     const s = mk()
     s.recordThreadPost("C1", "t1")
-    const afterFirst = Date.now()
-    // Busy-wait a ms to force a newer last_post_at on the re-record. We
-    // don't have an override hook here so a clock tick is the simplest
-    // way to assert the timestamp bumped.
-    const spinUntil = Date.now() + 2
-    while (Date.now() < spinUntil) {
-      /* noop */
-    }
     s.recordThreadPost("C1", "t1")
-    // The cutoff set to afterFirst means the original timestamp would NOT
-    // qualify — but the re-record bumped last_post_at past that cutoff.
-    expect(s.hasThreadPost("C1", "t1", afterFirst)).toBe(true)
+    expect(s.hasThreadPost("C1", "t1")).toBe(true)
     s.close()
   })
 
   it("pruneThreadPosts deletes rows older than the cutoff and leaves fresh ones", () => {
+    // Prune is an admin-tool hook — not invoked automatically — but still
+    // exercised here so a future `!bantai prune-participation` command
+    // doesn't silently break.
     const s = mk()
     s.recordThreadPost("C1", "old")
     const between = Date.now() + 1
@@ -351,9 +334,8 @@ describe("createSessionStore — thread_participation", () => {
 
     const removed = s.pruneThreadPosts(between)
     expect(removed).toBe(1)
-    // Cutoff of 0 means "any row qualifies" — prove only 'new' survived.
-    expect(s.hasThreadPost("C1", "old", 0)).toBe(false)
-    expect(s.hasThreadPost("C1", "new", 0)).toBe(true)
+    expect(s.hasThreadPost("C1", "old")).toBe(false)
+    expect(s.hasThreadPost("C1", "new")).toBe(true)
     s.close()
   })
 
@@ -362,8 +344,8 @@ describe("createSessionStore — thread_participation", () => {
     // No throws, no ill-formed rows.
     s.recordThreadPost("", "t1")
     s.recordThreadPost("C1", "")
-    expect(s.hasThreadPost("", "t1", 0)).toBe(false)
-    expect(s.hasThreadPost("C1", "", 0)).toBe(false)
+    expect(s.hasThreadPost("", "t1")).toBe(false)
+    expect(s.hasThreadPost("C1", "")).toBe(false)
     s.close()
   })
 
@@ -379,7 +361,7 @@ describe("createSessionStore — thread_participation", () => {
       s1.close()
 
       const s2 = createSessionStore({ path: dbPath })
-      expect(s2.hasThreadPost("C1", "persist", 0)).toBe(true)
+      expect(s2.hasThreadPost("C1", "persist")).toBe(true)
       s2.close()
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -391,7 +373,7 @@ describe("createNoopSessionStore — thread_participation", () => {
   it("record is a no-op, has returns false, prune returns 0", () => {
     const s = createNoopSessionStore()
     expect(() => s.recordThreadPost("C1", "t1")).not.toThrow()
-    expect(s.hasThreadPost("C1", "t1", 0)).toBe(false)
+    expect(s.hasThreadPost("C1", "t1")).toBe(false)
     expect(s.pruneThreadPosts(0)).toBe(0)
   })
 })

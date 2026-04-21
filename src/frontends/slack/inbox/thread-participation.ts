@@ -69,7 +69,7 @@ export function createThreadParticipationCache(
       },
       has(channel, threadTs) {
         if (!channel || !threadTs) return false
-        return store.hasThreadPost(channel, threadTs, now() - ttl)
+        return store.hasThreadPost(channel, threadTs)
       },
       // Store-backed modes don't track size / clear locally — these remain
       // for interface parity. Tests that care about size/clear use the

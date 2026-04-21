@@ -173,27 +173,6 @@ export const DefaultsSchema = z
      */
     idle_timeout_s: z.number().int().nonnegative().default(60 * 60),
     /**
-     * How long a "bot posted in this thread" marker remains valid. The
-     * gate uses it to accept follow-up messages in the thread without
-     * `@bantai` — once a thread has been silent longer than this, the
-     * next user message must re-mention the bot to drive a turn.
-     *
-     * Default: 86400 (24h). Lift it (e.g. `7 * 24 * 60 * 60`) to let the
-     * bot pick threads back up a week later; drop it for tighter "speak
-     * when spoken to" behaviour. 0 disables the participation fallback
-     * entirely — every channel reply then requires an explicit mention
-     * unless `require_mention: false`.
-     *
-     * Applied uniformly across the launcher (the participation table is
-     * shared, not per-channel). Per-channel "only mention" behaviour
-     * lives on `thread_require_explicit_mention` instead.
-     */
-    thread_participation_ttl_s: z
-      .number()
-      .int()
-      .nonnegative()
-      .default(24 * 60 * 60),
-    /**
      * Per-post identity override fields. When set, every `chat.postMessage`
      * the bot makes rides with a custom username + icon — useful when a
      * channel hosts multiple bantai agents backed by the same bot user

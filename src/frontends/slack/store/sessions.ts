@@ -120,15 +120,17 @@ export interface SessionStore {
    */
   recordThreadPost(channelId: string, threadTs: string): void
   /**
-   * True when a thread-participation row exists for `(channel, thread)` AND
-   * its `last_post_at >= cutoffMs`. The caller decides the cutoff (TTL
-   * policy lives at the cache layer so the store stays unopinionated).
+   * True when a thread-participation row exists for `(channel, thread)`.
+   * Pure existence query — any row qualifies. Operators who want a
+   * "forget old threads" policy can call `pruneThreadPosts(cutoffMs)`
+   * on a schedule; consumers of this method stay unopinionated.
    */
-  hasThreadPost(channelId: string, threadTs: string, cutoffMs: number): boolean
+  hasThreadPost(channelId: string, threadTs: string): boolean
   /**
    * Delete thread-participation rows whose `last_post_at < cutoffMs`.
-   * Returns the deleted row count. Called lazily at launcher boot to keep
-   * the table bounded over time.
+   * Returns the deleted row count. Not called automatically — present
+   * for future admin tooling (e.g. a `!bantai prune-participation`
+   * control command or an operator script).
    */
   pruneThreadPosts(cutoffMs: number): number
 
@@ -268,7 +270,7 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
   )
   const hasThreadPostStmt = db.prepare(
     `SELECT 1 FROM thread_participation
-      WHERE channel_id = $channel AND thread_ts = $thread AND last_post_at >= $cutoff
+      WHERE channel_id = $channel AND thread_ts = $thread
       LIMIT 1`,
   )
   const pruneThreadPostsStmt = db.prepare(
@@ -404,13 +406,12 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
         $now: Date.now(),
       })
     },
-    hasThreadPost(channelId, threadTs, cutoffMs) {
+    hasThreadPost(channelId, threadTs) {
       if (closed) return false
       if (!channelId || !threadTs) return false
       const row = hasThreadPostStmt.get({
         $channel: channelId,
         $thread: threadTs,
-        $cutoff: cutoffMs,
       })
       return row !== null && row !== undefined
     },

@@ -106,26 +106,23 @@ describe("createThreadParticipationCache — store-backed", () => {
     store.close()
   })
 
-  it("has() respects ttlMs against the store's last_post_at", () => {
-    // The store writes with real `Date.now()` (TTL policy is the cache's
-    // concern, not the store's). To exercise expiry, seed the `now` hook
-    // with a real-time anchor and advance it past ttlMs — the cutoff
-    // argument then trails behind what the store persisted.
+  it("store-backed has() has no TTL — row exists forever until explicitly pruned", () => {
+    // The store-backed variant is a pure existence query. The in-memory
+    // variant keeps its own TTL to bound Map size (tested above); the
+    // store path intentionally skips that — SQLite rows are cheap, and
+    // "forget after N hours" is a UX policy that didn't earn its complexity
+    // in practice. Operators can run `pruneThreadPosts(cutoffMs)` via
+    // admin tooling when they actually want to forget.
     const store = createSessionStore({ path: ":memory:" })
-    const anchor = Date.now()
-    let t = anchor
     const cache = createThreadParticipationCache({
       store,
-      ttlMs: 100,
-      now: () => t,
+      // Even when ttlMs/now are provided, the store-backed path ignores
+      // them — make sure this never regresses.
+      ttlMs: 1,
+      now: () => Date.now() + 1_000_000,
     })
     cache.record("C1", "1.000")
-    // Within TTL (cutoff ≈ anchor - 100, entry's last_post_at ≈ anchor).
     expect(cache.has("C1", "1.000")).toBe(true)
-    // Advance fake clock well past TTL (cutoff = anchor + 10_000,
-    // entry's last_post_at ≈ anchor → excluded).
-    t = anchor + 10_000
-    expect(cache.has("C1", "1.000")).toBe(false)
     store.close()
   })
 

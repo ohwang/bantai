@@ -93,6 +93,55 @@ describe("slash commands via Socket Mode", () => {
     }
   })
 
+  test("thread_ts is carried on the payload when provided", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "threads", creator: alice.user.id })
+    joinChannel(handle.workspace, ch.id, alice.user.id)
+    const { app, appToken } = handle.registerApp({ name: "threadbot" })
+
+    const socket = await openSocket(appToken)
+    try {
+      await nextEnvelopeOfType(socket, "hello")
+      const cmdP = nextEnvelopeOfType(socket, "slash_commands")
+      await handle.fireSlashCommand(app.id, {
+        userId: alice.user.id,
+        channelId: ch.id,
+        command: "/bantai",
+        text: "new",
+        threadTs: "1700000000.123456",
+      })
+      const cmd = await cmdP
+      expect(cmd.payload.thread_ts).toBe("1700000000.123456")
+    } finally {
+      socket.close()
+    }
+  })
+
+  test("thread_ts is absent when invoked from channel root", async () => {
+    createUser(handle.workspace, { name: "alice" })
+    const alice = handle.asUser("alice")
+    const ch = createPublicChannel(handle.workspace, { name: "noroot", creator: alice.user.id })
+    joinChannel(handle.workspace, ch.id, alice.user.id)
+    const { app, appToken } = handle.registerApp({ name: "rootbot" })
+
+    const socket = await openSocket(appToken)
+    try {
+      await nextEnvelopeOfType(socket, "hello")
+      const cmdP = nextEnvelopeOfType(socket, "slash_commands")
+      await handle.fireSlashCommand(app.id, {
+        userId: alice.user.id,
+        channelId: ch.id,
+        command: "/bantai",
+        text: "help",
+      })
+      const cmd = await cmdP
+      expect(cmd.payload.thread_ts).toBeUndefined()
+    } finally {
+      socket.close()
+    }
+  })
+
   test("ack payload round-trips via awaitAckMs", async () => {
     createUser(handle.workspace, { name: "alice" })
     const alice = handle.asUser("alice")

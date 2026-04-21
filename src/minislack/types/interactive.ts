@@ -41,6 +41,15 @@ export interface SlashCommandPayload {
   /** Triggers an interactive dialog (views.open). */
   trigger_id: string
   is_enterprise_install: boolean
+  /**
+   * When the command is invoked from inside a thread (e.g. the reply
+   * composer in the thread side panel), Slack includes the parent
+   * message's `ts`. Absent when the command is invoked from the
+   * channel's top-level message box. Bantai's thread-scoped commands
+   * (`/bantai new`, `/bantai stop`, …) require this field — see
+   * `src/frontends/slack/commands/slash-adapter.ts`.
+   */
+  thread_ts?: string
 }
 
 // ---------------------------------------------------------------------------

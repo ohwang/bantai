@@ -82,6 +82,13 @@ export interface FireSlashCommandOpts {
   channelId: string
   command: string        // "/deploy"
   text?: string
+  /**
+   * Mirror of Slack's real-workspace behaviour when a slash command is
+   * invoked from inside a thread — the parent message's `ts` arrives
+   * on the payload as `thread_ts`. Leave undefined to simulate a
+   * channel-root invocation (the default composer).
+   */
+  threadTs?: string
   /** ms to wait for the ack payload; 0 = don't wait. Default 0 (fire-and-forget). */
   awaitAckMs?: number
 }
@@ -236,6 +243,7 @@ export async function startMinislack(opts: StartMinislackOpts = {}): Promise<Min
         command: input.command,
         text: input.text ?? "",
         responseUrl: `${baseHttp}/_minislack/response/${responseToken}`,
+        ...(input.threadTs ? { threadTs: input.threadTs } : {}),
       })
       const envelope = buildSlashCommand(payload)
       const sent = wsRegistry.sendToApp(appId, envelope)

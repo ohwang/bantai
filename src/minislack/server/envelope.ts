@@ -135,6 +135,13 @@ export interface SlashCommandInput {
   command: string      // e.g. "/deploy"
   text: string
   responseUrl: string  // e.g. `${baseHttp}/_minislack/response/${token}`
+  /**
+   * Optional thread parent `ts`. When set, mirrors Slack's behaviour of
+   * including `thread_ts` on the payload when the command was fired
+   * from inside a thread. Absent → invoked from the channel's top-level
+   * message box.
+   */
+  threadTs?: string
 }
 
 export function makeSlashCommandPayload(input: SlashCommandInput): SlashCommandPayload {
@@ -154,6 +161,7 @@ export function makeSlashCommandPayload(input: SlashCommandInput): SlashCommandP
     response_url: input.responseUrl,
     trigger_id: `${Date.now()}.${randomId(6)}`,
     is_enterprise_install: false,
+    ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
   }
 }
 

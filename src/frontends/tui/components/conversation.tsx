@@ -460,13 +460,19 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
 
           {/* Spinner — visible during RUNNING when there's no other visual activity.
               Hidden while text is actively streaming since that already signals progress.
-              Inline TaskChecklist sits directly below the spinner during active runs. */}
+              Inline TaskChecklist sits directly below the spinner during active runs.
+              `sessionActive` defers the 5s all-completed auto-hide until the
+              session returns to IDLE, so users keep task context during
+              ongoing work even when the agent doesn't re-emit TodoWrite. */}
           <box flexDirection="column">
             <Show when={spinnerVisible()}>
               <box marginTop={1} paddingLeft={2} flexDirection="column">
                 <StreamingSpinner label={spinnerLabel()} elapsedSeconds={turnElapsed()} outputTokens={state.streamingOutputTokens || session.cost.outputTokens} />
                 <Show when={state.todos.length > 0}>
-                  <TaskChecklist todos={state.todos} />
+                  <TaskChecklist
+                    todos={state.todos}
+                    sessionActive={session.sessionState !== "IDLE"}
+                  />
                 </Show>
               </box>
             </Show>
@@ -478,7 +484,11 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
               visible continuously, matching Claude Code. */}
           <box flexDirection="column">
             <Show when={!spinnerVisible() && state.todos.length > 0}>
-              <TaskChecklist todos={state.todos} isStandalone={true} />
+              <TaskChecklist
+                todos={state.todos}
+                isStandalone={true}
+                sessionActive={session.sessionState !== "IDLE"}
+              />
             </Show>
           </box>
 

@@ -60,15 +60,24 @@ export function computeShouldHide(
 /**
  * Pure helper: compute the next `firstAllCompleteAt` value given the
  * previous value and the current list. Returns:
+ *  - `null` if the session is active (timer deferred — see §Auto-hide below).
  *  - `null` if the list is empty or not all-completed (reset).
  *  - The previous value if it's already set (don't restart the timer).
  *  - `now` if this is the first tick where all-completed became true.
+ *
+ * `sessionActive === true` means a turn is in flight (RUNNING /
+ * WAITING_FOR_PERM / WAITING_FOR_ELIC / etc.). During active work we never
+ * start the auto-hide timer, because the agent may be about to call
+ * TodoWrite again with new tasks and the user wants context throughout.
+ * The 5-second hide only fires when the session is IDLE.
  */
 export function nextFirstAllCompleteAt(
   prev: number | null,
   todos: readonly TodoItem[],
   now: number,
+  sessionActive?: boolean,
 ): number | null {
+  if (sessionActive === true) return null
   const allComplete =
     todos.length > 0 && todos.every((t) => t.status === "completed")
   if (!allComplete) return null
@@ -185,6 +194,15 @@ export function buildHiddenSummary(hidden: readonly TodoItem[]): string {
 export function TaskChecklist(props: {
   todos: TodoItem[]
   isStandalone?: boolean
+  /**
+   * When true, defer the all-completed auto-hide timer. Set during any
+   * non-IDLE session state (RUNNING, WAITING_FOR_PERM, WAITING_FOR_ELIC, …)
+   * so the checklist stays visible throughout a turn — the agent may call
+   * TodoWrite again with new tasks, and the user always wants context
+   * during active work. Defaults to undefined (existing behavior: hide 5s
+   * after all-completed).
+   */
+  sessionActive?: boolean
 }): JSX.Element {
   const dims = useTerminalDimensions()
 
@@ -206,7 +224,10 @@ export function TaskChecklist(props: {
 
   createEffect(() => {
     const todos = props.todos
-    setFirstAllCompleteAt((prev) => nextFirstAllCompleteAt(prev, todos, Date.now()))
+    const sessionActive = props.sessionActive
+    setFirstAllCompleteAt((prev) =>
+      nextFirstAllCompleteAt(prev, todos, Date.now(), sessionActive),
+    )
   })
 
   // Drive `now` reactivity when the timer is due to fire, so the <Show>

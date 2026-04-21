@@ -219,6 +219,28 @@ describe("auto-hide helpers", () => {
       expect(nextFirstAllCompleteAt(1_000, list, 3_500)).toBe(1_000)
       expect(nextFirstAllCompleteAt(1_000, list, 9_999)).toBe(1_000)
     })
+
+    it("returns null when sessionActive=true even for an all-completed list", () => {
+      // The 5-second auto-hide is deferred during any non-IDLE session
+      // state (RUNNING, WAITING_FOR_PERM, WAITING_FOR_ELIC, …). During
+      // active work the agent may call TodoWrite again with a fresh list,
+      // so the user should keep seeing the existing context.
+      const allDone = [mk("completed"), mk("completed")]
+      expect(nextFirstAllCompleteAt(null, allDone, 1_000, true)).toBeNull()
+      // Even if a previous timestamp had latched (session went IDLE, then
+      // started a new turn mid-grace-window), sessionActive wipes it.
+      expect(nextFirstAllCompleteAt(500, allDone, 1_000, true)).toBeNull()
+    })
+
+    it("sessionActive=false matches the default (timer runs)", () => {
+      // Explicit false should behave identically to omitting the argument.
+      const allDone = [mk("completed"), mk("completed")]
+      expect(nextFirstAllCompleteAt(null, allDone, 1_000, false)).toBe(1_000)
+      expect(nextFirstAllCompleteAt(1_000, allDone, 3_500, false)).toBe(1_000)
+      // Not-all-completed still resets regardless of the flag.
+      const mixed = [mk("completed"), mk("pending")]
+      expect(nextFirstAllCompleteAt(1_000, mixed, 2_000, false)).toBeNull()
+    })
   })
 
   describe("computeShouldHide", () => {
@@ -443,4 +465,35 @@ describe("TaskChecklist rendering", () => {
     expect(frame).not.toContain("\u2026")
     setup.renderer.destroy()
   })
+
+  it("sessionActive={true} keeps an all-completed list visible past 5s", async () => {
+    // The 5s auto-hide should only fire when the session is IDLE. While a
+    // turn is in flight (RUNNING / WAITING_FOR_PERM / WAITING_FOR_ELIC),
+    // the user needs ongoing task context — the agent may be about to call
+    // TodoWrite again. Sleep past AUTO_HIDE_DELAY_MS and verify the list
+    // is still rendered.
+    const todos: TodoItem[] = [
+      { content: "Finish A", activeForm: "Finishing A", status: "completed" },
+      { content: "Finish B", activeForm: "Finishing B", status: "completed" },
+    ]
+    const setup = await testRender(
+      () => <TaskChecklist todos={todos} sessionActive={true} />,
+      { width: 80, height: 24 },
+    )
+    await setup.renderOnce()
+    await new Promise((r) => setTimeout(r, AUTO_HIDE_DELAY_MS + 200))
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Finish A")
+    expect(frame).toContain("Finish B")
+    expect(frame).toContain("\u2714")
+    setup.renderer.destroy()
+  }, 10_000)
+
+  // Note: the IDLE-state "hides at 5s" behavior is covered by the pure
+  // helper tests above (computeShouldHide + nextFirstAllCompleteAt with
+  // sessionActive=false). Pinning it with a real-time rendered assertion
+  // is flaky under load — the reactivity path fires deterministically in
+  // isolation but can miss a re-render when the whole TUI suite runs in
+  // one Bun process.
 })

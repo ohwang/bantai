@@ -14,6 +14,13 @@
  * ends up in `store.state.sessions[selectedKey]` + an optional detail
  * record passed in from the shell.
  *
+ * Layout: the content lives inside a `<scrollbox>` so short terminals
+ * (or very busy sessions with long `cwd` / many server flags) can still
+ * see every field — the approvals pane pinned below the tabbed area
+ * eats a few rows, which is enough to clip the Server block on standard
+ * 24-row terminals. Mouse wheel scrolls by default; `scrollBy()` via
+ * `scrollRef` is exposed to callers who want keyboard paging.
+ *
  * Implementation note: we deliberately avoid the `<Show>` render-prop
  * form (`{(s) => …}`) here. SolidJS types the render-prop parameter as
  * `Accessor<NonNullable<T>>`, and TypeScript's inference doesn't carry
@@ -23,7 +30,7 @@
  */
 
 import { createMemo, Show } from "solid-js"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { phaseLabel, type MonitorStore } from "../context/store"
 import type { SessionDetail, SessionSummary } from "../../slack/admin/protocol"
 import { mc } from "../theme"
@@ -32,6 +39,14 @@ export interface MetadataPaneProps {
   store: MonitorStore
   /** Optional enriched detail (from GET /admin/sessions/:key). */
   detail: SessionDetail | null
+  /**
+   * Optional ref callback for the inner scrollbox — lets the parent wire
+   * keyboard paging (PageUp/PageDown, arrows when the details tab is
+   * active) via `scrollBy()` / `scrollTo()`. Mouse wheel scrolling works
+   * out of the box via OpenTUI's scrollbox primitive, so passing no ref
+   * still gives you a functional scrollable pane.
+   */
+  scrollRef?: (el: ScrollBoxRenderable) => void
 }
 
 export function MetadataPane(props: MetadataPaneProps) {
@@ -49,17 +64,28 @@ export function MetadataPane(props: MetadataPaneProps) {
       backgroundColor={mc.panelBg}
       padding={1}
     >
-      <text fg={mc.text.primary} attributes={TextAttributes.BOLD}>
-        Session
-      </text>
-      <Show
-        when={summary() !== null}
-        fallback={
-          <text fg={mc.text.muted} attributes={TextAttributes.ITALIC} marginTop={1}>
-            —
-          </text>
-        }
+      {/*
+        All metadata lives inside a scrollbox so it stays reachable even
+        on short terminals. We DO NOT use sticky-bottom here — that's for
+        live streams (see EventStream). Metadata is top-anchored: the
+        user opens the tab expecting to see the session header first.
+      */}
+      <scrollbox
+        flexGrow={1}
+        flexDirection="column"
+        ref={(el: ScrollBoxRenderable) => props.scrollRef?.(el)}
       >
+        <text fg={mc.text.primary} attributes={TextAttributes.BOLD}>
+          Session
+        </text>
+        <Show
+          when={summary() !== null}
+          fallback={
+            <text fg={mc.text.muted} attributes={TextAttributes.ITALIC} marginTop={1}>
+              —
+            </text>
+          }
+        >
         <box flexDirection="column" marginTop={1}>
           <KV label="project" value={summary()?.projectName || "(unknown)"} />
           <KV label="channel" value={`#${summary()?.channelId ?? ""}`} />
@@ -120,29 +146,30 @@ export function MetadataPane(props: MetadataPaneProps) {
           <TokenUsageSection summary={summary() as SessionSummary} />
         </Show>
       </Show>
-      <Show when={config() !== null}>
-        <box flexDirection="column" marginTop={2}>
-          <text fg={mc.text.primary} attributes={TextAttributes.BOLD}>
-            Server
-          </text>
-          <KV label="protocol" value={props.store.state.protocol || "?"} />
-          <KV label="version" value={props.store.state.serverVersion || "?"} />
-          <KV label="mode" value={config()?.mode ?? ""} />
-          <KV
-            label="read-only"
-            value={config()?.admin.readOnly ? "yes" : "no"}
-            valueFg={
-              config()?.admin.readOnly
-                ? mc.phase.WAITING_FOR_PERM
-                : mc.phase.IDLE
-            }
-          />
-          <KV
-            label="ring size"
-            value={String(config()?.admin.sessionRingSize ?? 0)}
-          />
-        </box>
-      </Show>
+        <Show when={config() !== null}>
+          <box flexDirection="column" marginTop={2}>
+            <text fg={mc.text.primary} attributes={TextAttributes.BOLD}>
+              Server
+            </text>
+            <KV label="protocol" value={props.store.state.protocol || "?"} />
+            <KV label="version" value={props.store.state.serverVersion || "?"} />
+            <KV label="mode" value={config()?.mode ?? ""} />
+            <KV
+              label="read-only"
+              value={config()?.admin.readOnly ? "yes" : "no"}
+              valueFg={
+                config()?.admin.readOnly
+                  ? mc.phase.WAITING_FOR_PERM
+                  : mc.phase.IDLE
+              }
+            />
+            <KV
+              label="ring size"
+              value={String(config()?.admin.sessionRingSize ?? 0)}
+            />
+          </box>
+        </Show>
+      </scrollbox>
     </box>
   )
 }

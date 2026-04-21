@@ -122,6 +122,12 @@ export type TurnCompleteEvent = {
    *  time points at the model itself. Backends that don't report it omit the
    *  field; the reducer keeps the previous value intact when absent. */
   ttftMs?: number
+  /** Total wall-clock duration of this agentic turn, in milliseconds. Sourced
+   *  from the Claude SDK `result` message's `duration_ms` — spans the full
+   *  multi-step turn (all internal API calls + tool uses), not just the final
+   *  API call. Backends that don't report it omit the field. Used by the TUI
+   *  to render a "Baked for X" summary line when the turn completes. */
+  durationMs?: number
 }
 
 /** Session state */
@@ -806,6 +812,13 @@ export interface ConversationState {
   /** Files modified in the last completed turn */
   lastTurnFiles?: TurnFileChange[]
 
+  /** Summary of the most recent completed turn — drives the TUI "Baked for X"
+   *  line shown in IDLE state. All fields are optional per-backend: Claude
+   *  reports full data (duration/cost/tokens); Codex reports usage only; ACP
+   *  and mock report usage with no duration. Reset to `null` on `turn_start`
+   *  so stale values don't leak across turns. */
+  lastTurnSummary: TurnSummaryInfo | null
+
   /** Agent-advertised slash commands (from ACP available_commands_update) */
   agentCommands: AgentSlashCommand[]
 
@@ -1234,6 +1247,23 @@ export interface TurnFileChange {
   tool: string
 }
 
+/** Per-turn summary info, captured at `turn_complete`. Drives the TUI
+ *  "Baked for X" line shown in IDLE. All fields are optional per-backend:
+ *
+ *  - **Claude**: full data — `durationMs`, `costUsd`, and `usage`.
+ *  - **Codex**: `usage` only (`turn/completed` has no duration).
+ *  - **ACP / mock / follow**: usage-only or nothing.
+ *
+ *  The TUI hides fields it doesn't have rather than synthesising them. */
+export interface TurnSummaryInfo {
+  /** Wall-clock duration of the turn in milliseconds (Claude SDK `duration_ms`). */
+  durationMs?: number
+  /** Per-turn cost in USD (Claude SDK `total_cost_usd`). */
+  costUsd?: number
+  /** Per-turn token usage breakdown. Absent for backends that don't report it. */
+  usage?: TokenUsage
+}
+
 /** Agent-advertised slash command (from ACP backends) */
 export interface AgentSlashCommand {
   name: string
@@ -1284,6 +1314,7 @@ export function createInitialState(): ConversationState {
     backgrounded: false,
     awaitingTurnStart: false,
     lastTurnFiles: undefined,
+    lastTurnSummary: null,
     rateLimits: null,
     agentCommands: [],
     configOptions: [],
@@ -1337,6 +1368,7 @@ export function resetVolatileSessionState(
     streamingOutputTokens: fresh.streamingOutputTokens,
     turnNumber: fresh.turnNumber,
     lastTurnFiles: fresh.lastTurnFiles,
+    lastTurnSummary: fresh.lastTurnSummary,
     // Todos are the current backend's working state, not a cross-backend
     // observable — clear on switch so the new backend starts fresh rather
     // than inheriting the old agent's in-flight task list.

@@ -402,10 +402,15 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
             </Index>
           </box>
 
-          {/* Turn file change summary — shown when IDLE and files were changed */}
+          {/* Turn epilogue — files changed + "Baked for X · Y tokens · $Z"
+              line, shown when IDLE and the reducer captured something worth
+              rendering for the last turn. The component decides which of the
+              two sub-sections to show; both are optional and a missing
+              backend field hides the corresponding part rather than
+              synthesising it. */}
           <box flexDirection="column">
-            <Show when={session.sessionState === "IDLE" && state.lastTurnFiles}>
-              <TurnSummary files={state.lastTurnFiles!} />
+            <Show when={session.sessionState === "IDLE" && (state.lastTurnFiles || state.lastTurnSummary)}>
+              <TurnSummary files={state.lastTurnFiles} summary={state.lastTurnSummary} />
             </Show>
           </box>
 

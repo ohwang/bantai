@@ -16,6 +16,7 @@ import type {
   TaskInfo,
   TodoItem,
   TurnFileChange,
+  TurnSummaryInfo,
 } from "../../../protocol/types"
 
 export interface MessagesState {
@@ -26,6 +27,10 @@ export interface MessagesState {
   backgrounded: boolean
   streamingOutputTokens: number
   lastTurnFiles?: TurnFileChange[]
+  /** Per-turn summary used by the conversation view to render the
+   *  "Baked for X · Y tokens · $Z" line below the files-changed block.
+   *  Null when the backend didn't report anything worth showing. */
+  lastTurnSummary: TurnSummaryInfo | null
   todos: TodoItem[]
 }
 
@@ -44,6 +49,7 @@ export function MessagesProvider(props: ParentProps) {
     activeTasks: [],
     backgrounded: false,
     streamingOutputTokens: 0,
+    lastTurnSummary: null,
     todos: [],
   })
 

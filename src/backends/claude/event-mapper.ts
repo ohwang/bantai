@@ -651,11 +651,15 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
       // the reducer can expose it on ConversationState. Undefined is fine —
       // the reducer preserves the previous value when the field is absent.
       const ttftMs = streamState.ttftMsThisTurn
+      // Wall-clock duration of the agentic turn (SDK `duration_ms`). Used by
+      // the TUI to render a "Baked for X" line on turn completion.
+      const durationMs = typeof msg.duration_ms === "number" ? msg.duration_ms : undefined
       if (msg.subtype === "success" || !msg.is_error) {
         events.push({
           type: "turn_complete",
           sessionId: resultSessionId,
           ttftMs,
+          durationMs,
           usage: {
             inputTokens: msg.usage?.input_tokens ?? 0,
             outputTokens: msg.usage?.output_tokens ?? 0,
@@ -675,6 +679,7 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
           type: "turn_complete",
           sessionId: resultSessionId,
           ttftMs,
+          durationMs,
           usage: {
             inputTokens: msg.usage?.input_tokens ?? 0,
             outputTokens: msg.usage?.output_tokens ?? 0,

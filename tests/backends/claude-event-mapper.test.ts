@@ -663,6 +663,58 @@ describe("Claude Event Mapper — mapSDKMessage", () => {
       const err = events[0] as any
       expect(err.message).toBe("Unknown error")
     })
+
+    it("forwards duration_ms from the SDK onto turn_complete for the baked-for line", () => {
+      // The TUI renders a "Baked for X · Y tokens · $Z" summary after each
+      // turn using the reducer's lastTurnSummary. The mapper must pass the
+      // SDK's wall-clock duration through so that line can show time.
+      const events = mapSDKMessage(
+        {
+          type: "result",
+          subtype: "success",
+          duration_ms: 45123,
+          total_cost_usd: 0.0421,
+          usage: { input_tokens: 10, output_tokens: 20 },
+        },
+        freshState(),
+      )
+
+      expect(events).toHaveLength(1)
+      expect((events[0] as any).type).toBe("turn_complete")
+      expect((events[0] as any).durationMs).toBe(45123)
+      expect((events[0] as any).usage.totalCostUsd).toBe(0.0421)
+    })
+
+    it("forwards duration_ms on error results too (failed turns still took time)", () => {
+      const events = mapSDKMessage(
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          duration_ms: 12000,
+          errors: ["boom"],
+          usage: {},
+        },
+        freshState(),
+      )
+
+      // [error, turn_complete]
+      expect(events).toHaveLength(2)
+      expect((events[1] as any).type).toBe("turn_complete")
+      expect((events[1] as any).durationMs).toBe(12000)
+    })
+
+    it("leaves durationMs undefined when the SDK omits it", () => {
+      const events = mapSDKMessage(
+        {
+          type: "result",
+          subtype: "success",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        freshState(),
+      )
+      expect((events[0] as any).durationMs).toBeUndefined()
+    })
   })
 
   // ---------------------------------------------------------------------------

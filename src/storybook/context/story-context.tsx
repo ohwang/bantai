@@ -63,6 +63,7 @@ const DEFAULT_MESSAGES: MessagesState = {
   streamingOutputTokens: 0,
   activeTasks: [],
   backgrounded: false,
+  lastTurnSummary: null,
   todos: [],
 }
 

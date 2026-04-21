@@ -161,6 +161,7 @@ export function SyncProvider(props: ParentProps) {
       messages.setState("backgrounded", conversationState.backgrounded)
       messages.setState("streamingOutputTokens", conversationState.streamingOutputTokens)
       messages.setState("lastTurnFiles", reconcile(conversationState.lastTurnFiles ?? undefined as any))
+      messages.setState("lastTurnSummary", reconcile(conversationState.lastTurnSummary))
       messages.setState("todos", reconcile(conversationState.todos))
 
       session.setState("sessionState", conversationState.sessionState)
@@ -249,6 +250,7 @@ export function SyncProvider(props: ParentProps) {
       messages.setState("backgrounded", false)
       messages.setState("streamingOutputTokens", 0)
       messages.setState("lastTurnFiles", undefined)
+      messages.setState("lastTurnSummary", null)
       session.setState("lastTurnInputTokens", 0)
       session.setState("lastTurnTtftMs", null)
       session.setState("turnNumber", 0)
@@ -450,6 +452,7 @@ export function SyncProvider(props: ParentProps) {
         session.setState("turnNumber", 0)
         messages.setState("streamingOutputTokens", 0)
         messages.setState("lastTurnFiles", undefined)
+        messages.setState("lastTurnSummary", null)
         messages.setState("todos", reconcile([]))
       })
 

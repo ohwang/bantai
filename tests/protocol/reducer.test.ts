@@ -312,6 +312,72 @@ describe("ConversationState reducer", () => {
   })
 
   // -----------------------------------------------------------------------
+  // Per-turn summary (powers the TUI "Baked for X · Y tokens · $Z" line)
+  // -----------------------------------------------------------------------
+
+  describe("lastTurnSummary", () => {
+    it("starts at null on a fresh conversation", () => {
+      const state = createInitialState()
+      expect(state.lastTurnSummary).toBeNull()
+    })
+
+    it("captures durationMs, costUsd, and usage from turn_complete", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        {
+          type: "turn_complete",
+          durationMs: 45000,
+          usage: {
+            inputTokens: 1200,
+            outputTokens: 340,
+            cacheReadTokens: 8000,
+            cacheWriteTokens: 0,
+            totalCostUsd: 0.0421,
+          },
+        },
+      ])
+      expect(state.lastTurnSummary).not.toBeNull()
+      expect(state.lastTurnSummary?.durationMs).toBe(45000)
+      expect(state.lastTurnSummary?.costUsd).toBe(0.0421)
+      expect(state.lastTurnSummary?.usage?.inputTokens).toBe(1200)
+      expect(state.lastTurnSummary?.usage?.cacheReadTokens).toBe(8000)
+    })
+
+    it("stays null when backend reports neither duration nor any tokens", () => {
+      // ACP-style turn_complete — no duration, no usage. Nothing to show.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "turn_complete" },
+      ])
+      expect(state.lastTurnSummary).toBeNull()
+    })
+
+    it("records duration even when the backend omits usage", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "turn_complete", durationMs: 2500 },
+      ])
+      expect(state.lastTurnSummary?.durationMs).toBe(2500)
+      expect(state.lastTurnSummary?.usage).toBeUndefined()
+    })
+
+    it("replaces the previous turn's summary on the next turn_complete", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "turn_complete", durationMs: 1000, usage: { inputTokens: 10, outputTokens: 20 } },
+        { type: "turn_start" },
+        { type: "turn_complete", durationMs: 8000, usage: { inputTokens: 500, outputTokens: 600 } },
+      ])
+      expect(state.lastTurnSummary?.durationMs).toBe(8000)
+      expect(state.lastTurnSummary?.usage?.outputTokens).toBe(600)
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // User messages
   // -----------------------------------------------------------------------
 

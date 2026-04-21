@@ -261,6 +261,19 @@ export function reduce(
         lastTurnTtftMs: event.ttftMs != null ? event.ttftMs : state.lastTurnTtftMs,
         _contextFromStream: false,
         lastTurnFiles: turnFiles.length > 0 ? turnFiles : undefined,
+        // Capture a per-turn summary for the TUI "Baked for X" line. Only
+        // recorded when the backend provides enough signal to render something
+        // meaningful — duration, cost, or any token count. The TUI decides
+        // which fields to show; missing fields are hidden, not synthesised.
+        lastTurnSummary:
+          event.durationMs != null ||
+          (event.usage && (event.usage.inputTokens > 0 || event.usage.outputTokens > 0 || (event.usage.totalCostUsd ?? 0) > 0))
+            ? {
+                durationMs: event.durationMs,
+                costUsd: event.usage?.totalCostUsd,
+                usage: event.usage,
+              }
+            : null,
       }
     }
 

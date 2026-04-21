@@ -55,8 +55,11 @@ export interface MonitorAppProps {
 const LEFT_WIDTH = 34
 
 /** Which tab the right-hand pane is currently showing. */
-type RightTab = "events" | "details"
-const TAB_ORDER: ReadonlyArray<RightTab> = ["events", "details"]
+type RightTab = "details" | "events"
+// Tab order — details first so the user lands on the session header +
+// context/cost rollup when they pick a row. Events live one Tab away
+// (they have their own natural scroll + live updates once you're in).
+const TAB_ORDER: ReadonlyArray<RightTab> = ["details", "events"]
 
 export function MonitorApp(props: MonitorAppProps) {
   const dims = useTerminalDimensions()
@@ -78,8 +81,9 @@ export function MonitorApp(props: MonitorAppProps) {
 
   // Which tab the right-hand pane is showing. Tab / Shift-Tab cycles;
   // clicking a tab header (handled in `RightPane`) jumps directly. The
-  // events tab is the default because that's the monitor's core job.
-  const [activeTab, setActiveTab] = createSignal<RightTab>("events")
+  // details tab is the default — it answers "what is this session?"
+  // which is usually the first thing you want after picking a row.
+  const [activeTab, setActiveTab] = createSignal<RightTab>("details")
   function cycleTab(delta: 1 | -1): void {
     const cur = activeTab()
     const idx = TAB_ORDER.indexOf(cur)
@@ -434,15 +438,15 @@ function TabBar(props: TabBarProps) {
       flexShrink={0}
     >
       <TabHeader
-        label="Events"
-        active={props.active === "events"}
-        onClick={() => props.onSelect("events")}
-      />
-      <text fg={mc.text.muted}>  </text>
-      <TabHeader
         label="Session details"
         active={props.active === "details"}
         onClick={() => props.onSelect("details")}
+      />
+      <text fg={mc.text.muted}>  </text>
+      <TabHeader
+        label="Events"
+        active={props.active === "events"}
+        onClick={() => props.onSelect("events")}
       />
       <box flexGrow={1} />
       <text fg={mc.text.muted} attributes={TextAttributes.ITALIC}>
@@ -625,7 +629,7 @@ function HelpOverlay(_props: { onDismiss: () => void }) {
       <text fg={mc.text.secondary}>k / ↑          previous session</text>
       <text fg={mc.text.secondary}>g              first session</text>
       <text fg={mc.text.secondary}>G              last session</text>
-      <text fg={mc.text.secondary}>Tab / S-Tab    switch events ↔ session details</text>
+      <text fg={mc.text.secondary}>Tab / S-Tab    switch session details ↔ events</text>
       <text fg={mc.text.secondary}>[ / ]          cycle approvals</text>
       <text fg={mc.text.secondary}>a              approve selected</text>
       <text fg={mc.text.secondary}>A              approve + allow always</text>

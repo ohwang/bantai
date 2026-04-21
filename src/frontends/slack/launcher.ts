@@ -68,6 +68,7 @@ import {
   type RuntimeChannelOverride,
 } from "./routing"
 import { createStaleResumeCoordinator } from "./recovery/coordinator"
+import { createHistoryInjectionProvider } from "./recovery/history-provider"
 import {
   createConfigReloader,
   formatDiffSummary,
@@ -470,10 +471,13 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
       if (!parts) return undefined
       return routingCtx.projectOverrides.get(parts.channelId)
     },
-    // Commit 5 plugs a real HistoryInjectionProvider in here; commit 4
-    // intentionally leaves it null so the "Resume with history" button
-    // stays hidden until the wiring lands.
-    historyProvider: null,
+    // Cross-backend history provider. Reads the persisted session file from
+    // the prior backend and formats it as a replayContext string the new
+    // backend prepends to the first user message. `null` when the
+    // cross-backend module can't be loaded — the coordinator then hides
+    // the "Resume with history" button and clicks that somehow arrive
+    // fall back to fresh without losing the user's turn.
+    historyProvider: createHistoryInjectionProvider(),
     backendLabels: {
       claude: "Claude",
       codex: "Codex",

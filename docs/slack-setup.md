@@ -85,7 +85,13 @@ bantai looks for `./.bantai/slack.json` first, then `~/.bantai/slack.json`. Eith
     // Seconds of inactivity before a thread's session is evicted from
     // memory. The on-disk store is untouched, so the next message in
     // the thread rehydrates it. Default 3600 (60 min). 0 disables.
-    "idle_timeout_s": 3600
+    "idle_timeout_s": 3600,
+    // How long a "bot posted in this thread" marker stays valid so
+    // follow-up user messages bypass the @bantai mention gate. Once a
+    // thread has been silent longer than this, the next reply has to
+    // re-mention the bot. Default 86400 (24h). 0 disables the
+    // participation fallback.
+    "thread_participation_ttl_s": 86400
   },
 
   // Persist per-session state so a process restart (crash, deploy) picks

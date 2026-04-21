@@ -305,10 +305,12 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
   })
   const dedup = createDedupCache()
-  // Thread-participation TTL — matches the historical in-memory default.
-  // Kept as a constant here rather than a config knob for now; operators
-  // who need to tune can edit this or we can lift it to slack.json later.
-  const threadParticipationTtlMs = 24 * 60 * 60 * 1000
+  // Thread-participation TTL — `defaults.thread_participation_ttl_s` in
+  // slack.json, seconds → ms. Defaults to 24h via the schema. Lift it to
+  // let the bot pick threads back up a week later; set 0 to force an
+  // explicit @bantai on every re-engagement.
+  const threadParticipationTtlMs =
+    config.defaults.thread_participation_ttl_s * 1000
   // Bounded cleanup on boot so the persisted table doesn't grow forever.
   // Best-effort — a no-op store returns 0 here. Logged at debug so the
   // first line operators see on startup stays the "loaded config" banner.

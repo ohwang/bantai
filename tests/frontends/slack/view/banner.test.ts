@@ -13,7 +13,6 @@ function project(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     requireMention: true,
     permissionMode: "default",
     triggerName: "bantai",
-    controlPrefix: "!bantai",
     sessionBanner: true,
     showCost: false,
     autoJoinThreads: true,
@@ -98,13 +97,13 @@ describe("buildSessionBanner", () => {
     const body = (blocks[0] as { elements: Array<{ text: string }> }).elements[0]!.text
     expect(body).toContain("@alice")
     expect(body).toContain("@bob")
-    expect(body).not.toContain("!bantai help")
+    expect(body).not.toContain("/bantai help")
   })
 
   it("no participants → banner ends with help-command hint", () => {
     const { blocks } = buildSessionBanner({ project: project() })
     const body = (blocks[0] as { elements: Array<{ text: string }> }).elements[0]!.text
-    expect(body).toContain("type !bantai help for control commands")
+    expect(body).toContain("type /bantai help for control commands")
   })
 
   it("falls back to <default> model + <pending> session id", () => {

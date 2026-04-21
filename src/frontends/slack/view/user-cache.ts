@@ -6,7 +6,7 @@
  *     inbound message with `@<displayName>:` so the agent knows who's
  *     talking. The approval / elicitation surfaces use `<@U…>` native
  *     mentions which Slack renders for us, so they don't hit the cache.
- *   - **Channel names.** The banner + `!bantai status` surfaces want a
+ *   - **Channel names.** The banner + `/bantai status` surfaces want a
  *     human-readable `#channel-name` when the channel isn't declared in
  *     `slack.json` (so no static `name:` override exists).
  *

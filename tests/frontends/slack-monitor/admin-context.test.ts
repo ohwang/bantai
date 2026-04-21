@@ -140,7 +140,6 @@ function fakeConfig(): ResolvedSlackConfig {
       require_mention: true,
       trigger_name: "bantai",
       verbosity: "normal",
-      control_prefix: "!b",
       session_banner: true,
       approvers: [],
       auto_join_threads: true,

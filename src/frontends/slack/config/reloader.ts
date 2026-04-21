@@ -130,7 +130,7 @@ export interface ConfigReloader {
   /**
    * Force a reload now, bypassing the debouncer. Returns the outcome.
    * Used by `bantai slack doctor --check-reload` and by any future
-   * `!bantai reload` escape hatch.
+   * `/bantai reload` escape hatch.
    */
   reloadNow(reason: ReloadReason): Promise<ReloadOutcome>
 

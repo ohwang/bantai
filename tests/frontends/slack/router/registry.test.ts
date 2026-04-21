@@ -132,7 +132,6 @@ function fakeProject(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     requireMention: true,
     permissionMode: "default",
     triggerName: "bantai",
-    controlPrefix: "!bantai",
     sessionBanner: true,
     showCost: false,
     autoJoinThreads: true,

@@ -129,7 +129,7 @@ export interface SessionEntry {
   close(reason?: SessionCloseReason): void
   /**
    * Tear the session down AND forget it in the persistent store. Called
-   * on explicit user action (`!bantai new`), not on idle eviction. After
+   * on explicit user action (`/bantai new`), not on idle eviction. After
    * reset(), any subsequent inbound message in this thread starts fresh.
    */
   reset(): void
@@ -359,7 +359,7 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
             if (closed) break
             // Persist the backend session id the first time it lands so a
             // post-crash restart can resume; accumulate cost + turn count
-            // on turn_complete so `!bantai cost` survives restarts.
+            // on turn_complete so `/bantai cost` survives restarts.
             //
             // Also fold per-kind token counters + context-window metadata
             // onto the live entry so the admin surface can ship a

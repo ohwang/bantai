@@ -68,8 +68,6 @@ export interface ProjectConfig {
   requireMention: boolean
   /** Name the bot reacts to (`@bantai` etc.). */
   triggerName: string
-  /** Prefix for control commands in the channel. */
-  controlPrefix: string
   /** Show the formal session banner on new sessions? */
   sessionBanner: boolean
   /** Post a cost footer after every turn_complete (off by default). */
@@ -285,7 +283,6 @@ export function resolveProjectForChannel(
     requireMention,
     permissionMode,
     triggerName: defaults.trigger_name,
-    controlPrefix: defaults.control_prefix,
     sessionBanner: defaults.session_banner,
     showCost: defaults.show_cost,
     autoJoinThreads: defaults.auto_join_threads,

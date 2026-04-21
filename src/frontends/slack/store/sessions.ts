@@ -8,7 +8,7 @@
  * Scope for v0 persistence:
  *   - One `sessions` row per (workspace, channel, threadTs) key.
  *   - Records the backend id + backend-returned sessionId (for `resume`).
- *   - Tracks cumulative cost + turn count so `!bantai cost` survives a
+ *   - Tracks cumulative cost + turn count so `/bantai cost` survives a
  *     restart.
  *   - `lastActiveAt` for future idle-GC / observability.
  *
@@ -129,7 +129,7 @@ export interface SessionStore {
   /**
    * Delete thread-participation rows whose `last_post_at < cutoffMs`.
    * Returns the deleted row count. Not called automatically — present
-   * for future admin tooling (e.g. a `!bantai prune-participation`
+   * for future admin tooling (e.g. a `/bantai prune-participation`
    * control command or an operator script).
    */
   pruneThreadPosts(cutoffMs: number): number

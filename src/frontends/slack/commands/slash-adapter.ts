@@ -12,21 +12,13 @@
  *
  * The routing layer glues these to Bolt's `ack()` + the shared
  * SendAdapter (see routing.ts#handleSlashCommand).
- *
- * Why not reuse `parseControlCommand`? That parser matches a text prefix
- * (`!bantai …`); the slash payload already gave us everything AFTER the
- * command name in `payload.text`, so we just split the first whitespace
- * token and call it a command. Keeping it separate means the legacy
- * `!bantai` parser can be deleted alongside the surface in a later
- * commit without unwinding slash-command support.
  */
 
-import type { ControlCommand } from "./parser"
+import type { ControlCommand } from "./dispatch"
 
 /**
  * Parse the `text` portion of a Slack slash-command payload (everything
- * after `/bantai `). Empty input → `{ cmd: "help", args: "" }`, matching
- * the legacy `!bantai` shortcut.
+ * after `/bantai `). Empty input → `{ cmd: "help", args: "" }`.
  *
  * Case-normalises the command name to keep dispatch lookup cheap.
  * Preserves argument casing — `model` + `verbosity` both take

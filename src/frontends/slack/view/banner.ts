@@ -63,7 +63,7 @@ export function buildSessionBanner(input: BannerInputs): {
   const trailer =
     participants.length > 0
       ? `participants ${participants.map((p) => `@${p}`).join("  ")}`
-      : `type !bantai help for control commands`
+      : `type /bantai help for control commands`
   lines.push(trailer)
 
   const blocks: KnownBlock[] = [

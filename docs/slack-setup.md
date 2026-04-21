@@ -135,7 +135,7 @@ In your Slack workspace:
 
 1. Invite the bot to a channel: `/invite @bantai`.
 2. Mention it: `@bantai please list the files in /tmp`.
-3. The bot should react with `:speech_balloon:` while it works, post a reply, then swap the reaction to `:round_pushpin:` when it's done (ball back in your court). Other terminal states: `:watermelon:` if you run `!bantai stop`, `:octagonal_sign:` for internal errors. `:white_check_mark:` is never used by the bot — it's reserved for humans marking work as reviewed.
+3. The bot should react with `:speech_balloon:` while it works, post a reply, then swap the reaction to `:round_pushpin:` when it's done (ball back in your court). Other terminal states: `:watermelon:` if you run `/bantai stop`, `:octagonal_sign:` for internal errors. `:white_check_mark:` is never used by the bot — it's reserved for humans marking work as reviewed.
 
 ## Per-channel configuration
 
@@ -212,18 +212,22 @@ JSON has no multi-line string literal, so the naive option for a long `defaults.
 
 ## Control commands (per-channel)
 
-Any user in the channel can run these in-thread by typing `!bantai <cmd>`:
+Control commands are native Slack slash commands — run `/bantai <cmd>` from anywhere in the workspace. The `commands` OAuth scope is part of the default manifest; `bantai slack doctor` flags it on boot if it's missing.
 
-- `!bantai help` — list all commands
-- `!bantai status` — show backend, model, cwd, verbosity, channel binding
-- `!bantai settings` — dump the fully resolved channel config (no secrets)
-- `!bantai cost` — session token + USD totals
-- `!bantai stop` — interrupt the current turn
-- `!bantai model <id>` — swap the active model live
-- `!bantai verbosity <silent|concise|normal|verbose|debug>` — adjust output detail
-- `!bantai new` — reset this thread's session
+Channel-level reads (reply ephemeral — only you see them):
 
-Change the prefix by setting `"control_prefix": "!jarvis"` (or whatever) under `defaults`.
+- `/bantai help` — list all commands
+- `/bantai status` — show backend, model, cwd, verbosity, channel binding
+- `/bantai settings` — dump the fully resolved channel config (no secrets)
+- `/bantai cost` — session token + USD totals
+- `/bantai model` (no args) — list available models for the current session
+
+Thread-scoped actions (reply in-channel; **must be invoked inside the thread's reply composer**, not from the channel's top-level message box — the bot responds ephemerally with a "run inside a thread" hint otherwise):
+
+- `/bantai stop` — interrupt the current turn
+- `/bantai new` — reset this thread's session
+- `/bantai model <id>` — swap the active model live
+- `/bantai verbosity <silent|concise|normal|verbose|debug>` — adjust output detail
 
 ## HTTP / Events API mode (optional)
 
@@ -261,7 +265,7 @@ You're responsible for getting HTTPS in front of the bot — Slack refuses plain
 
 - Is the bot a member of the channel? `/invite @bantai`.
 - Is the channel ID in a `channels[]` entry (if you have per-channel overrides)? `conversations.info` in Slack's API surface will show the ID.
-- Run `!bantai status` in-thread — if the bot responds to that, the routing layer is working; the silence is upstream (backend / model / auth).
+- Run `/bantai status` in-thread — if the bot responds to that, the routing layer is working; the silence is upstream (backend / model / auth).
 
 ### `approvers.defaults_empty` warning
 
@@ -298,7 +302,7 @@ When `workspace.mode = "http"`, the launcher exposes a Prometheus-compatible `/m
 
 ## Session persistence
 
-bantai writes a small SQLite row per live (channel, thread) pair tracking the backend session id + cumulative turn count + USD cost. A process restart (deploy, crash, `kill -9`) rehydrates each thread's session on the next inbound message — the backend resumes instead of starting fresh, and `!bantai cost` continues to report totals across restarts. `!bantai new` explicitly forgets the row for its thread.
+bantai writes a small SQLite row per live (channel, thread) pair tracking the backend session id + cumulative turn count + USD cost. A process restart (deploy, crash, `kill -9`) rehydrates each thread's session on the next inbound message — the backend resumes instead of starting fresh, and `/bantai cost` continues to report totals across restarts. `/bantai new` explicitly forgets the row for its thread.
 
 Three `store_path` modes:
 
@@ -314,7 +318,7 @@ The example at the top of this doc sets `store_path: "~/.bantai/slack.db"` expli
 
 ```bash
 # Grab the session ID from Slack (the bot prints it on first reply in a thread,
-# and it's visible via `!bantai status` as "Claude Session: <uuid>").
+# and it's visible via `/bantai status` as "Claude Session: <uuid>").
 bun run ./src/index.ts follow 3f8b1a10-...
 ```
 
@@ -419,6 +423,6 @@ the monitor surfaces the 403 as a warning banner and flashes a
 
 ## What's next
 
-- `!bantai status` and `!bantai settings` are your debugging primitives — run them in a channel when something looks wrong.
+- `/bantai status` and `/bantai settings` are your debugging primitives — run them in a channel when something looks wrong.
 - Per-channel `claude_config_dir` lets you install different skills / MCP tokens / slash commands per channel without conflicts. See the Claude SDK docs for the `CLAUDE_CONFIG_DIR` layout.
 - See `plan-slack-integration.md` in the repo for the full architecture + phase roadmap.

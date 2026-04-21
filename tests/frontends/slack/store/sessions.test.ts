@@ -320,7 +320,7 @@ describe("createSessionStore — thread_participation", () => {
 
   it("pruneThreadPosts deletes rows older than the cutoff and leaves fresh ones", () => {
     // Prune is an admin-tool hook — not invoked automatically — but still
-    // exercised here so a future `!bantai prune-participation` command
+    // exercised here so a future `/bantai prune-participation` command
     // doesn't silently break.
     const s = mk()
     s.recordThreadPost("C1", "old")

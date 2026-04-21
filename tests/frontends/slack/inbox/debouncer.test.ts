@@ -122,13 +122,13 @@ describe("createInboundDebouncer", () => {
     const d = createInboundDebouncer<Entry>({
       debounceMs: 50,
       buildKey: (e) => e.key,
-      shouldDebounce: (e) => !e.text.startsWith("!"),
+      shouldDebounce: (e) => !e.text.startsWith("/"),
       onFlush: (entries) => {
         flushed.push(entries)
       },
     })
-    await d.enqueue({ key: "k", text: "!bantai status" })
-    expect(flushed).toEqual([[{ key: "k", text: "!bantai status" }]])
+    await d.enqueue({ key: "k", text: "/bantai status" })
+    expect(flushed).toEqual([[{ key: "k", text: "/bantai status" }]])
   })
 
   it("flushKey forces an immediate flush", async () => {

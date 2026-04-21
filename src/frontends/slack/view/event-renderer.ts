@@ -97,7 +97,7 @@ export interface EventRenderer {
   destroy(): void
   /**
    * Cumulative cost + token totals for this session, summed across every
-   * turn the renderer has seen. Drives `!bantai cost` and the future cost
+   * turn the renderer has seen. Drives `/bantai cost` and the future cost
    * cap (plan §S8). Fresh renderers report zeros.
    */
   cumulativeUsage(): CumulativeUsage
@@ -328,7 +328,7 @@ export function createEventRenderer(opts: CreateRendererOpts): EventRenderer {
   let lastCostUsd = 0
   // Session-cumulative usage — sums every turn_complete.usage plus every
   // standalone cost_usage event. Exposed via renderer.cumulativeUsage()
-  // for `!bantai cost` and future cost-cap enforcement.
+  // for `/bantai cost` and future cost-cap enforcement.
   const cumulative: CumulativeUsage = {
     turns: 0,
     inputTokens: 0,

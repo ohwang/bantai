@@ -1,6 +1,6 @@
 /**
  * `buildCostFooter` — pure formatter for the `:moneybag:` turn-complete
- * cost footer rendered by the event renderer (and the `!bantai cost`
+ * cost footer rendered by the event renderer (and the `/bantai cost`
  * command fallback).
  *
  * At `normal` verbosity we emit a terse one-liner — one context block

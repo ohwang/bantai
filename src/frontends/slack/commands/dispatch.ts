@@ -21,9 +21,21 @@
  * this same dispatcher in later phases.
  */
 
-import type { ControlCommand } from "./parser"
 import type { VerbosityLevel } from "../config/schema"
 import type { ProjectConfig } from "../router/resolver"
+
+/**
+ * A parsed user command: subcommand name (normalised to lowercase) +
+ * whatever raw remainder followed it. `dispatchCommand` owns the
+ * side-effects; producing the ControlCommand is the job of the surface
+ * that received it (slash-adapter for `/bantai` on Slack).
+ */
+export interface ControlCommand {
+  /** Normalised command name, e.g. "help", "stop", "model". */
+  cmd: string
+  /** Raw argument string — whatever followed the command name. */
+  args: string
+}
 
 export interface CommandContext {
   /** Post a reply back in the session's thread. */
@@ -199,7 +211,6 @@ export function renderSettingsDump(project: ProjectConfig): string {
     `• require_mention: \`${project.requireMention}\``,
     `• auto_join_threads: \`${project.autoJoinThreads}\``,
     `• trigger_name: \`${project.triggerName}\``,
-    `• control_prefix: \`${project.controlPrefix}\``,
     `• approvers: ${formatList(project.approvers)}`,
     `• allowed_tools: ${formatList(project.allowedTools)}`,
     `• mcp_servers: ${formatList(project.mcpServers)}`,

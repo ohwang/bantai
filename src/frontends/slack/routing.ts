@@ -49,7 +49,6 @@ import {
 import type { SendAdapter } from "./view/outbox"
 import { postSessionBanner } from "./view/banner"
 import type { UserCache } from "./view/user-cache"
-import { parseControlCommand } from "./commands/parser"
 import { dispatchCommand, type CommandContext } from "./commands/dispatch"
 import {
   classifyVisibility,
@@ -145,7 +144,7 @@ export interface RoutingCtx {
   renderers: WeakMap<SessionEntry, EventRenderer>
   /**
    * Mutable per-channel project view — populated on first resolve, updated
-   * by `!bantai verbosity` / `!bantai model` etc. without touching the
+   * by `/bantai verbosity` / `/bantai model` etc. without touching the
    * underlying immutable ResolvedSlackConfig. Cleared lazily on config
    * reload via `invalidateProjectOverrides` so the next access re-resolves
    * against the fresh config (runtime overrides are re-layered from
@@ -154,7 +153,7 @@ export interface RoutingCtx {
   projectOverrides: Map<string, ProjectConfig>
   /**
    * Per-channel runtime overrides that survive config reloads — a user who
-   * typed `!bantai verbosity debug` shouldn't lose that setting because
+   * typed `/bantai verbosity debug` shouldn't lose that setting because
    * somebody else edited slack.json to add a new channel. Narrow on purpose:
    * only fields the control-command surface writes. Merged on top of a
    * fresh resolution inside `mutableProjectFor`.
@@ -400,11 +399,11 @@ export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
       return
     }
 
-    // Gate the inbound on the *raw* event text — control commands
-    // (e.g. `!bantai status`) must fire immediately without sharing a
-    // debounce bucket with surrounding chatter, and a rejected message
+    // Gate the inbound on the *raw* event text — a rejected message
     // never triggers a later flush. The debouncer only sees events the
-    // gate already accepted.
+    // gate already accepted. Control commands no longer ride the text
+    // path — they arrive as Slack slash commands (`/bantai …`) through
+    // `handleSlashCommand` above.
     const decision = decideGate({
       channel: event.channel,
       text: event.text,
@@ -427,42 +426,12 @@ export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
       return
     }
 
-    // Control-prefix detection uses the mention-stripped turn text so
-    // `@bantai !bantai status` still parses. Commands always skip the
-    // debouncer — they're synchronous by nature.
-    const displayName = await ctx.userCache.displayName(event.user)
-    const controlTurn = buildInboundTurn({
-      text: event.text,
-      channel: event.channel,
-      ts: event.ts,
-      threadTs: event.threadTs,
-      userId: event.user,
-      userDisplayName: displayName,
-      botUserId: ctx.botUserId,
-    })
-    const cmd = parseControlCommand(controlTurn.text, {
-      prefix: project.controlPrefix,
-    })
-    if (cmd) {
-      await handleControlCommand({
-        ctx,
-        cmd,
-        project,
-        channel: event.channel,
-        threadTs: controlTurn.parentTs,
-        sessionParts: {
-          workspace: ctx.workspaceId,
-          channelId: event.channel,
-          threadTs: anchorTs,
-        },
-      })
-      return
-    }
-
-    // Everything else flows through the debouncer. When debounceMs is 0
+    // Everything flows through the debouncer. When debounceMs is 0
     // for this channel, `shouldDebounce` returns false and the entry
     // dispatches synchronously — behaviour-preserving for callers that
-    // haven't opted in to batching.
+    // haven't opted in to batching. Control-prefix parsing used to
+    // happen here; it now lives exclusively on the slash-command path
+    // (see `handleSlashCommand`).
     await debouncer.enqueue({ event, anchorTs })
   }
 
@@ -859,13 +828,13 @@ export function buildSessionMcpOverlay(args: {
 
 /**
  * Resolve the project config for the channel, returning a MUTABLE snapshot
- * (so `!bantai verbosity <l>` can update the in-memory view). The SlackConfig
+ * (so `/bantai verbosity <l>` can update the in-memory view). The SlackConfig
  * itself stays immutable in this launcher; mutations travel via
  * `ctx.projectOverrides.set(channelId, nextConfig)`.
  *
  * Cache semantics: `projectOverrides` is a plain perf cache that
  * `invalidateProjectOverrides` clears after a config reload. User-scope
- * overrides (`!bantai verbosity`, `!bantai model`) live in
+ * overrides (`/bantai verbosity`, `/bantai model`) live in
  * `ctx.runtimeOverrides` and are re-layered on top of a fresh resolution
  * when the cache is cold.
  */
@@ -905,7 +874,7 @@ function applyRuntimeOverrides(
  * handful of entries is trivial.
  *
  * Runtime overrides in `ctx.runtimeOverrides` are NOT cleared — they're
- * re-applied on the next access so `!bantai verbosity debug` survives an
+ * re-applied on the next access so `/bantai verbosity debug` survives an
  * unrelated config edit.
  */
 export function invalidateProjectOverrides(
@@ -917,8 +886,8 @@ export function invalidateProjectOverrides(
 
 /**
  * Merge a partial runtime override into `ctx.runtimeOverrides[channelId]`.
- * Keeps existing keys (a later `!bantai verbosity` doesn't erase an earlier
- * `!bantai model`).
+ * Keeps existing keys (a later `/bantai verbosity` doesn't erase an earlier
+ * `/bantai model`).
  */
 function rememberRuntimeOverride(
   ctx: RoutingCtx,
@@ -929,23 +898,10 @@ function rememberRuntimeOverride(
   ctx.runtimeOverrides.set(channelId, { ...prev, ...patch })
 }
 
-interface CommandRouteArgs {
-  ctx: RoutingCtx
-  cmd: { cmd: string; args: string }
-  project: ProjectConfig
-  channel: string
-  threadTs: string
-  sessionParts: {
-    workspace: string
-    channelId: string
-    threadTs: string
-  }
-}
-
 /**
  * Slash-command dispatcher — entry point for every `/bantai …` invocation.
  *
- * The pipeline diverges from the `!bantai`-in-a-message path in two ways:
+ * Two shape notes vs. a plain `chat.postMessage` surface:
  *
  *   1. The response lands via Bolt's `ack()` callback rather than a fresh
  *      `chat.postMessage`. We wrap the `CommandContext.sendReply` so the
@@ -1108,54 +1064,6 @@ async function handleSlashCommand(
       log.error(`slack slash: fallback empty ack failed: ${String(err)}`)
     }
   }
-}
-
-async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
-  const { ctx, cmd, project, channel, threadTs, sessionParts } = args
-  const adapter = ctx.sendAdapter
-  const existing = ctx.registry.peek(sessionParts)
-
-  const commandCtx: CommandContext = {
-    async sendReply(text) {
-      try {
-        await adapter.postMessage({ channel, threadTs, text })
-      } catch (err) {
-        log.error(`slack commands: sendReply failed: ${String(err)}`)
-      }
-    },
-    interrupt() {
-      existing?.host.backend.interrupt()
-    },
-    async setModel(model) {
-      if (existing) await existing.host.backend.setModel(model)
-      ctx.projectOverrides.set(project.channelId, { ...project, model })
-      rememberRuntimeOverride(ctx, project.channelId, { model })
-    },
-    async resetSession() {
-      existing?.reset()
-    },
-    setVerbosity(level: VerbosityLevel) {
-      ctx.projectOverrides.set(project.channelId, { ...project, verbosity: level })
-      rememberRuntimeOverride(ctx, project.channelId, { verbosity: level })
-    },
-    async availableModels() {
-      if (!existing) return []
-      const list = await existing.host.backend.availableModels()
-      return list.map((m) => m.id)
-    },
-    cumulativeUsage() {
-      const renderer = existing ? ctx.renderers.get(existing) : undefined
-      return mergeCumulativeUsage(
-        renderer?.cumulativeUsage(),
-        existing?.priorUsage,
-      )
-    },
-    project,
-    workspace: sessionParts.workspace,
-    channel,
-    threadTs,
-  }
-  await dispatchCommand(cmd, commandCtx)
 }
 
 /**

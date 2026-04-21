@@ -1,6 +1,6 @@
 /**
  * Cumulative-usage helpers — pure functions shared by the launcher's
- * `!bantai cost` context builder and any other surface that merges
+ * `/bantai cost` context builder and any other surface that merges
  * live in-memory usage with the persisted prior-session totals read
  * from the session store.
  *

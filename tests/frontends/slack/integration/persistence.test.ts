@@ -8,7 +8,7 @@
  *
  * The capturing backend records every SessionConfig it's `start()`-ed
  * with — that's our assertion target. We also assert the banner on the
- * second launch uses the resumed variant + `!bantai cost` reports the
+ * second launch uses the resumed variant + `/bantai cost` reports the
  * persisted totals.
  */
 
@@ -311,7 +311,7 @@ describe("slack frontend S8 — session persistence across process restarts", ()
     // The rehydrated usage also survived the restart — read the store
     // directly to verify the persisted row holds the first launcher's
     // turn_complete accumulated cost + turn count. This is what powers
-    // `!bantai cost` continuing to reflect the real total after a process
+    // `/bantai cost` continuing to reflect the real total after a process
     // bounce. The backendSessionId has since been overwritten by launcher
     // B's own session_init (sdk-session-B) — that's expected: each launch
     // gets a fresh backend session record, and only the cost / turns
@@ -333,7 +333,7 @@ describe("slack frontend S8 — session persistence across process restarts", ()
     await new Promise((r) => setTimeout(r, 200))
   }, 30_000)
 
-  it("resetSession() deletes the stored row — '!bantai new' wipes the resume anchor", async () => {
+  it("resetSession() deletes the stored row — '/bantai new' wipes the resume anchor", async () => {
     // Fresh store file for this case.
     const caseDir = mkdtempSync(join(tmpdir(), "bantai-persist-reset-"))
     const casePath = join(caseDir, "slack.db")
@@ -396,12 +396,16 @@ describe("slack frontend S8 — session persistence across process restarts", ()
       expect(inspect1.list()).toHaveLength(1)
       inspect1.close()
 
-      // Alice types `!bantai new` — that should delete the row.
-      await mini
-        .asUser(aliceId)
-        .sendMessage(generalId, `<@${slack.botUserId}> !bantai new`, {
-          thread_ts: parent.ts,
-        })
+      // Alice fires `/bantai new` inside the thread — that should
+      // delete the row.
+      await mini.fireSlashCommand(registered.app.id, {
+        userId: aliceId,
+        channelId: generalId,
+        command: "/bantai",
+        text: "new",
+        threadTs: parent.ts,
+        awaitAckMs: 3000,
+      })
       // Give the dispatch a beat to run.
       await new Promise((r) => setTimeout(r, 200))
 

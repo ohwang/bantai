@@ -1,55 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { parseControlCommand } from "../../../../src/frontends/slack/commands/parser"
 import {
   dispatchCommand,
   type CommandContext,
 } from "../../../../src/frontends/slack/commands/dispatch"
 import type { ProjectConfig } from "../../../../src/frontends/slack/router/resolver"
-
-describe("parseControlCommand", () => {
-  it("returns null when the text has no prefix", () => {
-    expect(parseControlCommand("hello world")).toBeNull()
-  })
-
-  it("parses '!bantai help'", () => {
-    expect(parseControlCommand("!bantai help")).toEqual({ cmd: "help", args: "" })
-  })
-
-  it("bare '!bantai' → help", () => {
-    expect(parseControlCommand("!bantai")).toEqual({ cmd: "help", args: "" })
-  })
-
-  it("extracts args after the command", () => {
-    expect(parseControlCommand("!bantai model claude-opus-4-6")).toEqual({
-      cmd: "model",
-      args: "claude-opus-4-6",
-    })
-    expect(parseControlCommand("!bantai verbosity verbose")).toEqual({
-      cmd: "verbosity",
-      args: "verbose",
-    })
-  })
-
-  it("case-normalises the command name but preserves args", () => {
-    expect(parseControlCommand("!bantai HELP")).toEqual({ cmd: "help", args: "" })
-    expect(parseControlCommand("!bantai Model CLAUDE-OPUS-4-6")).toEqual({
-      cmd: "model",
-      args: "CLAUDE-OPUS-4-6",
-    })
-  })
-
-  it("skips the turn-builder's '@name:' prefix", () => {
-    expect(parseControlCommand("@alice: !bantai stop")).toEqual({ cmd: "stop", args: "" })
-  })
-
-  it("respects a custom prefix", () => {
-    expect(parseControlCommand("!jarvis status", { prefix: "!jarvis" })).toEqual({
-      cmd: "status",
-      args: "",
-    })
-    expect(parseControlCommand("!bantai status", { prefix: "!jarvis" })).toBeNull()
-  })
-})
 
 // ---------------------------------------------------------------------------
 // dispatchCommand
@@ -66,7 +20,6 @@ function project(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     requireMention: true,
     permissionMode: "default",
     triggerName: "bantai",
-    controlPrefix: "!bantai",
     sessionBanner: true,
     showCost: false,
     autoJoinThreads: true,

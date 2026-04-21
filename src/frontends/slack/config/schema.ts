@@ -80,7 +80,6 @@ export const DefaultsSchema = z
     require_mention: z.boolean().default(true),
     trigger_name: z.string().default("bantai"),
     verbosity: VerbosityLevelSchema.default("normal"),
-    control_prefix: z.string().default("!bantai"),
     session_banner: z.boolean().default(true),
     approvers: z.array(z.string()).default([]),
     auto_join_threads: z.boolean().default(true),
@@ -161,7 +160,7 @@ export const DefaultsSchema = z
     /**
      * Hard session cost cap in USD. When cumulative session cost exceeds
      * this, the next turn is interrupted on turn_start and subsequent
-     * turns refuse to run until `!bantai new`. 0 or undefined → disabled.
+     * turns refuse to run until `/bantai new`. 0 or undefined → disabled.
      */
     max_budget_usd: z.number().nonnegative().default(0),
     /**

@@ -433,7 +433,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     },
   })
 
-  // Per-channel user-scope overrides (`!bantai verbosity`, `!bantai model`).
+  // Per-channel user-scope overrides (`/bantai verbosity`, `/bantai model`).
   // Lives outside `projectOverrides` so a config reload (which clears the
   // resolution cache) doesn't erase an operator's live tweaks.
   const runtimeOverrides = new Map<string, RuntimeChannelOverride>()

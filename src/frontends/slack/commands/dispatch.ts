@@ -9,12 +9,12 @@
  *
  * S3 scope — minimum viable command set per plan §7.1:
  *
- *   !bantai help           list all commands + short descriptions
- *   !bantai status         post session state + project info
- *   !bantai stop           interrupt the active turn
- *   !bantai model [id]     list models, or set the active model
- *   !bantai verbosity <l>  change verbosity for this channel
- *   !bantai new            reset the thread's session (destructive; confirm in S4)
+ *   /bantai help           list all commands + short descriptions
+ *   /bantai status         post session state + project info
+ *   /bantai stop           interrupt the active turn
+ *   /bantai model [id]     list models, or set the active model
+ *   /bantai verbosity <l>  change verbosity for this channel
+ *   /bantai new            reset the thread's session (destructive; confirm in S4)
  *
  * `backend`, `cost`, `resume`, `permissions`, `thinking`, `compact`, the
  * emoji-reaction surface, and the Block Kit banner actions layer on top of
@@ -47,7 +47,7 @@ export interface CommandContext {
   /** Names of available models for the "model" command listing. */
   availableModels?: () => Promise<string[]>
   /**
-   * Cumulative usage for the current session — drives `!bantai cost`. When
+   * Cumulative usage for the current session — drives `/bantai cost`. When
    * absent, the cost command reports "not tracked yet" rather than failing.
    */
   cumulativeUsage?: () => SessionUsageSnapshot
@@ -128,7 +128,7 @@ export async function dispatchCommand(
       const level = command.args as VerbosityLevel
       if (!VALID_VERBOSITIES.includes(level)) {
         await ctx.sendReply(
-          `usage: \`!bantai verbosity <${VALID_VERBOSITIES.join("|")}>\``,
+          `usage: \`/bantai verbosity <${VALID_VERBOSITIES.join("|")}>\``,
         )
         return { kind: "invalid", reason: "unknown-verbosity" }
       }
@@ -156,7 +156,7 @@ export async function dispatchCommand(
 
     default:
       await ctx.sendReply(
-        `unknown command \`${command.cmd}\`. try \`!bantai help\`.`,
+        `unknown command \`${command.cmd}\`. try \`/bantai help\`.`,
       )
       return { kind: "unknown", cmd: command.cmd }
   }
@@ -165,14 +165,14 @@ export async function dispatchCommand(
 const HELP_TEXT = [
   "*bantai control commands*",
   "",
-  "• `!bantai help` — list commands",
-  "• `!bantai status` — show backend, model, cwd, verbosity, channel binding",
-  "• `!bantai stop` — interrupt the active turn",
-  "• `!bantai model [id]` — list available models, or set the active one",
-  "• `!bantai verbosity <silent|concise|normal|verbose|debug>` — change bot verbosity",
-  "• `!bantai new` — reset this thread's session (destructive)",
-  "• `!bantai settings` — dump the resolved per-channel config",
-  "• `!bantai cost` — session token + cost totals",
+  "• `/bantai help` — list commands",
+  "• `/bantai status` — show backend, model, cwd, verbosity, channel binding",
+  "• `/bantai stop` — interrupt the active turn (run inside a thread)",
+  "• `/bantai model [id]` — list available models, or set the active one",
+  "• `/bantai verbosity <silent|concise|normal|verbose|debug>` — change bot verbosity (run inside a thread)",
+  "• `/bantai new` — reset this thread's session, destructive (run inside a thread)",
+  "• `/bantai settings` — dump the resolved per-channel config",
+  "• `/bantai cost` — session token + cost totals",
   "",
   "_more commands (backend, resume, permissions, thinking, compact) land in later phases._",
 ].join("\n")

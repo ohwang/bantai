@@ -175,7 +175,7 @@ describe("dispatchCommand", () => {
     const h = harness()
     const r = await dispatchCommand({ cmd: "bogus", args: "" }, h.ctx)
     expect(r.kind).toBe("unknown")
-    expect(h.replies[0]).toContain("!bantai help")
+    expect(h.replies[0]).toContain("/bantai help")
   })
 
   it("settings → dumps the resolved ProjectConfig without leaking env values", async () => {

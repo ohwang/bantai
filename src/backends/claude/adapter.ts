@@ -722,7 +722,12 @@ export class ClaudeAdapter implements AgentBackend {
     })
     const opts: SDKOptions = {
       model: config.model,
-      systemPrompt: config.systemPrompt,
+      // Default to Claude Code's built-in system prompt preset when the user
+      // hasn't supplied a custom one. Without this, the SDK runs with no
+      // system prompt at all — which removes Claude Code's guidance for
+      // multi-step work (notably the TodoWrite tool). A user-supplied
+      // `--system-prompt <string>` still wins.
+      systemPrompt: config.systemPrompt ?? { type: "preset", preset: "claude_code" },
       permissionMode: config.permissionMode,
       // Always opt the session into being ALLOWED to switch to
       // `bypassPermissions` at runtime (via Shift+Tab / setPermissionMode).

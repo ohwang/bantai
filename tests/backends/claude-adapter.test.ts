@@ -100,6 +100,27 @@ describe("ClaudeAdapter", () => {
     })
   })
 
+  describe("buildOptions systemPrompt default", () => {
+    // Regression: when no --system-prompt is provided we must still pass
+    // the Claude Code preset to the SDK. Passing `undefined` disables
+    // Claude Code's default system prompt entirely — including the
+    // TodoWrite guidance for multi-step work.
+
+    it("defaults undefined systemPrompt to the claude_code preset", () => {
+      const adapter = new ClaudeAdapter()
+      const opts = (adapter as any).buildOptions({})
+      expect(opts.systemPrompt).toEqual({ type: "preset", preset: "claude_code" })
+      adapter.close()
+    })
+
+    it("preserves a user-supplied custom systemPrompt string", () => {
+      const adapter = new ClaudeAdapter()
+      const opts = (adapter as any).buildOptions({ systemPrompt: "custom prompt" })
+      expect(opts.systemPrompt).toBe("custom prompt")
+      adapter.close()
+    })
+  })
+
   describe("SDKMessage mapping", () => {
     // These test the extracted mapSDKMessage function directly.
 

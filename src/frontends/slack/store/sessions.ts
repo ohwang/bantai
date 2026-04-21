@@ -107,6 +107,31 @@ export interface SessionStore {
    */
   clearBackendSessionId(key: string): void
 
+  // --- Thread participation ----------------------------------------------
+  /**
+   * Upsert a "the bot has posted in this (channel, thread)" marker with
+   * `last_post_at = now`. Called from the send-adapter's `onPostSucceeded`
+   * hook after every successful `chat.postMessage`. Idempotent — re-posting
+   * in the same thread bumps the timestamp via ON CONFLICT.
+   *
+   * This row is what lets the inbox gate accept follow-up messages in the
+   * thread without `@bantai` across process restarts and idle-close. See
+   * `inbox/gate.ts → threadHasPriorBotPost`.
+   */
+  recordThreadPost(channelId: string, threadTs: string): void
+  /**
+   * True when a thread-participation row exists for `(channel, thread)` AND
+   * its `last_post_at >= cutoffMs`. The caller decides the cutoff (TTL
+   * policy lives at the cache layer so the store stays unopinionated).
+   */
+  hasThreadPost(channelId: string, threadTs: string, cutoffMs: number): boolean
+  /**
+   * Delete thread-participation rows whose `last_post_at < cutoffMs`.
+   * Returns the deleted row count. Called lazily at launcher boot to keep
+   * the table bounded over time.
+   */
+  pruneThreadPosts(cutoffMs: number): number
+
   // --- Pending stale-resume prompts --------------------------------------
   /**
    * Insert a pending prompt. Fails silently if the id already exists (the
@@ -175,6 +200,15 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
     );
     CREATE INDEX IF NOT EXISTS pending_resume_prompts_created_at_idx
       ON pending_resume_prompts(created_at);
+
+    CREATE TABLE IF NOT EXISTS thread_participation (
+      channel_id    TEXT NOT NULL,
+      thread_ts     TEXT NOT NULL,
+      last_post_at  INTEGER NOT NULL,
+      PRIMARY KEY (channel_id, thread_ts)
+    );
+    CREATE INDEX IF NOT EXISTS thread_participation_last_post_idx
+      ON thread_participation(last_post_at);
   `)
 
   // NOTE: the `backend_session_id = CASE …` clause is load-bearing. Without
@@ -225,6 +259,20 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
   const listStmt = db.prepare(`SELECT * FROM sessions ORDER BY last_active_at DESC`)
   const clearBackendIdStmt = db.prepare(
     `UPDATE sessions SET backend_session_id = NULL, last_active_at = $now WHERE key = $key`,
+  )
+
+  const recordThreadPostStmt = db.prepare(
+    `INSERT INTO thread_participation (channel_id, thread_ts, last_post_at)
+     VALUES ($channel, $thread, $now)
+     ON CONFLICT(channel_id, thread_ts) DO UPDATE SET last_post_at = excluded.last_post_at`,
+  )
+  const hasThreadPostStmt = db.prepare(
+    `SELECT 1 FROM thread_participation
+      WHERE channel_id = $channel AND thread_ts = $thread AND last_post_at >= $cutoff
+      LIMIT 1`,
+  )
+  const pruneThreadPostsStmt = db.prepare(
+    `DELETE FROM thread_participation WHERE last_post_at < $cutoff`,
   )
 
   const putPendingStmt = db.prepare(
@@ -347,6 +395,30 @@ export function createSessionStore(opts: CreateSessionStoreOpts): SessionStore {
       if (closed) return
       clearBackendIdStmt.run({ $key: key, $now: Date.now() })
     },
+    recordThreadPost(channelId, threadTs) {
+      if (closed) return
+      if (!channelId || !threadTs) return
+      recordThreadPostStmt.run({
+        $channel: channelId,
+        $thread: threadTs,
+        $now: Date.now(),
+      })
+    },
+    hasThreadPost(channelId, threadTs, cutoffMs) {
+      if (closed) return false
+      if (!channelId || !threadTs) return false
+      const row = hasThreadPostStmt.get({
+        $channel: channelId,
+        $thread: threadTs,
+        $cutoff: cutoffMs,
+      })
+      return row !== null && row !== undefined
+    },
+    pruneThreadPosts(cutoffMs) {
+      if (closed) return 0
+      const res = pruneThreadPostsStmt.run({ $cutoff: cutoffMs })
+      return Number(res.changes ?? 0)
+    },
     putPendingResumePrompt(prompt) {
       if (closed) return
       putPendingStmt.run({
@@ -410,6 +482,9 @@ export function createNoopSessionStore(): SessionStore {
     delete() {},
     list() { return [] },
     clearBackendSessionId() {},
+    recordThreadPost() {},
+    hasThreadPost() { return false },
+    pruneThreadPosts() { return 0 },
     putPendingResumePrompt() {},
     getPendingResumePrompt() { return undefined },
     deletePendingResumePrompt() {},

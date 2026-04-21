@@ -305,7 +305,25 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     ...(opts.buildHost ? { buildHost: opts.buildHost } : {}),
   })
   const dedup = createDedupCache()
-  const threadParticipation = createThreadParticipationCache()
+  // Thread-participation TTL — matches the historical in-memory default.
+  // Kept as a constant here rather than a config knob for now; operators
+  // who need to tune can edit this or we can lift it to slack.json later.
+  const threadParticipationTtlMs = 24 * 60 * 60 * 1000
+  // Bounded cleanup on boot so the persisted table doesn't grow forever.
+  // Best-effort — a no-op store returns 0 here. Logged at debug so the
+  // first line operators see on startup stays the "loaded config" banner.
+  try {
+    const dropped = store.pruneThreadPosts(Date.now() - threadParticipationTtlMs)
+    if (dropped > 0) {
+      log.debug(`slack: pruned ${dropped} stale thread-participation row(s)`)
+    }
+  } catch (err) {
+    log.warn(`slack: thread-participation prune failed: ${String(err)}`)
+  }
+  const threadParticipation = createThreadParticipationCache({
+    store,
+    ttlMs: threadParticipationTtlMs,
+  })
   // Tier-1 native-stream factory. Handed to the routing layer so each
   // renderer can opt in. Channels that keep `native_streaming: false`
   // never touch this capability — the factory returning a no-op would
@@ -510,6 +528,10 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     shuttingDown,
     slackUploadMcpFor,
     threadParticipation,
+    // Share the hook-wired send adapter across every outbound path
+    // (event renderer, banner, unconfigured-channel notice, control
+    // commands) so every successful post records thread participation.
+    sendAdapter: defaultAdapter,
     nativeStream,
     // Thread-status banner wrapper — single adapter per process. The
     // controller self-disables on channels that don't support the

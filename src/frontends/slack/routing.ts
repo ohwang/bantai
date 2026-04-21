@@ -43,10 +43,10 @@ import {
   formatThreadHistory,
 } from "./inbox/thread-history"
 import {
-  buildDefaultSendAdapter,
   createEventRenderer,
   type EventRenderer,
 } from "./view/event-renderer"
+import type { SendAdapter } from "./view/outbox"
 import { postSessionBanner } from "./view/banner"
 import type { UserCache } from "./view/user-cache"
 import { parseControlCommand } from "./commands/parser"
@@ -173,6 +173,18 @@ export interface RoutingCtx {
     threadTs: string,
     cwd: string,
   ) => McpSdkServerConfigWithInstance
+  /**
+   * The launcher's shared SendAdapter — wired with the `onPostSucceeded`
+   * hook that records thread-participation. EVERY outbound agent post
+   * (event renderer, banner, approvals, elicitations, stale-resume cards,
+   * control replies) must go through this adapter so every successful
+   * `chat.postMessage` records the (channel, thread) pair and the gate's
+   * `threadHasPriorBotPost` signal stays in sync with what the bot has
+   * actually said. Building a bare `buildDefaultSendAdapter(app)` skips
+   * the hook — this was a latent bug where plain agent replies never
+   * populated the participation cache.
+   */
+  sendAdapter: SendAdapter
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +467,7 @@ async function postUnconfiguredChannelNotice(
   ctx: RoutingCtx,
   args: { channel: string; threadTs: string; channelId: string },
 ): Promise<void> {
-  const adapter = buildDefaultSendAdapter(ctx.app)
+  const adapter = ctx.sendAdapter
   const text =
     `:wave: I'm not configured for this channel yet, so I'll stay quiet to avoid ` +
     `running in the wrong project.\n\n` +
@@ -647,6 +659,12 @@ export async function dispatchTurnToRegistry(
   if (!renderer) {
     renderer = createEventRenderer({
       app: ctx.app,
+      // Use the launcher's shared adapter so every outbound post runs the
+      // `onPostSucceeded` hook that records thread participation. Without
+      // this the gate's `threadHasPriorBotPost` fallback never fired for
+      // plain agent replies and follow-ups silently dropped after idle-
+      // close / restart.
+      sendAdapter: ctx.sendAdapter,
       binding: {
         channel: turn.channel,
         threadTs: turn.parentTs,
@@ -904,7 +922,7 @@ interface CommandRouteArgs {
 
 async function handleControlCommand(args: CommandRouteArgs): Promise<void> {
   const { ctx, cmd, project, channel, threadTs, sessionParts } = args
-  const adapter = buildDefaultSendAdapter(ctx.app)
+  const adapter = ctx.sendAdapter
   const existing = ctx.registry.peek(sessionParts)
 
   const commandCtx: CommandContext = {
@@ -964,7 +982,7 @@ function attachBannerOnce(
   threadTs: string,
 ): void {
   if (ctx.bannerPosted.has(entry)) return
-  const adapter = buildDefaultSendAdapter(ctx.app)
+  const adapter = ctx.sendAdapter
   let unsub: (() => void) | null = null
   const subscriber = (event: ConversationEvent): void => {
     if (event.type !== "session_init") return

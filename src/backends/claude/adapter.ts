@@ -36,6 +36,19 @@ const trace = backendTrace.scoped("claude")
 import { mapSDKMessage, ToolStreamState } from "./event-mapper"
 
 // ---------------------------------------------------------------------------
+// Default system-prompt appendix — nudges the model toward proactive TodoWrite
+// ---------------------------------------------------------------------------
+//
+// The `claude_code` preset alone is not enough: Opus 4.7 still skips TodoWrite
+// even on clearly multi-step work (verified via session log analysis — 0 calls
+// across 4 sequential actions). This appendix is passed via the preset's
+// `append` field so it layers on top of the built-in Claude Code prompt,
+// without replacing it. Short and imperative on purpose.
+const TODO_SYSTEM_PROMPT_APPEND = `When doing multi-step work (3+ distinct actions or planning a task with multiple phases), call the TodoWrite tool BEFORE starting execution. Populate it with ALL planned steps as pending items so the user can see both the plan and the progress. Mark items in_progress as you start them and completed as you finish. Keep the list as the authoritative view of your work — don't rely on narrating steps in text. If you discover new work mid-task, add it as a pending item immediately.
+
+Skip TodoWrite only for trivial single-step tasks or purely conversational responses.`
+
+// ---------------------------------------------------------------------------
 // Debug log payload builder for SDK messages
 // ---------------------------------------------------------------------------
 
@@ -727,7 +740,11 @@ export class ClaudeAdapter implements AgentBackend {
       // system prompt at all — which removes Claude Code's guidance for
       // multi-step work (notably the TodoWrite tool). A user-supplied
       // `--system-prompt <string>` still wins.
-      systemPrompt: config.systemPrompt ?? { type: "preset", preset: "claude_code" },
+      systemPrompt: config.systemPrompt ?? {
+        type: "preset",
+        preset: "claude_code",
+        append: TODO_SYSTEM_PROMPT_APPEND,
+      },
       permissionMode: config.permissionMode,
       // Always opt the session into being ALLOWED to switch to
       // `bypassPermissions` at runtime (via Shift+Tab / setPermissionMode).

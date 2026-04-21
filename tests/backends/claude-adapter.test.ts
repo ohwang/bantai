@@ -106,10 +106,16 @@ describe("ClaudeAdapter", () => {
     // Claude Code's default system prompt entirely — including the
     // TodoWrite guidance for multi-step work.
 
-    it("defaults undefined systemPrompt to the claude_code preset", () => {
+    it("defaults undefined systemPrompt to the claude_code preset with TodoWrite append", () => {
       const adapter = new ClaudeAdapter()
       const opts = (adapter as any).buildOptions({})
-      expect(opts.systemPrompt).toEqual({ type: "preset", preset: "claude_code" })
+      expect(opts.systemPrompt).toMatchObject({
+        type: "preset",
+        preset: "claude_code",
+      })
+      expect(typeof opts.systemPrompt.append).toBe("string")
+      expect(opts.systemPrompt.append.length).toBeGreaterThan(0)
+      expect(opts.systemPrompt.append).toContain("TodoWrite")
       adapter.close()
     })
 

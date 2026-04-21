@@ -16,6 +16,23 @@ import { log } from "../../../utils/logger"
 // Normalised inbound event shape
 // ---------------------------------------------------------------------------
 
+/**
+ * Body Bolt expects back from an `app.command(...)` ack. The `text` path
+ * renders via Slack mrkdwn (short banners / errors) and the `blocks`
+ * path opens the door to rich in-channel responses — we only use `text`
+ * today.
+ *
+ * `response_type: "ephemeral"` (default) scopes the ack to the invoker.
+ * `"in_channel"` posts it as a regular channel message everybody sees —
+ * used for state-changing commands (`new`, `stop`, `model <id>`,
+ * `verbosity`) where the thread should reflect what happened.
+ */
+export interface SlashCommandAckBody {
+  text?: string
+  response_type?: "ephemeral" | "in_channel"
+  blocks?: KnownBlock[]
+}
+
 /** Minimal slice of Slack's FileObject carried on message events. */
 export interface InboundFileMetadata {
   id: string
@@ -49,6 +66,46 @@ export type InboundSlackEvent =
   | { kind: "member_joined"; channel: string; user: string }
   | { kind: "file_shared"; channel?: string; user: string; fileId: string }
   | { kind: "reaction_added"; channel?: string; user: string; reaction: string; itemTs?: string; itemChannel?: string }
+  | {
+      kind: "slash_command"
+      /**
+       * Full command token including the leading slash, e.g. "/bantai".
+       * The router branches on the literal value so extra commands
+       * (`/bantai-review`, `/bantai-pair`, …) can coexist later without
+       * a wire-format change.
+       */
+      command: string
+      /** Everything the user typed after the command. May be empty. */
+      text: string
+      /** Channel the command was invoked from. */
+      channel: string
+      /** Channel's display name (from Slack's payload). May be "directmessage" for DMs. */
+      channelName?: string
+      /** Slack user who invoked the command. */
+      user: string
+      /**
+       * `thread_ts` from Slack's payload when the command was invoked
+       * from inside a thread. Slash commands fired from the channel
+       * composer arrive without it; thread-scoped commands (`new`,
+       * `stop`, …) refuse to run and prompt the user to invoke inside
+       * a thread.
+       */
+      threadTs?: string
+      /**
+       * 30-minute delayed-response URL. Up to 5 posts; used for the
+       * in_channel acks that should land as real channel messages
+       * instead of ephemerals.
+       */
+      responseUrl: string
+      /** Trigger id — lets future commands open a modal in response. */
+      triggerId: string
+      /**
+       * Ack callback — Bolt requires it be called within 3s with a
+       * response body. The router invokes this exactly once per event
+       * with the ephemeral/in-channel text the command produced.
+       */
+      ack: (body: SlashCommandAckBody) => Promise<void>
+    }
   | {
       kind: "block_action"
       channel?: string
@@ -190,6 +247,57 @@ export function registerEvents({ app, onInbound, botUserId }: RegisterEventsOpts
   })
 
   // -------------------------------------------------------------------------
+  // slash_commands — `/bantai <subcommand>` global slash command.
+  //
+  // Bolt demands the handler ack within 3s; we DON'T ack here (the
+  // command dispatcher posts the response via `ack({ text, ... })` so the
+  // ack body carries the actual reply). If the handler throws before the
+  // router calls ack, Bolt's own timeout fires and Slack renders an
+  // "operation_timeout" to the user.
+  // -------------------------------------------------------------------------
+  app.command(/.*/, async ({ command, ack }) => {
+    const c = command as SlashCommandLike
+    if (!c.command || !c.channel_id || !c.user_id) {
+      await ack()
+      log.warn(
+        `slack: slash command with missing fields: ${JSON.stringify({
+          command: c.command,
+          channel: c.channel_id,
+          user: c.user_id,
+        })}`,
+      )
+      return
+    }
+    // Guard against double-ack — the router calls `ack` with a body and
+    // nothing else should. Bolt tolerates `ack()` never firing within 3s
+    // (it auto-acks with an empty body), but firing it twice throws a
+    // "multiple_acknowledgments" error, which we've seen eat the actual
+    // response payload on Slack's side.
+    let acked = false
+    const safeAck = async (body: SlashCommandAckBody): Promise<void> => {
+      if (acked) return
+      acked = true
+      await ack(body)
+    }
+    await safeInvoke(onInbound, {
+      kind: "slash_command",
+      command: c.command,
+      text: c.text ?? "",
+      channel: c.channel_id,
+      ...(c.channel_name ? { channelName: c.channel_name } : {}),
+      user: c.user_id,
+      ...(c.thread_ts ? { threadTs: c.thread_ts } : {}),
+      responseUrl: c.response_url ?? "",
+      triggerId: c.trigger_id ?? "",
+      ack: safeAck,
+    })
+    // Fallback: if the router never called `ack`, fire the default empty
+    // ack so Slack doesn't render a 3-second timeout. `safeAck` is
+    // idempotent, so this is a no-op when the router acked first.
+    await safeAck({})
+  })
+
+  // -------------------------------------------------------------------------
   // block_actions — Block Kit button presses (§8)
   // -------------------------------------------------------------------------
   app.action(/.*/, async ({ action, body, ack }) => {
@@ -228,7 +336,7 @@ export function registerEvents({ app, onInbound, botUserId }: RegisterEventsOpts
     })
   })
 
-  log.info("slack: registered event handlers (message, app_mention, member_joined, file_shared, reaction_added, block_actions, view_submission)")
+  log.info("slack: registered event handlers (message, app_mention, member_joined, file_shared, reaction_added, slash_command, block_actions, view_submission)")
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +403,22 @@ interface ReactionAddedLike {
   user?: string
   reaction?: string
   item?: { ts?: string; channel?: string }
+}
+
+interface SlashCommandLike {
+  command?: string
+  text?: string
+  channel_id?: string
+  channel_name?: string
+  user_id?: string
+  /**
+   * Slack sends `thread_ts` when the command is invoked from inside a
+   * thread (the Side Panel / thread composer). Absent when invoked at
+   * channel root.
+   */
+  thread_ts?: string
+  response_url?: string
+  trigger_id?: string
 }
 
 interface BlockActionBodyLike {

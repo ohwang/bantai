@@ -37,6 +37,7 @@ import {
 } from "./inbox/debouncer"
 import { parseInteractiveReplyActionId } from "./view/interactive-replies"
 import type { AttachmentFetcher } from "./inbox/attachments"
+import type { InboundFileMetadata } from "./transport/events"
 import {
   fetchThreadHistory,
   formatThreadHistory,
@@ -52,6 +53,10 @@ import { parseControlCommand } from "./commands/parser"
 import { dispatchCommand, type CommandContext } from "./commands/dispatch"
 import type { ApprovalCoordinator } from "./approvals/coordinator"
 import type { ElicitationCoordinator } from "./elicitations/coordinator"
+import type { SessionStore } from "./store/sessions"
+import type { StaleResumeCoordinator } from "./recovery/coordinator"
+import type { InboundTurn } from "./inbox/turn-builder"
+import type { SessionKeyParts } from "./router/registry"
 import { mergeCumulativeUsage } from "./usage"
 
 // ---------------------------------------------------------------------------
@@ -111,6 +116,18 @@ export interface RoutingCtx {
   approvals: ApprovalCoordinator
   /** Cross-session elicitation coordinator (card → modal → view_submission). */
   elicitations: ElicitationCoordinator
+  /**
+   * Persistent session store — the same handle `SessionRegistry` uses.
+   * Exposed here so the stale-resume coordinator can inspect the persisted
+   * row BEFORE `getOrCreate` mutates it.
+   */
+  store: SessionStore
+  /**
+   * Coordinator that intercepts inbound turns whose persisted backend session
+   * can't be resumed (backend flipped, session file deleted). Posts a Block
+   * Kit card + persists the queued turn for replay on click.
+   */
+  staleResume: StaleResumeCoordinator
   /** Fetches inbound file attachments into images / staging files. */
   attachments: AttachmentFetcher
   /**
@@ -283,11 +300,23 @@ export function buildRoutingHandler(ctx: RoutingCtx): RoutingHandle {
           channel: event.channel,
         })
         if (elicRes.kind === "malformed") {
-          const interactiveHandled = await handleInteractiveReplyAction(ctx, event)
-          if (!interactiveHandled) {
-            log.debug(
-              `slack: unrecognised block_action ignored: ${event.actionId}`,
-            )
+          // Stale-resume cards share the same block_action wire envelope;
+          // try that next so a "Start fresh" / "Resume with history" /
+          // "Cancel turn" click from a previously-posted recovery card
+          // doesn't fall through to the interactive-reply handler (which
+          // would treat it as a bogus agent-authored button).
+          const staleRes = await ctx.staleResume.handleBlockAction({
+            actionId: event.actionId,
+            userId: event.user,
+            workspace: ctx.workspaceId,
+          })
+          if (staleRes.kind === "malformed") {
+            const interactiveHandled = await handleInteractiveReplyAction(ctx, event)
+            if (!interactiveHandled) {
+              log.debug(
+                `slack: unrecognised block_action ignored: ${event.actionId}`,
+              )
+            }
           }
         }
       }
@@ -494,16 +523,124 @@ async function dispatchMessageBatch(
   // needs the prior context to make sense of the current message.
   const hadExistingSession = !!ctx.registry.peek(sessionParts)
 
-  const entry = ctx.registry.getOrCreate(
-    sessionParts,
+  // Stale-resume interception. When there's no live in-memory session for
+  // this thread, consult the persisted row: a mismatched backend (channel
+  // was flipped) or a missing session file means blindly calling
+  // `getOrCreate` would hand the backend a sessionId it can't resume
+  // (Gemini returns JSON-RPC -32603, Codex/Claude start fresh and drop
+  // history silently). Instead we post a Block Kit card and stop the
+  // dispatch mid-flight; the user picks a recovery strategy and the
+  // coordinator calls back into `dispatchTurnToRegistry` to replay.
+  if (!hadExistingSession) {
+    const persisted = ctx.store.get(sessionKeyForParts(sessionParts))
+    const detection = ctx.staleResume.detect({ persisted, project })
+    if (detection) {
+      const replayPreview = buildInboundTurn({
+        text: combinedText,
+        channel,
+        ts: last.event.ts,
+        threadTs: last.event.threadTs,
+        userId,
+        userDisplayName: displayName,
+        botUserId: ctx.botUserId,
+      })
+      try {
+        await ctx.staleResume.promptAndQueue({
+          detection,
+          sessionKey: sessionKeyForParts(sessionParts),
+          channel,
+          threadTs: replayPreview.parentTs,
+          project,
+          turn: replayPreview,
+        })
+      } catch (err) {
+        log.error(
+          `slack: stale-resume prompt failed for ${channel}:${replayPreview.parentTs}: ${String(err)}. Proceeding with a fresh session.`,
+        )
+      }
+      return
+    }
+  }
+
+  await dispatchTurnToRegistry(ctx, {
+    turn,
     project,
-    turn.parentTs,
-    buildSessionMcpOverlay({
+    sessionParts,
+    lastEventThreadTs: last.event.threadTs,
+    lastEventTs: last.event.ts,
+    incomingFiles: entries.flatMap((e) =>
+      "files" in e.event && e.event.files ? e.event.files : [],
+    ),
+    hadExistingSession,
+  })
+}
+
+/**
+ * Session-key helper — a shim around `router/registry.sessionKeyFor` so this
+ * module doesn't duplicate the canonical builder. Kept inline so routing.ts
+ * stays free of a cross-module import cycle (registry imports session types;
+ * routing holds a registry).
+ */
+function sessionKeyForParts(parts: SessionKeyParts): string {
+  const thread = parts.threadTs ?? "main"
+  return `slack:${parts.workspace}:${parts.channelId}:${thread}`
+}
+
+/**
+ * The post-detection tail of dispatchMessageBatch — given a fully-built turn
+ * + project + session identifiers, construct (or reuse) the SessionEntry,
+ * wire up the renderer, prefetch thread history when appropriate, ingest
+ * attachments, and push the turn into the backend.
+ *
+ * Extracted so the stale-resume coordinator can replay a queued turn
+ * through the exact same path the original inbound would have taken. When
+ * `replayContext` is set (inject decision), it's merged into the session
+ * config overlay so the backend gets the foreign-session history on first
+ * turn.
+ */
+export interface DispatchTurnOpts {
+  turn: InboundTurn
+  project: ProjectConfig
+  sessionParts: SessionKeyParts
+  /** The original last.event.threadTs — undefined for top-level messages. */
+  lastEventThreadTs?: string
+  /** The original last.event.ts — the most recent inbound in the batch. */
+  lastEventTs: string
+  /** Inbound file-event attachments, pre-flattened across the batch. */
+  incomingFiles: InboundFileMetadata[]
+  /**
+   * True when a live in-memory session already existed at dispatch time.
+   * Controls thread-history prefetch (only runs for NEW sessions).
+   */
+  hadExistingSession: boolean
+  /**
+   * Optional replayContext to stash into the backend on first turn. Supplied
+   * by the stale-resume coordinator's `inject` path; absent for the normal
+   * dispatch + `fresh` paths.
+   */
+  replayContext?: import("../../protocol/types").SessionConfig["replayContext"]
+}
+
+export async function dispatchTurnToRegistry(
+  ctx: RoutingCtx,
+  args: DispatchTurnOpts,
+): Promise<void> {
+  const { turn, project, sessionParts, hadExistingSession } = args
+  const overlay: Partial<import("../../protocol/types").SessionConfig> = {
+    ...buildSessionMcpOverlay({
       project,
       channel: turn.channel,
       threadTs: turn.parentTs,
       slackUploadMcp: ctx.slackUploadMcpFor,
     }),
+    ...(args.replayContext ? { replayContext: args.replayContext } : {}),
+  }
+
+  const entry = ctx.registry.getOrCreate(
+    sessionParts,
+    project,
+    turn.parentTs,
+    overlay,
   )
 
   let renderer = ctx.renderers.get(entry)
@@ -565,7 +702,7 @@ async function dispatchMessageBatch(
   // The prefix becomes part of turn.text so the downstream attachment
   // path (which wraps turn.text with `ingested.textHint`) carries it
   // through unchanged.
-  const triggeredMidThread = !!last.event.threadTs
+  const triggeredMidThread = !!args.lastEventThreadTs
   const shouldPrefetchHistory =
     triggeredMidThread &&
     !hadExistingSession &&
@@ -573,9 +710,9 @@ async function dispatchMessageBatch(
     project.threadHistoryLimit > 0
   if (shouldPrefetchHistory) {
     const prefix = await buildThreadHistoryPrefix(ctx, {
-      channelId: channel,
-      threadTs: last.event.threadTs!,
-      currentMessageTs: last.event.ts,
+      channelId: turn.channel,
+      threadTs: args.lastEventThreadTs!,
+      currentMessageTs: args.lastEventTs,
       limit: project.threadHistoryLimit,
     })
     if (prefix) {
@@ -585,14 +722,11 @@ async function dispatchMessageBatch(
 
   // Pool attachments across the batch — a user who drops two images in
   // quick succession expects the agent to see both in the same turn.
-  const incomingFiles = entries.flatMap((e) =>
-    "files" in e.event && e.event.files ? e.event.files : [],
-  )
-  if (incomingFiles.length > 0) {
+  if (args.incomingFiles.length > 0) {
     try {
-      const ingested = await ctx.attachments.fetch(incomingFiles, {
-        channelId: channel,
-        ts: last.event.ts,
+      const ingested = await ctx.attachments.fetch(args.incomingFiles, {
+        channelId: turn.channel,
+        ts: args.lastEventTs,
       })
       entry.send({
         text: turn.text + ingested.textHint,

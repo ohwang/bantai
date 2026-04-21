@@ -61,11 +61,13 @@ import {
 } from "./store/sessions"
 import {
   buildRoutingHandler,
+  dispatchTurnToRegistry,
   invalidateProjectOverrides,
   parseSessionKey,
   type RoutingCtx,
   type RuntimeChannelOverride,
 } from "./routing"
+import { createStaleResumeCoordinator } from "./recovery/coordinator"
 import {
   createConfigReloader,
   formatDiffSummary,
@@ -432,6 +434,55 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
   // (gate, debouncer, resolver) without re-wiring the handler.
   let currentConfig: ResolvedSlackConfig = config
 
+  // Stale-resume coordinator. Instantiated as a `let` forward reference so
+  // the `replayTurn` callback below can close over `routingCtx`, which the
+  // coordinator itself is about to become a field on. Resolved immediately
+  // after `routingCtx` is built.
+  //
+  // The callback re-enters the dispatch pipeline through
+  // `dispatchTurnToRegistry` — that skips the gate + debouncer (the turn
+  // already passed both the first time it landed) and goes straight to
+  // registry.getOrCreate + renderer + send, preserving thread-history
+  // prefetch and attachment ingest for the replay.
+  const staleResume = createStaleResumeCoordinator({
+    adapter: defaultAdapter,
+    store,
+    async replayTurn(input) {
+      try {
+        const project =
+          routingCtx.projectOverrides.get(input.key.channelId) ?? input.project
+        await dispatchTurnToRegistry(routingCtx, {
+          turn: input.turn,
+          project,
+          sessionParts: input.key,
+          lastEventTs: input.turn.triggerTs,
+          ...(input.turn.parentTs ? { lastEventThreadTs: input.turn.parentTs } : {}),
+          incomingFiles: [],
+          hadExistingSession: !!registry.peek(input.key),
+          ...(input.replayContext ? { replayContext: input.replayContext } : {}),
+        })
+      } catch (err) {
+        log.error(`slack stale-resume: replay dispatch threw: ${String(err)}`)
+      }
+    },
+    lookupProject(sessionKey) {
+      const parts = parseSessionKey(sessionKey)
+      if (!parts) return undefined
+      return routingCtx.projectOverrides.get(parts.channelId)
+    },
+    // Commit 5 plugs a real HistoryInjectionProvider in here; commit 4
+    // intentionally leaves it null so the "Resume with history" button
+    // stays hidden until the wiring lands.
+    historyProvider: null,
+    backendLabels: {
+      claude: "Claude",
+      codex: "Codex",
+      gemini: "Gemini",
+      acp: "ACP",
+      mock: "Mock",
+    },
+  })
+
   const routingCtx: RoutingCtx = {
     app,
     get config() {
@@ -445,6 +496,8 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     launchCwd,
     approvals,
     elicitations,
+    store,
+    staleResume,
     attachments,
     renderers: new WeakMap(),
     projectOverrides: new Map(),
@@ -492,6 +545,17 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     botUserId: auth.botUserId,
     onInbound: routing.onInbound,
   })
+
+  // Rehydrate the stale-resume coordinator's in-memory view from SQLite so
+  // clicks on cards posted before a restart still resolve to something. The
+  // coordinator's state is stateless apart from the store itself, so this
+  // is logging-only today — but keeping the call here means future in-memory
+  // indexing (e.g. per-channel maps) has a single restore point.
+  try {
+    staleResume.restoreFromStore()
+  } catch (err) {
+    log.warn(`slack stale-resume: restore threw: ${String(err)}`)
+  }
 
   // Config hot-reload. `<inline>` configs (test harnesses + future
   // programmatic overrides) disable the watcher — there's no file on disk

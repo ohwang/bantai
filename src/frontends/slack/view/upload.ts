@@ -115,6 +115,120 @@ export async function uploadFile(
 }
 
 /**
+ * Build a `SlackFileClient` from a raw bot token, without depending on a
+ * live Bolt App. This is the variant used by the stdio MCP subprocess
+ * (`mcp/slack-upload-stdio.ts`) — the subprocess receives the bot token
+ * over env and can't drag Bolt into its process.
+ *
+ * Keep this pure-`fetch`: Slack's upload endpoints accept either a
+ * `Bearer` token on the JSON POSTs, or a presigned URL (no auth header)
+ * for the multipart byte POST.
+ */
+export function buildSlackFileClientFromToken(
+  botToken: string,
+  opts?: { apiBase?: string; fetchImpl?: typeof fetch },
+): SlackFileClient {
+  if (!botToken) {
+    throw new Error("buildSlackFileClientFromToken: botToken is required")
+  }
+  const apiBase = opts?.apiBase ?? "https://slack.com/api"
+  const doFetch = opts?.fetchImpl ?? fetch
+
+  async function postJson(
+    method: "files.getUploadURLExternal" | "files.completeUploadExternal",
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const resp = await doFetch(`${apiBase}/${method}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${botToken}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) {
+      throw new Error(`${method} HTTP ${resp.status} ${resp.statusText}`)
+    }
+    return (await resp.json()) as Record<string, unknown>
+  }
+
+  return {
+    async getUploadURLExternal(args) {
+      // Slack insists on application/x-www-form-urlencoded for this
+      // endpoint — JSON is silently accepted but historically flaky,
+      // and form encoding matches the behaviour of Bolt's client.
+      const form = new URLSearchParams()
+      form.set("filename", args.filename)
+      form.set("length", String(args.length))
+      const resp = await doFetch(`${apiBase}/files.getUploadURLExternal`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${botToken}`,
+          "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        },
+        body: form.toString(),
+      })
+      if (!resp.ok) {
+        throw new Error(
+          `files.getUploadURLExternal HTTP ${resp.status} ${resp.statusText}`,
+        )
+      }
+      const res = (await resp.json()) as Record<string, unknown>
+      return {
+        ok: res["ok"] === true,
+        ...(typeof res["upload_url"] === "string"
+          ? { upload_url: res["upload_url"] as string }
+          : {}),
+        ...(typeof res["file_id"] === "string"
+          ? { file_id: res["file_id"] as string }
+          : {}),
+        ...(typeof res["error"] === "string"
+          ? { error: res["error"] as string }
+          : {}),
+      }
+    },
+    async postUploadBytes({ uploadUrl, content, contentType, filename }) {
+      const form = new FormData()
+      form.append(
+        "file",
+        new Blob([new Uint8Array(content) as unknown as ArrayBuffer], { type: contentType }),
+        filename,
+      )
+      const resp = await doFetch(uploadUrl, { method: "POST", body: form })
+      if (!resp.ok) {
+        throw new Error(`upload_url POST failed: ${resp.status} ${resp.statusText}`)
+      }
+    },
+    async completeUploadExternal(args) {
+      if (args.files.length === 0) {
+        throw new Error("completeUploadExternal requires at least one file")
+      }
+      const payload: Record<string, unknown> = { files: args.files }
+      if (args.channel_id) payload["channel_id"] = args.channel_id
+      if (args.thread_ts) payload["thread_ts"] = args.thread_ts
+      if (args.initial_comment) payload["initial_comment"] = args.initial_comment
+      const res = await postJson("files.completeUploadExternal", payload)
+      const filesRaw = Array.isArray(res["files"])
+        ? (res["files"] as Array<Record<string, unknown>>)
+        : undefined
+      return {
+        ok: res["ok"] === true,
+        ...(filesRaw
+          ? {
+              files: filesRaw.map((f) => ({
+                id: String(f["id"] ?? ""),
+                ...(f["name"] ? { name: String(f["name"]) } : {}),
+                ...(f["permalink"] ? { permalink: String(f["permalink"]) } : {}),
+              })),
+            }
+          : {}),
+        ...(typeof res["error"] === "string" ? { error: res["error"] as string } : {}),
+      }
+    },
+  }
+}
+
+/**
  * Build the production `SlackFileClient` from a live Bolt App. Uses the
  * bolt web client for the API calls and plain `fetch` for the presigned
  * bytes POST (Slack's upload endpoint rejects `Authorization` headers).

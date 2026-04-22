@@ -720,9 +720,28 @@ export class ClaudeAdapter implements AgentBackend {
       forkSession: !!config.forkSession,
       cwd: config.cwd,
     })
+    // Translate (systemPrompt, appendSystemPrompt) into the SDK's layered
+    // `systemPrompt` shape. The SDK accepts three forms: a string (fully
+    // override), a preset object with `append` (keep Claude Code prompt +
+    // add extra), or `undefined` (SDK default). The Slack frontend uses
+    // `appendSystemPrompt` to inject per-session context without clobbering
+    // the built-in coding prompt.
+    const systemPromptOpt: SDKOptions["systemPrompt"] =
+      config.systemPrompt !== undefined
+        ? config.appendSystemPrompt
+          ? `${config.systemPrompt}\n\n${config.appendSystemPrompt}`
+          : config.systemPrompt
+        : config.appendSystemPrompt
+          ? {
+              type: "preset" as const,
+              preset: "claude_code" as const,
+              append: config.appendSystemPrompt,
+            }
+          : undefined
+
     const opts: SDKOptions = {
       model: config.model,
-      systemPrompt: config.systemPrompt,
+      systemPrompt: systemPromptOpt,
       permissionMode: config.permissionMode,
       // Always opt the session into being ALLOWED to switch to
       // `bypassPermissions` at runtime (via Shift+Tab / setPermissionMode).
@@ -742,6 +761,21 @@ export class ClaudeAdapter implements AgentBackend {
       forkSession: config.forkSession,
       mcpServers: (() => {
         const servers: Record<string, unknown> = { ...config.mcpServers }
+        // Translate backend-agnostic stdioMcpServers into the Claude SDK's
+        // native stdio-MCP shape. A name-collision with `mcpServers` wins
+        // for the in-process entry (operators / upstream frontends set
+        // `mcpServers` deliberately for in-process tools).
+        if (config.stdioMcpServers) {
+          for (const [name, spec] of Object.entries(config.stdioMcpServers)) {
+            if (name in servers) continue
+            servers[name] = {
+              type: "stdio" as const,
+              command: spec.command,
+              ...(spec.args ? { args: spec.args } : {}),
+              ...(spec.env ? { env: spec.env } : {}),
+            }
+          }
+        }
         const diag = getDiagnosticsSdkMcpConfig()
         if (diag) servers["bantai-diagnostics"] = diag
         const crossagent = getCrossagentSdkMcpConfig()

@@ -294,6 +294,26 @@ export async function runCli(argv: string[]): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(out)
     })
+  slackCmd
+    .command("mcp-upload-server", { hidden: true })
+    .description(
+      "Internal: run the standalone stdio MCP server for slack_upload. " +
+        "Spawned by the Slack launcher per session; not intended to be run by hand.",
+    )
+    .action(async () => {
+      const { main } = await import(
+        "../frontends/slack/mcp/slack-upload-stdio"
+      )
+      try {
+        await main()
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `slack mcp-upload-server failed: ${(err as Error).message ?? String(err)}`,
+        )
+        process.exit(2)
+      }
+    })
   program.addCommand(slackCmd)
 
   // -----------------------------------------------------------------------

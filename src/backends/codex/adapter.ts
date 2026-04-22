@@ -35,6 +35,7 @@ import { BaseAdapter } from "../shared/base-adapter"
 const trace = backendTrace.scoped("codex")
 
 import { JsonRpcTransport } from "./jsonrpc-transport"
+import { buildCodexMcpConfigArgs } from "./mcp-config"
 import { mapCodexNotification } from "./event-mapper"
 import type {
   CodexSandboxPolicy,
@@ -481,9 +482,37 @@ export class CodexAdapter extends BaseAdapter {
     this.config = config
 
     try {
-      // 1. Spawn transport
+      // 1. Spawn transport.
+      //    Build `codex app-server --config …` argv with any stdio MCP
+      //    servers from SessionConfig. The Codex SDK's Codex class does
+      //    this flattening for us when you go through startThread(), but
+      //    we spawn app-server directly for the JSON-RPC session protocol,
+      //    so we roll it out here.
+      const mcpConfigArgs = buildCodexMcpConfigArgs(config.stdioMcpServers)
+      if (mcpConfigArgs.length > 0) {
+        log.info("Codex: injecting stdio MCP servers via --config", {
+          servers: Object.keys(config.stdioMcpServers ?? {}),
+          argCount: mcpConfigArgs.length,
+        })
+      }
+      if (config.appendSystemPrompt) {
+        // Codex SDK has no `appendSystemPrompt`; the most faithful
+        // fallback is to log that we couldn't forward it. Operators that
+        // need session-scoped prompts on Codex should set `systemPrompt`
+        // directly; Slack's launcher concatenates when building the
+        // SessionConfig for Codex (see routing overlay).
+        log.debug(
+          "Codex: appendSystemPrompt observed; relying on caller to pre-merge into systemPrompt",
+          { chars: config.appendSystemPrompt.length },
+        )
+      }
       this.transport = new JsonRpcTransport()
-      await this.transport.start("codex", ["app-server", "--listen", "stdio://"])
+      await this.transport.start("codex", [
+        "app-server",
+        ...mcpConfigArgs,
+        "--listen",
+        "stdio://",
+      ])
 
       // 2. Wire up event handlers
       this.transport.onNotification((method, params) => {

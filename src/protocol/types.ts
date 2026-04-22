@@ -869,6 +869,41 @@ export interface SessionConfig {
   continue?: boolean
   forkSession?: boolean
   mcpServers?: Record<string, unknown>
+  /**
+   * Backend-agnostic stdio MCP servers to expose to the agent. Each entry
+   * names a subprocess that speaks MCP over stdio; the adapter translates
+   * into the runtime's native spec:
+   *
+   *   - Claude: merged into `mcpServers` with `type: "stdio"` (the Claude
+   *     SDK accepts this natively, alongside in-process `mcpServers` entries).
+   *   - Codex: injected into `CodexOptions.config.mcp_servers.*` which the
+   *     Codex CLI flattens into TOML-level MCP config.
+   *   - ACP / mock: logged and ignored (the transports don't carry MCP).
+   *
+   * Used by the Slack frontend to expose `slack_upload` to every backend
+   * (Claude's in-process variant was Claude-only). Keep entries self-
+   * contained — the subprocess only sees `env` + the command line.
+   */
+  stdioMcpServers?: Record<
+    string,
+    { command: string; args?: string[]; env?: Record<string, string> }
+  >
+  /**
+   * Extra text appended to the backend's system prompt without replacing it.
+   *
+   * Populated by the Slack frontend with per-session context (channel id,
+   * thread ts, available Slack-specific tools) so the agent knows it's
+   * responding in Slack and can use `slack_upload` proactively. The TUI
+   * doesn't set this; project/user `systemPrompt` is the single source of
+   * truth there.
+   *
+   * Contract:
+   *   - Claude: forwarded as the SDK's `appendSystemPrompt` option.
+   *   - Codex: concatenated onto `systemPrompt` with a blank line separator
+   *     (Codex SDK has no append primitive — we fall back to joining).
+   *   - ACP / mock: ignored.
+   */
+  appendSystemPrompt?: string
   allowedTools?: string[]
   disallowedTools?: string[]
   additionalDirectories?: string[]

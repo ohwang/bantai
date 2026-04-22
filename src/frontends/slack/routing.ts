@@ -179,6 +179,21 @@ export interface RoutingCtx {
     cwd: string,
   ) => McpSdkServerConfigWithInstance
   /**
+   * Build a per-session STDIO MCP server spec for `slack_upload`. Used by
+   * backends that can't load Claude's in-process SDK MCPs (Codex, ACP).
+   * The returned `{command, args, env}` carries the bot token + binding
+   * in env vars — the agent never sees them as tool arguments.
+   *
+   * Returns `undefined` when the workspace has no bot token configured
+   * (unit tests / misconfigured deploys), so the overlay can skip the
+   * stdio entry without crashing.
+   */
+  slackUploadStdioSpecFor: (
+    channel: string,
+    threadTs: string,
+    cwd: string,
+  ) => { command: string; args?: string[]; env?: Record<string, string> } | undefined
+  /**
    * The launcher's shared SendAdapter — wired with the `onPostSucceeded`
    * hook that records thread-participation. EVERY outbound agent post
    * (event renderer, banner, approvals, elicitations, stale-resume cards,
@@ -635,6 +650,7 @@ export async function dispatchTurnToRegistry(
       channel: turn.channel,
       threadTs: turn.parentTs,
       slackUploadMcp: ctx.slackUploadMcpFor,
+      slackUploadStdioSpec: ctx.slackUploadStdioSpecFor,
     }),
     ...(args.replayContext ? { replayContext: args.replayContext } : {}),
   }
@@ -799,8 +815,19 @@ async function buildThreadHistoryPrefix(
 
 /**
  * Build the sessionConfigOverlay that injects the per-session `slack_upload`
- * MCP server. Merges with `project.resolvedMcpServers` so a channel's
- * user-configured MCP set remains active alongside the upload tool.
+ * MCP server. Emits BOTH shapes so every backend sees the tool:
+ *
+ *   - `mcpServers` carries the in-process SDK MCP (used by Claude's adapter)
+ *   - `stdioMcpServers` carries a backend-agnostic spec that Codex picks up
+ *     via `--config mcp_servers.*` (and that Claude would pick up too, but
+ *     the adapter prefers the in-process entry when both are present).
+ *
+ * Also sets `appendSystemPrompt` with a short Slack-context preamble so the
+ * agent knows the channel + thread context and is nudged to use
+ * `slack_upload` proactively for generated artefacts.
+ *
+ * Merges with `project.resolvedMcpServers` so a channel's user-configured
+ * MCP set remains active alongside the upload tool.
  */
 export function buildSessionMcpOverlay(args: {
   project: ProjectConfig
@@ -811,6 +838,11 @@ export function buildSessionMcpOverlay(args: {
     threadTs: string,
     cwd: string,
   ) => McpSdkServerConfigWithInstance
+  slackUploadStdioSpec?: (
+    channel: string,
+    threadTs: string,
+    cwd: string,
+  ) => { command: string; args?: string[]; env?: Record<string, string> } | undefined
 }): Partial<SessionConfig> | undefined {
   const upload = args.slackUploadMcp(
     args.channel,
@@ -818,12 +850,49 @@ export function buildSessionMcpOverlay(args: {
     args.project.projectDir,
   )
   const base = args.project.resolvedMcpServers ?? {}
-  return {
+  const overlay: Partial<SessionConfig> = {
     mcpServers: {
       ...base,
       "bantai-slack-upload": upload,
     },
+    appendSystemPrompt: buildSlackSessionPreamble({
+      channel: args.channel,
+      threadTs: args.threadTs,
+    }),
   }
+  const stdioSpec = args.slackUploadStdioSpec?.(
+    args.channel,
+    args.threadTs,
+    args.project.projectDir,
+  )
+  if (stdioSpec) {
+    overlay.stdioMcpServers = {
+      "bantai-slack-upload": stdioSpec,
+    }
+  }
+  return overlay
+}
+
+/** Short preamble injected via `appendSystemPrompt` so the agent knows it's
+ *  talking in Slack and has a pre-bound file upload tool. Intentionally
+ *  brief — the real tool description lives on `slack_upload` itself. */
+export function buildSlackSessionPreamble(args: {
+  channel: string
+  threadTs: string
+}): string {
+  return (
+    `You are responding in a Slack thread.\n` +
+    `  • Channel id: ${args.channel}\n` +
+    `  • Thread ts: ${args.threadTs}\n` +
+    `\n` +
+    `Tools pre-bound to this thread:\n` +
+    `  • slack_upload(path, title?, comment?) — attach a file from disk to this thread.\n` +
+    `    Use this PROACTIVELY whenever you produce an image (screenshot, chart, diagram),\n` +
+    `    a PDF, a CSV, an archive, or any artefact the user should see rendered in Slack\n` +
+    `    rather than pasted as text. Prefer uploading an image over describing it.\n` +
+    `\n` +
+    `Markdown, fenced code blocks, and tables in your replies render natively in Slack.`
+  )
 }
 
 /**

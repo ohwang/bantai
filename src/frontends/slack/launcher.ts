@@ -49,6 +49,7 @@ import {
 } from "./inbox/attachments"
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk"
 import { createSlackUploadMcpServer } from "./mcp/slack-upload"
+import { buildSlackUploadStdioSpec } from "./mcp/slack-upload-stdio-spec"
 import { buildSlackFileClient } from "./view/upload"
 import {
   createMetricsCollector,
@@ -394,6 +395,29 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     })
   }
 
+  // STDIO MCP spec factory — mirror of slackUploadMcpFor for backends that
+  // can't load Claude-SDK in-process MCPs (Codex, ACP). Returns undefined
+  // when the workspace has no bot token (tests / misconfig) so the overlay
+  // can skip the stdio entry instead of crashing the session.
+  function slackUploadStdioSpecFor(
+    channel: string,
+    threadTs: string,
+    cwd: string,
+  ): { command: string; args?: string[]; env?: Record<string, string> } | undefined {
+    const botToken = config.workspace.botToken
+    if (!botToken) return undefined
+    const spec = buildSlackUploadStdioSpec({
+      channel,
+      threadTs,
+      botToken,
+      cwd,
+      ...(config.workspace.slackApiUrl
+        ? { apiBase: config.workspace.slackApiUrl }
+        : {}),
+    })
+    return spec
+  }
+
   const attachmentStagingDir =
     opts.attachmentStagingDir ??
     pathJoin(homedir(), ".bantai", "slack-attachments")
@@ -517,6 +541,7 @@ export async function launchSlack(opts: LaunchSlackOpts): Promise<SlackLaunchHan
     bannerPosted: new WeakSet(),
     shuttingDown,
     slackUploadMcpFor,
+    slackUploadStdioSpecFor,
     threadParticipation,
     // Share the hook-wired send adapter across every outbound path
     // (event renderer, banner, unconfigured-channel notice, control

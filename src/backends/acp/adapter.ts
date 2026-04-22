@@ -800,6 +800,30 @@ export class AcpAdapter extends BaseAdapter {
 
     this.config = config
 
+    // CLAUDE.md: never silently drop external data. The ACP protocol does
+    // not carry MCP server configs (session/new hard-codes mcpServers:[])
+    // so anything the frontend dropped into SessionConfig.stdioMcpServers
+    // or SessionConfig.mcpServers for us is unreachable — log what we're
+    // losing so operators debugging "my tool isn't there" see it.
+    if (config.stdioMcpServers && Object.keys(config.stdioMcpServers).length > 0) {
+      log.warn(
+        "ACP: stdioMcpServers dropped — ACP agents do not expose MCP tooling from the client",
+        { names: Object.keys(config.stdioMcpServers) },
+      )
+    }
+    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
+      log.warn(
+        "ACP: mcpServers dropped — ACP agents do not expose MCP tooling from the client",
+        { names: Object.keys(config.mcpServers) },
+      )
+    }
+    if (config.appendSystemPrompt) {
+      log.warn(
+        "ACP: appendSystemPrompt dropped — ACP agents use their own system prompt pipeline",
+        { chars: config.appendSystemPrompt.length },
+      )
+    }
+
     try {
       // 1. Spawn transport
       this.transport = new AcpTransport()

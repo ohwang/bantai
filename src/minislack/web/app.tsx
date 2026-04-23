@@ -39,10 +39,23 @@ function Shell() {
   return (
     <div classList={{ shell: true, "shell-with-thread": !!ws.state.selectedThread }}>
       <header class="topbar">
-        <span class="team">{ws.state.team?.name ?? "minislack"}</span>
-        <span class="who">{currentUser()?.real_name || currentUser()?.name || ""}</span>
-        <button class="logout" type="button" onClick={() => session.logout()}>Log out</button>
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">m/</div>
+        </div>
+        <div class="top-center">
+          <span class="team">
+            <span class="dot" aria-hidden="true" />
+            {ws.state.team?.name ?? "minislack"}
+          </span>
+        </div>
+        <div class="top-right">
+          <span class="who">{currentUser()?.real_name || currentUser()?.name || ""}</span>
+          <button class="logout" type="button" onClick={() => session.logout()}>Log out</button>
+        </div>
       </header>
+      <nav class="rail" aria-label="Primary">
+        <button type="button" class="on" aria-label="Home" title="Home">⌂</button>
+      </nav>
       <Sidebar />
       <ChannelView />
       <Show when={ws.state.selectedThread}>

@@ -52,7 +52,7 @@ function buildOptions(): BackendOption[] {
     } else if (descriptor.id === "copilot") {
       models = ["claude-haiku-4.5", "gpt-5-mini", "gpt-4.1"]
     } else if (descriptor.id === "codex") {
-      models = ["gpt-5", "gpt-5-codex", "o4-mini"]
+      models = ["gpt-5.5", "gpt-5.5-pro", "gpt-5-codex", "gpt-5", "o4-mini"]
     } else if (descriptor.id === "mock") {
       models = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-6"]
     }

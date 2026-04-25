@@ -122,6 +122,14 @@ export function toCodexSandboxPolicy(
 }
 
 // ---------------------------------------------------------------------------
+// Default model — GPT-5.5 (released 2026-04-23). Codex CLI itself can fall
+// back to whatever model the binary considers default, but bantai pins this
+// explicitly so the choice is visible in trace logs and stable across CLI
+// upgrades.
+// ---------------------------------------------------------------------------
+export const CODEX_DEFAULT_MODEL = "gpt-5.5"
+
+// ---------------------------------------------------------------------------
 // Codex Adapter
 // ---------------------------------------------------------------------------
 
@@ -380,8 +388,14 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   async availableModels(): Promise<ModelInfo[]> {
-    // Codex doesn't expose a model list via the app-server protocol
+    // Codex doesn't expose a model list via the app-server protocol, so we
+    // ship a curated catalogue here. GPT-5.5 (released 2026-04-23) is listed
+    // first so it surfaces as the canonical recommendation.
     return [
+      { id: "gpt-5.5", name: "GPT-5.5", provider: "openai" },
+      { id: "gpt-5.5-pro", name: "GPT-5.5 Pro", provider: "openai" },
+      { id: "gpt-5-codex", name: "GPT-5 Codex", provider: "openai" },
+      { id: "gpt-5", name: "GPT-5", provider: "openai" },
       { id: "o3", name: "o3", provider: "openai" },
       { id: "o4-mini", name: "o4-mini", provider: "openai" },
       { id: "codex-mini-latest", name: "Codex Mini", provider: "openai" },
@@ -673,6 +687,7 @@ export class CodexAdapter extends BaseAdapter {
     }
 
     const sandboxPolicy = toCodexSandboxPolicy(this.config?.permissionMode)
+    const model = this.config?.model ?? CODEX_DEFAULT_MODEL
 
     const turnParams: CodexTurnStartParams = {
       threadId: this.threadId,
@@ -680,7 +695,7 @@ export class CodexAdapter extends BaseAdapter {
       approvalPolicy: toCodexApprovalPolicy(this.config?.permissionMode),
       ...(sandboxPolicy ? { sandboxPolicy } : {}),
       ...(applySystemPrompt ? { instructions: this.config!.systemPrompt } : {}),
-      ...(this.config?.model ? { model: this.config.model } : {}),
+      model,
       ...(this.config?.cwd ? { cwd: this.config.cwd } : {}),
     }
 

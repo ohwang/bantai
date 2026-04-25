@@ -27,6 +27,11 @@ export const MODEL_NAMES: Record<string, string> = {
   "claude-haiku-4.5": "Claude Haiku 4.5",
   "gpt-5-mini": "GPT-5 Mini",
   "gpt-4.1": "GPT-4.1",
+  // OpenAI GPT-5.5 family (Codex default as of 2026-04-23)
+  "gpt-5.5": "GPT-5.5",
+  "gpt-5.5-pro": "GPT-5.5 Pro",
+  "gpt-5-codex": "GPT-5 Codex",
+  "gpt-5": "GPT-5",
 }
 
 /** Model context window sizes (in tokens) for context usage calculation.
@@ -53,6 +58,14 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gemini-2.5-pro": 1_000_000,
   "gemini-2.5-flash": 1_000_000,
   "gemini-2.5-flash-lite": 1_000_000,
+  // OpenAI GPT-5 family. GPT-5.5 ships with a 1M API context window;
+  // when invoked through Codex the runtime caps it at 400K. We report the
+  // API-side maximum so context-usage math stays consistent across surfaces
+  // (Codex itself enforces its own ceiling internally).
+  "gpt-5.5": 1_000_000,
+  "gpt-5.5-pro": 1_000_000,
+  "gpt-5-codex": 400_000,
+  "gpt-5": 400_000,
 }
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000

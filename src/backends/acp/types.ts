@@ -7,6 +7,8 @@
  * Reference: https://agentclientprotocol.com/protocol/schema
  */
 
+import type { ConfigOptionType } from "../../protocol/types"
+
 // ---------------------------------------------------------------------------
 // Initialize
 // ---------------------------------------------------------------------------
@@ -116,7 +118,8 @@ export interface AcpConfigOption {
   name: string
   description?: string
   category?: string  // ACP spec: "mode" | "model" | "thought_level"
-  type: "string" | "boolean" | "enum" | "select"  // "select" is Copilot's alias for "enum"
+  // Cluster 11: shared with `ConfigOption.type` in protocol/types.ts.
+  type: ConfigOptionType
   value?: unknown
   currentValue?: unknown  // Copilot uses currentValue instead of value
   options?: AcpConfigOptionChoice[]  // for enum/select type

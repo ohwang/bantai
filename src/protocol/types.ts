@@ -1386,12 +1386,20 @@ export interface AgentSlashCommand {
   description?: string
 }
 
+/**
+ * Type tag for a `ConfigOption`. The same union also lives in the ACP
+ * boundary type; both consumers import this alias so the strings can't
+ * drift (Cluster 11). "select" is Copilot's alias for "enum"; the ACP
+ * boundary normalises it to "enum" on the way in.
+ */
+export type ConfigOptionType = "string" | "boolean" | "enum" | "select"
+
 /** Backend-agnostic config option — exposed by ACP agents, potentially other backends in the future */
 export interface ConfigOption {
   id: string
   name: string
   description?: string
-  type: "string" | "boolean" | "enum" | "select"  // "select" is Copilot's alias for "enum"
+  type: ConfigOptionType
   value: unknown
   choices?: { id: string; name: string; description?: string }[]
 }

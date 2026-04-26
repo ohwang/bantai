@@ -29,6 +29,16 @@ export type ThinkingConfig =
 export type { EffortLevel } from "./effort-levels"
 import type { EffortLevel } from "./effort-levels"
 
+/**
+ * Rate-limit bucket id. Closed enumeration lives in `protocol/rate-limits.ts`;
+ * this is a re-export so existing `import { RateLimitBucket } from
+ * "../protocol/types"` call sites keep working. New code should import from
+ * `protocol/rate-limits` directly when it also needs helpers
+ * (`isKnownRateLimitBucket`, `BUCKET_SLOT_STRATEGY`, etc.).
+ */
+export type { RateLimitBucket } from "./rate-limits"
+import type { RateLimitBucket } from "./rate-limits"
+
 // ---------------------------------------------------------------------------
 // Agent Events — unified stream from all backends
 // ---------------------------------------------------------------------------
@@ -462,15 +472,13 @@ export type BackendSpecificEvent = {
  */
 export type RateLimitUpdateEvent = {
   type: "rate_limit_update"
-  /** Which window this update describes. */
-  rateLimitType:
-    | "five_hour"
-    | "seven_day"
-    | "seven_day_opus"
-    | "seven_day_sonnet"
-    | "overage"
-    | "primary"
-    | "secondary"
+  /**
+   * Which window this update describes. The closed enumeration lives in
+   * `protocol/rate-limits.ts` (`RATE_LIMIT_BUCKETS`); using `RateLimitBucket`
+   * here keeps the wire shape, the validators in event-mappers, and the
+   * reducer's slot routing in lock-step (Cluster 9 — anti-drift sprint).
+   */
+  rateLimitType: RateLimitBucket
   /** Current status for this window. */
   status?: "allowed" | "allowed_warning" | "rejected"
   /** Fractional utilization in [0, 1]. Preferred over `surpassedThreshold`. */

@@ -19,6 +19,7 @@ import type {
 } from "./types"
 import { log } from "../utils/logger"
 import { stripImagePlaceholders } from "./text-utils"
+import { BUCKET_SLOT_STRATEGY } from "./rate-limits"
 
 /** Strip raw XML tags emitted by the SDK for local command output (e.g. /compact responses) */
 function stripSDKXmlTags(text: string): string {
@@ -1080,28 +1081,18 @@ export function reduce(
         windowDurationMins: event.windowDurationMins,
       }
       const rl = next.rateLimits ? { ...next.rateLimits } : {}
-      switch (event.rateLimitType) {
-        case "five_hour":
-          rl.fiveHour = entry
-          break
-        case "seven_day":
-        case "seven_day_opus":
-        case "seven_day_sonnet":
-          rl.sevenDay = entry
-          break
-        case "primary":
-          rl.primary = entry
-          break
-        case "secondary":
-          rl.secondary = entry
-          break
-        case "overage":
-          // Overage credits live alongside the primary 5h/7d window — we
-          // don't have a dedicated slot today, so stash them on `primary`
-          // unless a real primary entry already exists. Keeps the data
-          // reachable without reshaping RateLimits.
-          if (!rl.primary) rl.primary = entry
-          break
+      // Route the bucket → slot via the central strategy table (Cluster 9 —
+      // anti-drift sprint). Using `Record<RateLimitBucket, …>` here means
+      // adding a new bucket without a strategy is a compile error rather
+      // than a silently-dropped `default` branch.
+      const strategy = BUCKET_SLOT_STRATEGY[event.rateLimitType]
+      if (strategy.mode === "set") {
+        rl[strategy.slot] = entry
+      } else if (strategy.mode === "set-if-empty") {
+        // Used by the Claude `overage` window: only fill the target slot if
+        // it's currently empty so a real primary reading isn't clobbered by
+        // a secondary indicator.
+        if (!rl[strategy.slot]) rl[strategy.slot] = entry
       }
       next.rateLimits = rl
       return next

@@ -9,6 +9,7 @@
 import { log } from "../../utils/logger"
 import type { AgentEvent, ModelInfo, SDKMessageOrigin, TodoItem } from "../../protocol/types"
 import { extractUserMessageText } from "./jsonl-shapes"
+import { isKnownRateLimitBucket } from "../../protocol/rate-limits"
 
 // ---------------------------------------------------------------------------
 // TodoWrite tool_use -> todos_updated synthesis
@@ -999,13 +1000,13 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
       const info = (msg.rate_limit_info ?? {}) as Record<string, unknown>
       log.debug("Rate limit info", { data: info })
       const rateLimitType = info.rateLimitType
-      if (
-        rateLimitType === "five_hour" ||
-        rateLimitType === "seven_day" ||
-        rateLimitType === "seven_day_opus" ||
-        rateLimitType === "seven_day_sonnet" ||
-        rateLimitType === "overage"
-      ) {
+      // Validate against the central rate-limit bucket registry (Cluster 9).
+      // The Claude SDK currently emits five_hour / seven_day{,_opus,_sonnet} /
+      // overage; if it ever starts emitting `primary` / `secondary` (or any
+      // future codex-style id we've already declared), the registry check
+      // routes them through unchanged instead of silently demoting to
+      // `backend_specific` like the previous hand-rolled `||` chain did.
+      if (isKnownRateLimitBucket(rateLimitType)) {
         events.push({
           type: "rate_limit_update",
           rateLimitType,

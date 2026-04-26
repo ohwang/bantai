@@ -26,7 +26,7 @@
  */
 
 import { log } from "../../utils/logger"
-import type { AgentEvent, ModelInfo } from "../../protocol/types"
+import type { AgentEvent, ModelInfo, RateLimitBucket } from "../../protocol/types"
 import type { CodexFileChangeEntry, CodexMcpToolResult, CodexMcpToolError, CodexMcpContentBlock } from "./codex-types"
 
 // ---------------------------------------------------------------------------
@@ -369,7 +369,7 @@ export function mapCodexNotification(
 function codexWindowToBucket(
   windowDurationMins: number | undefined,
   slot: "primary" | "secondary",
-): "five_hour" | "seven_day" | "primary" | "secondary" {
+): RateLimitBucket {
   if (typeof windowDurationMins !== "number") return slot
   // 5 hours = 300 mins (±10%: 270–330)
   if (windowDurationMins >= 270 && windowDurationMins <= 330) return "five_hour"

@@ -69,6 +69,33 @@ The protocol layer is the load-bearing abstraction: **adding a frontend or backe
 - **Prefer framework primitives over custom logic.** Use OpenTUI / SolidJS / SDK / Bolt built-ins before writing manual workarounds. E.g. `stickyScroll={true}` + `stickyStart="bottom"` on `<scrollbox>` replaces 80+ lines of timer-based nudging; Bolt's built-in ack+respond pattern replaces hand-rolled event ordering.
 - **Cleanup must survive deletion.** When removing a variable/timer, grep for ALL references including `onCleanup`, Bolt `app.stop()`, and server shutdown hooks. A dangling reference there prevents `process.exit()` and silently breaks exit.
 
+### The drift-contract recipe (closed enumerations)
+
+A closed enumeration of values — backends, permission modes, effort levels, session states, output formats, rate-limit buckets — gets stored exactly **once**, in a typed array of descriptors next to the helpers that consume it. Anything else (a second `Set` "for validation", a comma-typed help string, a hand-rolled switch in some component) is drift. The qwen integration shipped with five live regressions of exactly this class; the anti-drift sprint (Sprint 1, commits `d08cfdd` → `9fda075`) collapsed them onto this recipe and you should keep using it.
+
+**The recipe:**
+
+1. **Source of truth = a typed array of descriptors** in one file. Not a union, not a `Set`. An array because you can iterate it; descriptors because you can attach behavior alongside the id.
+2. **Type derived from the array**: `type X = typeof X_REGISTRY[number]["id"]`. Removes the "two declarations" failure mode entirely.
+3. **Helpers next to the array**: `isKnownX(id)`, `knownXIds()`, `getXDescriptor(id)`, `listXForCli()`. Consumers import these — never the array directly, never a fresh literal.
+4. **Help text built at call-site**: `` `Choices: ${knownXIds().join(", ")}` `` rather than a string constant. Adding an entry updates every help message automatically.
+5. **Validators delegate**: zod becomes `z.string().refine(isKnownX)`; switches over the enum become `Record<X, V>` to get exhaustiveness from TS. The exhaustive-Record pattern is load-bearing — it's what catches missing cases at compile time so they can't ship as silent rendering bugs (live bug L5 was exactly this — a `switch (state)` that silently dropped two states into `default`).
+
+**Existing registries that follow the recipe** (use them as templates):
+
+| Concept | File | Live bug it caught |
+|---|---|---|
+| Backend ids | `src/protocol/registry.ts` (`BACKEND_REGISTRY`) | qwen integration — silent rejections in 3 files |
+| Permission modes | `src/protocol/permission-modes.ts` (`PERMISSION_MODES`, `cyclerPermissionModeIds()`) | TUI Shift-Tab cycler missing `dontAsk` (L3) |
+| Effort levels | `src/protocol/effort-levels.ts` (`EFFORT_LEVELS`, `RUNTIME_EFFORT_LEVELS`) | `/thinking max` accepted by validator while help said no (L6 / Codex caps) |
+| Session states | `src/protocol/session-state.ts` (`SESSION_STATES`, `STATE_LABELS`, `STATE_GLYPHS`, `STATE_SEVERITIES`) | Diagnostics panel rendering wrong color for INITIALIZING/SHUTTING_DOWN (L5) |
+| Backend session storage | `BackendDescriptor.sessionFile` (`listFromDisk`, `parseSummary`, `readBlocks`) | Multi-backend picker silently dropped qwen (L1) |
+| User JSONL parsing | `src/backends/claude/jsonl-shapes.ts` (`detectSyntheticReason`, `extractUserMessageText`) | `<command-name>` markers / compaction summaries leaked into live stream (L2) |
+
+**When a closed enumeration is genuinely a subset of a wider registry** (the canonical example is "Slack supports `claude` / `codex` / `gemini` but not `qwen` yet"), the same recipe applies one level out: define an explicit allowlist array, validate it against `isKnownX` at module-load time, and have the subset-aware code consume that allowlist. The Slack scoping work for backends is a tracked follow-up — see the "Slack scoping" note in the anti-drift backlog item.
+
+**When you reach for a hand-rolled `Set`, switch, or string literal of enum values, ask first:** is there a registry already? If yes, import the helper. If no, and the enumeration is closed, file it as a registry following this recipe before you write the second copy.
+
 ### TUI frontend (SolidJS + OpenTUI)
 
 - **SolidJS, not React.** Use `createSignal`, `createStore`, `createMemo`, `batch()`. No `useEffect`, `useState`, `useRef`.

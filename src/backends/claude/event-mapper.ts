@@ -8,6 +8,7 @@
 
 import { log } from "../../utils/logger"
 import type { AgentEvent, ModelInfo, SDKMessageOrigin, TodoItem } from "../../protocol/types"
+import { extractUserMessageText } from "./jsonl-shapes"
 
 // ---------------------------------------------------------------------------
 // TodoWrite tool_use -> todos_updated synthesis
@@ -936,29 +937,55 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
         log.debug("Suppressed synthetic user message", { uuid: msg.uuid })
         break
       } else {
-        // Replayed user message (resume/continue) — extract text content.
-        // During live operation the SDK doesn't echo user messages back,
-        // so this path only fires for historical replay.
+        // Replayed user message (resume/continue) — extract text content
+        // through the shared `extractUserMessageText` parser so the live
+        // event stream applies the same synthetic-turn filters the resume
+        // reader and follow-mode translator do (Cluster 2 / L2). Without
+        // this, `<command-name>` markers and post-compaction summaries
+        // leaked through as user turns — the same bug class the
+        // "user messages vanish on resume" regression memorialised.
         const content = msg.message?.content
-        let text = ""
-        if (typeof content === "string") {
-          text = content
-        } else if (Array.isArray(content)) {
-          text = content
-            .filter((c: any) => c.type === "text")
-            .map((c: any) => c.text)
-            .join("\n")
-        }
-        if (text) {
-          // SDK 0.2.112+ attaches `origin: SDKMessageOrigin` to both
-          // `SDKUserMessage` and `SDKUserMessageReplay`. Older transcripts
-          // omit the field entirely — treat that as plain human input
-          // (renderer falls back to no badge).
-          const origin = parseMessageOrigin(msg.origin)
-          const userEvent: AgentEvent = origin
-            ? { type: "user_message", text, origin }
-            : { type: "user_message", text }
-          events.push(userEvent)
+        const parsed = extractUserMessageText(content, {
+          isMeta: msg.isMeta,
+          uuid: msg.uuid,
+        })
+        switch (parsed.kind) {
+          case "text": {
+            // SDK 0.2.112+ attaches `origin: SDKMessageOrigin` to both
+            // `SDKUserMessage` and `SDKUserMessageReplay`. Older
+            // transcripts omit the field entirely — treat that as plain
+            // human input (renderer falls back to no badge).
+            const origin = parseMessageOrigin(msg.origin)
+            const userEvent: AgentEvent = origin
+              ? { type: "user_message", text: parsed.text, origin }
+              : { type: "user_message", text: parsed.text }
+            events.push(userEvent)
+            break
+          }
+          case "synthetic":
+            log.debug("Suppressed synthetic user replay", {
+              uuid: msg.uuid,
+              reason: parsed.reason,
+              prefix: parsed.prefix,
+            })
+            break
+          case "tool_result_only":
+            log.debug("User replay had only tool_result content — no text emitted", {
+              uuid: msg.uuid,
+            })
+            break
+          case "empty":
+            log.debug("User replay had no renderable text — skipping", {
+              uuid: msg.uuid,
+            })
+            break
+          case "unknown":
+            log.warn("Unrecognised user replay content shape", {
+              uuid: msg.uuid,
+              contentType: parsed.contentType,
+              snippet: parsed.snippet,
+            })
+            break
         }
       }
       break

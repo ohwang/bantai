@@ -1254,6 +1254,84 @@ describe("Claude Event Mapper — mapSDKMessage", () => {
       expect(events).toHaveLength(0)
     })
 
+    // -----------------------------------------------------------------
+    // L2 regression — synthetic-turn filtering on the live replay path
+    //
+    // Before the Cluster 2 refactor, this branch reimplemented user-content
+    // parsing inline without `detectSyntheticReason`, so post-compaction
+    // summaries and `<command-name>` markers leaked through as user turns.
+    // The fix routes the live replay path through `extractUserMessageText`
+    // — same parser used by session-reader.ts and follow/event-from-jsonl.ts.
+    // -----------------------------------------------------------------
+
+    it("does NOT emit user_message for a <command-name> marker (L2 regression)", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          message: {
+            content: "<command-name>/help</command-name>",
+          },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(0)
+    })
+
+    it("does NOT emit user_message for a compaction summary (L2 regression)", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          message: {
+            content:
+              "This session is being continued from a previous conversation that ran out of context.",
+          },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(0)
+    })
+
+    it("does NOT emit user_message for a <local-command-stdout> wrapper (L2 regression)", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          message: {
+            content: [
+              { type: "text", text: "<local-command-stdout>some stdout</local-command-stdout>" },
+            ],
+          },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(0)
+    })
+
+    it("does NOT emit user_message when isMeta is set on the SDK envelope", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          isMeta: true,
+          message: { content: "any text at all" },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(0)
+    })
+
+    it("still emits user_message for a real user prompt that happens to mention a marker word", () => {
+      // Sanity: the synthetic check is prefix-anchored, so a prompt that
+      // merely contains `<command-name>` mid-text isn't filtered.
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          message: { content: "explain what <command-name> markers do" },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      expect((events[0] as any).type).toBe("user_message")
+    })
+
     // ---------------------------------------------------------------------
     // SDK 0.2.112+ message origin propagation
     // ---------------------------------------------------------------------

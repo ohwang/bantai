@@ -42,6 +42,17 @@ import type {
   ToolStatus,
 } from "../../protocol/types"
 import { synthesizeTodosUpdatedEvent } from "./event-mapper"
+import {
+  detectSyntheticReason,
+  extractUserMessageText,
+  safeStringifySnippet,
+  type SyntheticReason,
+} from "./jsonl-shapes"
+
+// Re-export for backwards compatibility — `detectSyntheticReason` is
+// imported by name from this module by `follow/event-from-jsonl.ts`.
+export { detectSyntheticReason }
+export type { SyntheticReason }
 
 /** Encode a cwd path to the Claude project directory key format */
 function encodeProjectKey(cwd: string): string {
@@ -63,139 +74,11 @@ function stripImagePlaceholders(text: string): string {
     .trim()
 }
 
-// ---------------------------------------------------------------------------
-// Synthetic-turn detection
-//
-// Claude Code emits several kinds of user-role turns that are not actual user
-// input: compaction summaries, slash-command markers, and caveats attached to
-// local-command output. Rendering these in the transcript would be noise, but
-// silently dropping them caused the "user messages missing on resume" bug —
-// so we detect them explicitly and log the skip instead of dropping blindly.
-// ---------------------------------------------------------------------------
-
-export type SyntheticReason =
-  | "compaction_summary"
-  | "slash_command_marker"
-  | "local_command_caveat"
-  | "local_command_stdout"
-  | "local_command_stderr"
-  | "meta_flag"
-
-const SYNTHETIC_PREFIXES: ReadonlyArray<{ prefix: string; reason: SyntheticReason }> = [
-  { prefix: "This session is being continued from a previous conversation", reason: "compaction_summary" },
-  { prefix: "<command-name>", reason: "slash_command_marker" },
-  { prefix: "<command-message>", reason: "slash_command_marker" },
-  { prefix: "<command-args>", reason: "slash_command_marker" },
-  { prefix: "<local-command-caveat>", reason: "local_command_caveat" },
-  { prefix: "<local-command-stdout>", reason: "local_command_stdout" },
-  { prefix: "<local-command-stderr>", reason: "local_command_stderr" },
-]
-
-/**
- * Detect whether a user-role JSONL entry is an SDK-synthesised turn rather
- * than real user input.
- *
- * Exported so follow-mode's translator can reuse the exact same rules the
- * resume reader uses — duplicating this detection is how "user messages
- * vanished on resume" shipped. If you're adding another JSONL consumer,
- * call this instead of reimplementing the prefix checks.
- */
-export function detectSyntheticReason(
-  text: string,
-  entry: { isMeta?: boolean },
-): SyntheticReason | null {
-  if (entry.isMeta) return "meta_flag"
-  const leading = text.trimStart()
-  for (const { prefix, reason } of SYNTHETIC_PREFIXES) {
-    if (leading.startsWith(prefix)) return reason
-  }
-  return null
-}
-
-// ---------------------------------------------------------------------------
-// User message content extraction
-//
-// `message.content` is `string | Array<ContentBlockParam>` per the SDK types.
-// Both forms appear in real session files. This helper normalises them into a
-// small discriminated union so the main loop handles every outcome explicitly
-// — and we never silently drop an unexpected shape.
-// ---------------------------------------------------------------------------
-
-type UserContentParseResult =
-  | { kind: "text"; text: string }
-  | { kind: "synthetic"; reason: SyntheticReason; prefix: string }
-  | { kind: "tool_result_only" }
-  | { kind: "empty" }
-  | { kind: "unknown"; contentType: string; snippet: string }
-
-function extractUserMessageText(
-  content: unknown,
-  entry: { isMeta?: boolean; uuid?: string },
-): UserContentParseResult {
-  // String shorthand form — used by Claude Code for compaction summaries,
-  // slash-command markers, and local-command wrappers. Real typed user input
-  // can also take this form when the SDK feeds it back verbatim.
-  if (typeof content === "string") {
-    const reason = detectSyntheticReason(content, entry)
-    if (reason) {
-      return {
-        kind: "synthetic",
-        reason,
-        prefix: content.slice(0, 40),
-      }
-    }
-    const trimmed = content.trim()
-    if (!trimmed) return { kind: "empty" }
-    return { kind: "text", text: trimmed }
-  }
-
-  if (Array.isArray(content)) {
-    // Block-array form. Extract text; ignore tool_result/image by design.
-    let text = ""
-    let sawText = false
-    let sawToolResult = false
-    for (const block of content) {
-      if (!block || typeof block !== "object") continue
-      switch (block.type) {
-        case "text":
-          if (typeof block.text === "string") {
-            text += (text ? "\n" : "") + block.text
-            sawText = true
-          }
-          break
-        case "tool_result":
-          sawToolResult = true
-          break
-        case "image":
-          // Intentionally skipped — see "Note on images" above.
-          break
-        default:
-          // Unknown block type — log so we notice protocol additions before
-          // they turn into a silent drop.
-          log.warn("Unknown user content block type in session file", {
-            uuid: entry.uuid,
-            blockType: typeof block.type === "string" ? block.type : typeof block.type,
-          })
-          break
-      }
-    }
-    if (sawText && text.trim()) {
-      const reason = detectSyntheticReason(text, entry)
-      if (reason) {
-        return { kind: "synthetic", reason, prefix: text.slice(0, 40) }
-      }
-      return { kind: "text", text }
-    }
-    if (sawToolResult) return { kind: "tool_result_only" }
-    return { kind: "empty" }
-  }
-
-  return {
-    kind: "unknown",
-    contentType: content === null ? "null" : typeof content,
-    snippet: safeStringifySnippet(content),
-  }
-}
+// Synthetic-turn detection (`detectSyntheticReason`) and user-message
+// content extraction (`extractUserMessageText`) used to live here. Both are
+// now hoisted into `jsonl-shapes.ts` so the SDK adapter, this resume reader,
+// and the follow-mode translator share one implementation. See Cluster 2 / L2
+// in the anti-drift sprint.
 
 /** Normalise assistant `message.content` into the array shape the main loop expects.
  *  Returns null if the content is missing/unrecognised (and logs a warning —
@@ -225,14 +108,7 @@ function normaliseAssistantContent(
   return null
 }
 
-function safeStringifySnippet(value: unknown): string {
-  try {
-    const s = JSON.stringify(value)
-    return s.length > 120 ? s.slice(0, 117) + "..." : s
-  } catch {
-    return String(value).slice(0, 120)
-  }
-}
+// `safeStringifySnippet` is hoisted into `jsonl-shapes.ts` (Cluster 2 / L2).
 
 /** Read a session JSONL file and convert to blocks + summary for conversation display.
  *

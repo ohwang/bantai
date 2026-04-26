@@ -213,45 +213,46 @@ export class CodexAdapter extends BaseAdapter {
    * restrictions. If the sandbox blocks .git writes, approval is irrelevant.
    */
   capabilities(): BackendCapabilities {
+    // Cluster 8: build modeDetails from a per-backend default + per-mode
+    // overrides. Two of Codex's four modes ("bypassPermissions" /
+    // "dontAsk") were character-for-character identical except for the
+    // key — that copy/paste is what the sprint's "spread + override"
+    // pattern eliminates. The default sandboxed shape (workspace-write)
+    // applies to "default" and "acceptEdits" verbatim except for the
+    // caveat string.
+    const SANDBOXED_DEFAULT = {
+      writableScope: "repo working tree (excludes .git)",
+      protectedPaths: ".git (read-only in workspace-write sandbox)",
+      commandApproval: "always",
+      editApproval: "always",
+      networkAccess: "restricted",
+      separateSandbox: true,
+    } as const
+    const FULL_ACCESS = {
+      writableScope: "everything (dangerFullAccess)",
+      protectedPaths: "none",
+      commandApproval: "never",
+      editApproval: "never",
+      networkAccess: "unrestricted",
+      separateSandbox: false,
+      caveats: "Disables both approval prompts AND the sandbox entirely.",
+    } as const
+
     const sandboxInfo: SandboxInfo = {
       statusHint: "sandbox: .git read-only",
       modeDetails: {
         default: {
-          writableScope: "repo working tree (excludes .git)",
-          protectedPaths: ".git (read-only in workspace-write sandbox)",
-          commandApproval: "always",
-          editApproval: "always",
-          networkAccess: "restricted",
-          separateSandbox: true,
-          caveats: "Approving a command does not override sandbox restrictions. git commit/push will fail.",
+          ...SANDBOXED_DEFAULT,
+          caveats:
+            "Approving a command does not override sandbox restrictions. git commit/push will fail.",
         },
         acceptEdits: {
-          writableScope: "repo working tree (excludes .git)",
-          protectedPaths: ".git (read-only in workspace-write sandbox)",
-          commandApproval: "always",
-          editApproval: "always",
-          networkAccess: "restricted",
-          separateSandbox: true,
-          caveats: "Codex still prompts for file changes (no native acceptEdits). Sandbox blocks .git writes.",
+          ...SANDBOXED_DEFAULT,
+          caveats:
+            "Codex still prompts for file changes (no native acceptEdits). Sandbox blocks .git writes.",
         },
-        bypassPermissions: {
-          writableScope: "everything (dangerFullAccess)",
-          protectedPaths: "none",
-          commandApproval: "never",
-          editApproval: "never",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
-          caveats: "Disables both approval prompts AND the sandbox entirely.",
-        },
-        dontAsk: {
-          writableScope: "everything (dangerFullAccess)",
-          protectedPaths: "none",
-          commandApproval: "never",
-          editApproval: "never",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
-          caveats: "Disables both approval prompts AND the sandbox entirely.",
-        },
+        bypassPermissions: { ...FULL_ACCESS },
+        dontAsk: { ...FULL_ACCESS },
       },
     }
 

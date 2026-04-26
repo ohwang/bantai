@@ -281,59 +281,50 @@ export class ClaudeAdapter implements AgentBackend {
    * Network: Unrestricted (no network sandbox).
    */
   capabilities(): BackendCapabilities {
+    // Cluster 8: derive modeDetails from a backend-default shape + per-
+    // mode overrides. Six near-identical blocks here used to repeat the
+    // same `writableScope` / `protectedPaths` / `networkAccess` /
+    // `separateSandbox` strings; the only fields that actually vary are
+    // `commandApproval`, `editApproval`, and (sometimes) `caveats`.
+    const DEFAULT_MODE_DETAIL = {
+      writableScope: "cwd + allowed directories",
+      protectedPaths: "none (all in-scope paths equal)",
+      commandApproval: "always",
+      editApproval: "always",
+      networkAccess: "unrestricted",
+      separateSandbox: false,
+    } as const
     const sandboxInfo: SandboxInfo = {
       statusHint: "approvals only, no sandbox",
       modeDetails: {
-        default: {
-          writableScope: "cwd + allowed directories",
-          protectedPaths: "none (all in-scope paths equal)",
-          commandApproval: "always",
-          editApproval: "always",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
-        },
-        acceptEdits: {
-          writableScope: "cwd + allowed directories",
-          protectedPaths: "none (all in-scope paths equal)",
-          commandApproval: "always",
-          editApproval: "never",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
-        },
+        default: { ...DEFAULT_MODE_DETAIL },
+        acceptEdits: { ...DEFAULT_MODE_DETAIL, editApproval: "never" },
         bypassPermissions: {
-          writableScope: "cwd + allowed directories",
-          protectedPaths: "none (all in-scope paths equal)",
+          ...DEFAULT_MODE_DETAIL,
           commandApproval: "never",
           editApproval: "never",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
         },
         plan: {
+          ...DEFAULT_MODE_DETAIL,
           writableScope: "none (read-only)",
           protectedPaths: "all (no writes allowed)",
           commandApproval: "never",
           editApproval: "never",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
           caveats: "Read-only mode: no file edits or shell commands",
         },
         dontAsk: {
-          writableScope: "cwd + allowed directories",
-          protectedPaths: "none (all in-scope paths equal)",
+          ...DEFAULT_MODE_DETAIL,
           commandApproval: "per-tool-rules",
           editApproval: "per-tool-rules",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
-          caveats: "No prompts ever — tools not covered by an allowlist rule are denied.",
+          caveats:
+            "No prompts ever — tools not covered by an allowlist rule are denied.",
         },
         auto: {
-          writableScope: "cwd + allowed directories",
-          protectedPaths: "none (all in-scope paths equal)",
+          ...DEFAULT_MODE_DETAIL,
           commandApproval: "per-tool-rules",
           editApproval: "per-tool-rules",
-          networkAccess: "unrestricted",
-          separateSandbox: false,
-          caveats: "Model classifier judges each request; low-confidence calls still surface a prompt.",
+          caveats:
+            "Model classifier judges each request; low-confidence calls still surface a prompt.",
         },
       },
     }

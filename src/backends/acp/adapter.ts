@@ -254,26 +254,50 @@ export class AcpAdapter extends BaseAdapter {
       o => o.category === "thought_level" || o.id === "thinking" || o.name.toLowerCase().includes("thinking") || o.name.toLowerCase().includes("effort"),
     )
 
+    // Cluster 8: ACP only fills 2 of 6 modes — every other mode used to
+    // surface as `undefined` if the UI tried to read its detail. Build
+    // them from a shared default so the picker can render an honest
+    // "agent-determined" hint for every mode the user can switch into.
+    const ACP_DEFAULT_MODE_DETAIL = {
+      writableScope: "agent-determined",
+      protectedPaths: "agent-determined",
+      commandApproval: "always" as const,
+      editApproval: "always" as const,
+      networkAccess: "unknown" as const,
+      separateSandbox: false,
+      caveats:
+        "Sandbox enforcement is agent-specific and not visible to the client.",
+    }
     const sandboxInfo: SandboxInfo = {
       statusHint: "agent-managed permissions",
       modeDetails: {
-        default: {
-          writableScope: "agent-determined",
-          protectedPaths: "agent-determined",
-          commandApproval: "always",
-          editApproval: "always",
-          networkAccess: "unknown",
-          separateSandbox: false,
-          caveats: "Sandbox enforcement is agent-specific and not visible to the client.",
-        },
-        bypassPermissions: {
-          writableScope: "agent-determined",
-          protectedPaths: "agent-determined",
+        default: { ...ACP_DEFAULT_MODE_DETAIL },
+        acceptEdits: { ...ACP_DEFAULT_MODE_DETAIL, editApproval: "never" },
+        plan: {
+          ...ACP_DEFAULT_MODE_DETAIL,
           commandApproval: "never",
           editApproval: "never",
-          networkAccess: "unknown",
-          separateSandbox: false,
-          caveats: "Agent may still enforce its own restrictions regardless of mode.",
+          caveats:
+            "Read-only intent — actual enforcement is agent-specific.",
+        },
+        bypassPermissions: {
+          ...ACP_DEFAULT_MODE_DETAIL,
+          commandApproval: "never",
+          editApproval: "never",
+          caveats:
+            "Agent may still enforce its own restrictions regardless of mode.",
+        },
+        dontAsk: {
+          ...ACP_DEFAULT_MODE_DETAIL,
+          commandApproval: "never",
+          editApproval: "never",
+          caveats:
+            "Never prompt — agent-side allowlist (if any) decides.",
+        },
+        auto: {
+          ...ACP_DEFAULT_MODE_DETAIL,
+          caveats:
+            "Agent classifier (if any) decides per request — sandbox enforcement is agent-specific.",
         },
       },
     }

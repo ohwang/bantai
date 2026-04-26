@@ -312,6 +312,73 @@ Three `store_path` modes:
 
 The example at the top of this doc sets `store_path: "~/.bantai/slack.db"` explicitly — that's equivalent to omitting the key today, but kept in the sample so operators who want to move the file know which knob to change.
 
+## Persistent storage in ephemeral environments
+
+`store_path` keeps the registry safe, but it is only one of four
+directories the bot writes to. Each backend SDK has its own native
+session format on disk, plus the bot's own `~/.bantai/` for logs,
+attachments, and the admin token:
+
+| Path             | What lives there                                                                  | Lost if ephemeral?                                          |
+|------------------|-----------------------------------------------------------------------------------|-------------------------------------------------------------|
+| `~/.bantai/`     | `slack.db` (registry), `logs/<session-id>.log`, `slack-attachments/`, admin token | Live thread mappings, audit trail, attachments              |
+| `~/.claude/`     | `projects/<encoded-cwd>/<session-id>.jsonl` (Claude SDK transcript)               | Claude resume — no transcript on disk means a fresh session |
+| `~/.codex/`      | `sessions/YYYY/MM/DD/rollout-*.jsonl` (Codex SDK transcript)                      | Codex resume                                                |
+| `~/.gemini/`     | `tmp/<encoded-cwd>/chats/session-*.json`, `projects.json`                         | Gemini resume                                               |
+
+If you run the bot on bare metal or a long-lived VM, `$HOME` survives
+restarts and there is nothing to do. If you run it in a container,
+serverless runtime, or anywhere the filesystem is reset on
+deploy / crash, every directory above needs to live on durable
+storage. The SQLite registry alone is not enough — without the SDK
+transcripts the registry's session ids point at sessions the backend
+no longer knows about, and threads come back empty on the next
+message.
+
+The recommended pattern is to mount one durable volume into the
+container and `ln -sfn` each home directory at it inside the image:
+
+```
+/persistent/                          ← bind-mount of a durable volume
+└── workspaces/<slack-team-id>/
+    ├── bantai-home/                  ← target of ~/.bantai
+    ├── claude-home/                  ← target of ~/.claude
+    ├── codex-home/                   ← target of ~/.codex
+    └── gemini-home/                  ← target of ~/.gemini
+```
+
+Why a `<slack-team-id>` subdir and not the workspace root: this gives
+each Slack workspace its own state when one host runs more than one
+bot, with no application change. For a single-workspace deployment
+the team-id directory is just one extra level — harmless.
+
+`ln -sfn` (not `ln -s`) is intentional: it overwrites a stale link
+without dereferencing it, so image rebuilds are idempotent. The SDKs
+keep their native cwd-encoding, date-stamping, and JSONL conventions
+untouched — only the bytes physically land on the volume.
+
+A worked example using a DigitalOcean Volume + docker-compose lives
+under `infra/bantai/` in the
+[cringle.ai monorepo](https://github.com/ohwxyz/cringle.ai); the
+relevant pieces are the `volumes:` clause in `docker-compose.yml`,
+the `--- Persistent volume symlinks ---` block at the bottom of
+`Dockerfile`, and the host-side mountpoint in `terraform`/`pulumi`.
+Adapt the same shape for whatever your environment provides
+(Kubernetes PVC, AWS EBS, GCP Persistent Disk, an NFS share, …).
+
+Two operational notes:
+
+- **Snapshot the volume.** Whatever durable-storage product you pick
+  almost certainly offers point-in-time snapshots; turn them on. The
+  bot writes JSONL transcripts continuously and there is no
+  application-level "save" event to trigger a backup.
+- **Health-check the symlinks.** A healthcheck that verifies each
+  `~/.<backend>` resolves into the mount catches the worst failure
+  mode early — the container starts fine, writes to its own ephemeral
+  overlay because the mount is missing, and quietly loses every new
+  session at the next restart. The compose example above uses a
+  `readlink -f` + `case` shell test for this.
+
 ## Follow mode (experimental)
 
 `bantai follow <session-id>` opens the regular TUI as a read-only observer over a live session — typically one being driven from Slack on the same host. Every turn, tool call, and assistant message streams into the terminal as it lands in the Claude JSONL on disk. You cannot type, interrupt, approve tool use, or touch the session in any way — all interaction still happens in the originating frontend.

@@ -291,6 +291,11 @@ describe("resolveFlags", () => {
       const result = resolveFlags({ effort: "max" })
       expect(result.config.effort).toBe("max")
     })
+
+    it("accepts xhigh effort (advertised in --help)", () => {
+      const result = resolveFlags({ effort: "xhigh" })
+      expect(result.config.effort).toBe("xhigh")
+    })
   })
 
   // -----------------------------------------------------------------------

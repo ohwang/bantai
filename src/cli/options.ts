@@ -184,10 +184,16 @@ export function resolveFlags(
   // Effort
   if (opts.effort !== undefined) {
     const val = opts.effort as string
-    if (val === "low" || val === "medium" || val === "high" || val === "max") {
+    if (
+      val === "low" ||
+      val === "medium" ||
+      val === "high" ||
+      val === "xhigh" ||
+      val === "max"
+    ) {
       config.effort = val
     } else {
-      console.error("Error: --effort must be low, medium, high, or max")
+      console.error("Error: --effort must be low, medium, high, xhigh, or max")
       process.exit(1)
     }
   }

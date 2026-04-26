@@ -1,3 +1,30 @@
+<!--
+  AGENTS.md is the canonical project doc; CLAUDE.md is a symlink to it.
+
+  Sections marked DERIVED are facts mirrored from code or descriptor
+  registries. When you add or remove an entry in the underlying source,
+  update the doc to match (or, better, replace the hand-list with a link to
+  the helper). `bun run docs:check` grep-asserts the highest-risk facts.
+
+  Sections marked PROSE are rules and postmortems. Edit freely; just keep
+  rules one sentence, with deeper-dive prose linked into `docs/` rather than
+  inlined.
+
+  | Section                            | Kind    | Source of truth                                  |
+  | ---------------------------------- | ------- | ------------------------------------------------ |
+  | Quick Start                        | PROSE   | -                                                |
+  | Build Requirements                 | PROSE   | -                                                |
+  | Tech Stack                         | PROSE   | `package.json`                                   |
+  | Architecture                       | DERIVED | `src/protocol/registry.ts` + the layout on disk  |
+  | Cross-cutting / TUI / Slack rules  | PROSE   | -                                                |
+  | The drift-contract recipe          | PROSE   | -                                                |
+  | TUI — OpenTUI Prop Rules           | PROSE   | `scripts/lint-opentui.sh` enforces a subset      |
+  | Project Structure                  | DERIVED | the actual layout on disk                        |
+  | State Machine                      | DERIVED | `src/protocol/session-state.ts` (`SESSION_STATES`) |
+  | Testing                            | PROSE   | -                                                |
+  | Logging                            | PROSE   | `src/utils/logger.ts`                            |
+-->
+
 # bantai
 
 Multi-surface UI for agentic coding backends. Decoupled from any single coding agent (Claude Code, Codex, ACP, …) from any single surface — today the same agent runs in a local TUI and in a Slack workspace, driven by the same protocol and event stream.
@@ -27,14 +54,14 @@ See `docs/slack-setup.md` for the real-workspace walkthrough and `docs/minislack
 
 - Bun ≥ 1.3.11 (OpenTUI's Zig FFI bindings require Bun; no Node.js support).
 - `bunfig.toml` must include `preload = ["@opentui/solid/preload"]` (Babel plugin for SolidJS JSX).
-- Run with `--conditions=browser` (already set in every `package.json` script and in `bin/bantai` / `bin/bantai-slack`).
+- Run with `--conditions=browser` (already set in every `package.json` script and in `bin/bantai` / `bin/bantai-storybook`).
 
 ## Tech Stack
 
-- Bun + TypeScript (strict, `tsc --noEmit` must pass.
+- Bun + TypeScript (strict; `tsc --noEmit` must pass).
 - **TUI frontend:** OpenTUI + SolidJS via `@opentui/solid` (NOT React).
 - **Slack frontend:** `@slack/bolt` (Socket Mode) + `@slack/web-api`.
-- **Backends:** `@anthropic-ai/claude-agent-sdk` (track latest), `@openai/codex-sdk`, ACP over JSON-RPC, and an in-process mock.
+- **Backends:** `@anthropic-ai/claude-agent-sdk` (track latest), `@openai/codex-sdk`, ACP over JSON-RPC (Gemini, Qwen, GitHub Copilot, generic), and an in-process mock. Authoritative list: `BACKEND_REGISTRY` in `src/protocol/registry.ts`.
 - **Everything else:** `commander` (CLI), `zod` (config schemas), `fuzzysort` (file/session search), `jsonc-parser` (configs with comments).
 
 ## Architecture
@@ -43,13 +70,13 @@ Three layers, strictly ordered:
 
 1. **CLI Entry Point** (`src/index.ts`, `src/cli/`) — Commander-based subcommand dispatch.
    - `bantai [prompt]` → TUI (default backend)
-   - `bantai claude|codex|gemini [prompt]` → TUI with a specific backend
+   - `bantai <id> [prompt]` → TUI with a specific backend, where `<id>` is any backend with `exposeAsCliSubcommand: true` in `BACKEND_REGISTRY` (today: `claude`, `codex`, `gemini`, `qwen`). `bantai --help` prints the live list.
    - `bantai run <message…>` → headless one-shot
    - `bantai resume [id]` / `bantai continue` → session resume
-   - `bantai slack` / `bantai slack doctor` / `bantai slack init-manifest` → Slack server
+   - `bantai slack` / `bantai slack doctor` / `bantai slack init-manifest` / `bantai slack monitor` → Slack server + observability TUI
    - `bantai minislack` → local fake Slack
-2. **Frontends** (`src/frontends/<name>/`) — each owns its own presentation + transport and exposes a `launch<Name>(flags)` entry point. Today: `tui/` (interactive terminal, default) and `slack/` (bot/server). Nothing in the protocol or backend layer depends on a specific frontend.
-3. **Agent Protocol Layer** (`src/protocol/`) — unified `AgentBackend` interface, `AgentEvent` stream, `ConversationState`, and the `reduce(state, event) -> newState` reducer. Backends (`src/backends/{claude,codex,acp,mock}/`) implement this; frontends consume it.
+2. **Frontends** (`src/frontends/<name>/`) — each owns its own presentation + transport and exposes a `launch<Name>(flags)` entry point. Today: `tui/` (interactive terminal, default), `slack/` (bot/server), `slack-monitor/` (admin TUI). Nothing in the protocol or backend layer depends on a specific frontend.
+3. **Agent Protocol Layer** (`src/protocol/`) — unified `AgentBackend` interface, `AgentEvent` stream, `ConversationState`, the `reduce(state, event) -> newState` reducer, plus the descriptor registries for backends, permission modes, effort levels, session states, rate-limit buckets, and capabilities. Backend adapters live under `src/backends/{acp,claude,codex,follow,mock,shared}/`; `follow/` is the read-only adapter that tails an existing session file, `shared/` holds the cross-backend base adapter.
 
 The protocol layer is the load-bearing abstraction: **adding a frontend or backend means implementing the relevant side of this contract — never forking reducer or event semantics.**
 
@@ -62,10 +89,7 @@ The protocol layer is the load-bearing abstraction: **adding a frontend or backe
 - **Test contracts, not implementations.** Adapter contract tests validate event ordering and lifecycle rules (see §Testing).
 - **One concern per file.** Size is a proxy for cohesion, not a rule. Target ~800 lines, hard cap ~1200; past that, justify in a top-of-file comment or split. Exempt: type/schema specs, vendored code, generated code.
 - **No Effect.js, no metaprogramming, no deep inheritance.** Plain TypeScript; factory functions for service construction; explicit over clever.
-- **Never silently drop data from an external source.** SDK events, session JSONL, MCP payloads, ACP notifications, Slack events, user config — every skip path MUST log, every unrecognised shape MUST `log.warn`. A bare `break` / `continue` / `return []` / `if (!expected) break` on external data is a bug. Concretely:
-  - **Event mappers** (`src/backends/*/event-mapper.ts`): every SDK/ACP message branch either maps to an `AgentEvent` or logs. Intentional suppressions (per-delta items whose content arrives via `*_delta` events) use `log.debug`. Unknown types/subtypes and "expected field missing" cases use `log.warn` — these are the signals that a provider's protocol drifted.
-  - **Session-file parsers** (`src/backends/claude/session-reader.ts`, `src/session/cross-backend.ts`): the SDK types `MessageParam.content` as `string | Array<ContentBlockParam>`, and both forms appear in real JSONL. Handle both; when neither, `log.warn` with a snippet. Synthetic SDK-injected turns (compaction summaries, `<command-name>` slash markers, `<local-command-*>` wrappers, `isMeta: true`) are suppressed with `log.debug` that names the reason — not bare-drops. The "user messages vanish on resume" regression was exactly this bug. When in doubt, normalise the shape (e.g. upgrade a string to `[{ type: "text", text }]`) before the main loop rather than branching mid-loop.
-  - **`as any` / `unknown` escape hatches**: if you reach for `as any`, you owe either a runtime check (with a log on the unexpected branch) or a tight narrowed type. "It's probably fine" is how this class of bug ships.
+- **Never silently drop data from an external source.** SDK events, session JSONL, MCP payloads, ACP notifications, Slack events, user config — every skip path MUST log; unrecognised shapes use `log.warn`, intentional suppressions use `log.debug` with a named reason. A bare `break` / `continue` / `return []` / `if (!expected) break` on external data is a bug. Deep dive + postmortems: [`docs/external-data-handling.md`](docs/external-data-handling.md).
 - **Prefer framework primitives over custom logic.** Use OpenTUI / SolidJS / SDK / Bolt built-ins before writing manual workarounds. E.g. `stickyScroll={true}` + `stickyStart="bottom"` on `<scrollbox>` replaces 80+ lines of timer-based nudging; Bolt's built-in ack+respond pattern replaces hand-rolled event ordering.
 - **Cleanup must survive deletion.** When removing a variable/timer, grep for ALL references including `onCleanup`, Bolt `app.stop()`, and server shutdown hooks. A dangling reference there prevents `process.exit()` and silently breaks exit.
 
@@ -89,6 +113,8 @@ A closed enumeration of values — backends, permission modes, effort levels, se
 | Permission modes | `src/protocol/permission-modes.ts` (`PERMISSION_MODES`, `cyclerPermissionModeIds()`) | TUI Shift-Tab cycler missing `dontAsk` (L3) |
 | Effort levels | `src/protocol/effort-levels.ts` (`EFFORT_LEVELS`, `RUNTIME_EFFORT_LEVELS`) | `/thinking max` accepted by validator while help said no (L6 / Codex caps) |
 | Session states | `src/protocol/session-state.ts` (`SESSION_STATES`, `STATE_LABELS`, `STATE_GLYPHS`, `STATE_SEVERITIES`) | Diagnostics panel rendering wrong color for INITIALIZING/SHUTTING_DOWN (L5) |
+| Rate-limit buckets | `src/protocol/rate-limits.ts` (`RATE_LIMIT_BUCKETS`) | — |
+| Output formats | `src/cli/options.ts` (`OUTPUT_FORMATS`) | — |
 | Backend session storage | `BackendDescriptor.sessionFile` (`listFromDisk`, `parseSummary`, `readBlocks`) | Multi-backend picker silently dropped qwen (L1) |
 | User JSONL parsing | `src/backends/claude/jsonl-shapes.ts` (`detectSyntheticReason`, `extractUserMessageText`) | `<command-name>` markers / compaction summaries leaked into live stream (L2) |
 
@@ -108,15 +134,17 @@ A closed enumeration of values — backends, permission modes, effort levels, se
 ### Slack frontend (`@slack/bolt` + Web API)
 
 - **The pipeline is fixed; add to it, don't bypass it.** Round trip is: `transport/events` → `inbox/{dedup,gate,debouncer,turn-builder}` → `routing.ts` → `router/{resolver,registry}` → `SessionHost.send` → backend `AgentEvent` stream → `view/event-renderer` → Slack Web API. New features slot into one of these stages; don't post to Slack from anywhere else.
-- **Agent reply bodies go through `markdownText`, not `text`.** `OutboundPostArgs` / `OutboundUpdateArgs` are a discriminated union — a send carries EITHER Slack mrkdwn (`text`) or raw GitHub-flavoured markdown (`markdownText`), never both (Slack rejects the combination with `markdown_text_conflict`). The outbox (`view/outbox.ts`) sends `markdownText` so tables, fenced code, headers, and task lists render natively via Slack's `markdown_text` wire field (12k-char limit, not the 3k mrkdwn limit). When `blocks` are attached alongside `markdownText`, `send-adapter.ts` prepends a leading `{ type: "markdown" }` block so a single payload carries both the rich body and the interactive actions. Short system copy (banners, approvals, elicitation prompts, config-reload notices) stays on the `text:` path with `view/format.ts`'s `markdownToSlackMrkdwn` conversion so `<@U…>` / `<!date^…>` / `<#C…>` affordances keep rendering — but `markdownToSlackMrkdwn` / `markdownToSlackMrkdwnChunks` / `normalizeSlackOutboundText` are now `@deprecated` for agent reply bodies. For raw-markdown chunking use `view/markdown-chunk.ts → chunkRawMarkdown` (fence-safe; closes + reopens ``` across chunk boundaries).
+- **Agent reply bodies go through `markdownText`, not `text`.** A single send carries EITHER Slack mrkdwn (`text`) or raw GFM (`markdownText`), never both — Slack rejects the combination with `markdown_text_conflict`. Long agent output → `markdownText` (12k cap, native GFM rendering). Short system copy with `<@U…>` / `<#C…>` / `<!date^…>` affordances → `text` (3k cap, Slack mrkdwn). Deep dive: [`docs/slack-text-vs-markdown.md`](docs/slack-text-vs-markdown.md).
 - **Coalesce rapid Slack API calls.** Reactions, status updates, and debounced input all have existing coalescers (`view/reactions.ts`, `view/thread-status.ts`, `inbox/debouncer.ts`) — reuse them. A naive "one API call per event" loop will hit rate limits and cost real money.
 - **Never call `chat.postMessage` directly from view code.** Go through `view/outbox.ts` or `view/send-adapter.ts` so message tracking, edit-vs-append, and the text-vs-markdown_text choice stay consistent.
 - **Slack config (`slack.json`) is validated by zod (`config/schema.ts`)**; never read fields off the raw JSON. Run `bantai slack doctor` before deploying config changes — it catches missing scopes, bad channels, and broken workspace auth up front.
 - **Persistence is real.** `store/sessions.ts` writes an on-disk registry so the bot survives restarts without losing in-flight threads. Tests cover this (`tests/frontends/slack/integration/persistence.test.ts`) — don't regress it.
 
-## TUI — OpenTUI Prop Rules (CRITICAL)
+## TUI — OpenTUI cheatsheet
 
-These prevent silent rendering failures and Zig FFI crashes. Run `bun run lint:opentui` to check for violations.
+`bun run lint:opentui` enforces the subset of these the script can detect.
+
+### Prop rules (CRITICAL — silent rendering failures + Zig FFI crashes)
 
 1. **`fg=` not `color=`** — `<text color="red">` is silently ignored. Use `<text fg="red">`.
 2. **`attributes=` not `bold`/`dimmed`/`italic`** — Boolean styling props are ignored. Use `attributes={TextAttributes.BOLD}` from `@opentui/core`. Combine with `|`: `attributes={TextAttributes.DIM | TextAttributes.ITALIC}`.
@@ -129,87 +157,38 @@ These prevent silent rendering failures and Zig FFI crashes. Run `bun run lint:o
 9. **`backgroundColor=` not `bg=` on box** — `<box bg="…">` is silently ignored. `bg` only works on `<text>`.
 10. **Render callbacks must be pure functions of their item** — Never read the list source, store, or unrelated signals inside a `<For>`/`<Index>` callback. OpenTUI's Zig engine sorts children by cached position — stale positions from re-created elements cause visual reordering. Derive all view state in a `createMemo` chain *before* the list (`filtered → grouped → flat → render-ready`). For selection highlighting, read a *scalar* signal (e.g. `selected()`) via a per-item `createMemo` inside the callback. Use `<For>` for stable object lists, `<Index>` for lists that recompute on every update.
 
+### JSX elements + APIs
+
+From `@opentui/solid`: `<box>` (flexbox), `<text>`, `<scrollbox>` (`stickyScroll`, `stickyStart`), `<textarea>`, `<markdown>`, `<code>` (tree-sitter), `<diff>` (unified diff). Key APIs: `render()`, `useKeyboard()`, `useRenderer()`, `useTerminalDimensions()`.
+
 ## Project Structure
+
+One-liner per top-level dir; deeper layout is intentionally left to `ls` so the doc can't drift on every refactor. The directories whose *purpose* you can't infer from the filename are the ones called out below.
 
 ```
 src/
-  index.ts                  # CLI entry (registers SIGINT guard, dispatches)
-  cli/
-    program.ts              # Commander program + all subcommands
-    options.ts              # Flag definitions (global + TUI + Slack)
-    commands/run.ts         # Headless `bantai run`
-  protocol/
-    types.ts                # AgentEvent, AgentBackend, ConversationState, …
-    reducer.ts              # reduce(state, event) -> newState
-    registry.ts             # Backend registry + selection
-    lifecycle.ts            # Session lifecycle helpers
-    models.ts               # Model metadata
-  backends/
-    claude/                 # Claude Agent SDK (default)
-    codex/                  # OpenAI Codex SDK
-    acp/                    # Agent Client Protocol over JSON-RPC
-    mock/                   # Deterministic in-process backend for tests
-    shared/                 # base-adapter + cross-backend glue
-  session/
-    cross-backend.ts        # Session file parsing + resume across backends
-    host.ts                 # SessionHost — the unit consumed by frontends
-  frontends/
-    tui/
-      launcher.ts           # launchTui(flags)
-      app.tsx               # Root SolidJS component
-      components/           # One UI component per file (conversation, input,
-                            # permission-dialog, session-picker, …)
-      panels/               # Help / hotkeys / about / A-B overlay panels
-      context/              # SolidJS reactive stores (sessions, messages, sync, …)
-      theme/ hooks/ utils/
-    slack/
-      launcher.ts           # launchSlack(flags) — boots Bolt, wires pipeline
-      routing.ts            # Per-event dispatch (split out of launcher)
-      transport/            # Bolt app + raw events + interaction sanitizer
-      inbox/                # dedup, gate, debouncer, turn-builder, attachments
-      router/               # resolver (channel → project), registry (sessions),
-                            # audit (config sanity)
-      view/                 # event-renderer, outbox, format (mrkdwn),
-                            # reactions, approvals, banner, uploads, …
-      approvals/            # Interactive permission dialog coordinator
-      elicitations/         # Interactive input coordinator
-      store/sessions.ts     # Persistent session registry (crash recovery)
-      config/{loader,schema}.ts
-      commands/             # Slash commands (/new, /reset, …)
-      mcp/                  # Slack-specific MCP servers (e.g. file upload)
-      metrics/              # Prometheus-style counters (for HTTP mode)
-      doctor.ts             # `bantai slack doctor` diagnostic
-      manifest.ts           # `bantai slack init-manifest` generator
-      admin/                # HTTP + WebSocket admin surface (bus, ring,
-                            # server, protocol schemas) — feeds `slack-monitor/`
-    slack-monitor/
-      launcher.tsx          # launchSlackMonitor(flags) — resolves URL+token,
-                            # bootstraps context, mounts the OpenTUI app
-      app.tsx               # Root SolidJS component (panes + keybinds)
-      context/              # Monitor store (reactive) + admin-context glue
-      transport/            # Typed REST + WebSocket client (token-auth,
-                            # reconnect w/ exponential backoff)
-      panes/                # session-list, event-stream, metadata, approvals
-      theme.ts              # Self-contained hex palette (Zig-FFI safe)
-  minislack/                # Dev/test-only fake Slack server + web UI
-  commands/                 # Slash-command registry + built-ins
-  mcp/                      # Built-in MCP servers (state-bridge, tools)
-  subagents/                # Sub-agent orchestration (A/B, judge, combine)
-  config/settings.ts        # User settings
-  utils/logger.ts           # File-based session logger (singleton `log`)
-tests/
-  protocol/                 # Contract + reducer tests (written FIRST)
-  backends/                 # Adapter tests per backend
-  tui/                      # Component tests
-  frontends/slack/          # Slack pipeline + integration tests (incl.
-                            # persistence, multi-channel, approvals, …)
-  minislack/                # minislack server tests
-  e2e/                      # End-to-end smoke tests
+  index.ts            # CLI entry: registers SIGINT guard, dispatches to a frontend launcher
+  cli/                # Commander program + flag definitions + headless `run` command
+  protocol/           # AgentBackend interface, AgentEvent, reducer, descriptor registries
+  backends/           # Adapters: claude, codex, acp, follow, mock, shared (base + glue)
+  session/            # SessionHost (the unit consumed by frontends) + cross-backend resume
+  frontends/          # tui/ (default), slack/ (bot), slack-monitor/ (admin TUI over /admin)
+  ab/                 # A/B comparison: spawn two backends, judge + combine outputs
+  subagents/          # Sub-agent definitions + orchestration
+  commands/           # Slash-command registry + built-ins (/thinking, /backend, …)
+  mcp/                # Built-in MCP servers (state-bridge, tools)
+  minislack/          # Dev/test-only fake Slack server + web UI
+  storybook/          # Component storybook for the TUI
+  config/settings.ts  # User settings persistence
+  utils/logger.ts     # File-based session logger (singleton `log`)
+tests/                # Mirrors src/; protocol/ holds the contract tests, written FIRST
 ```
+
+Inside `src/frontends/slack/` the pipeline structure (transport → inbox → router → view → outbox) maps 1:1 to subdirectories — see the Slack frontend rules above for what goes where.
 
 ## State Machine
 
-7 states: `INITIALIZING` → `IDLE` → `RUNNING` → `WAITING_FOR_PERM` / `WAITING_FOR_ELIC` → `INTERRUPTING` → `ERROR` / `SHUTTING_DOWN`.
+States and lifecycle order live in `src/protocol/session-state.ts` (`SESSION_STATES`). At the time of writing, 8 entries: `INITIALIZING` → `IDLE` → `RUNNING` → `WAITING_FOR_PERM` / `WAITING_FOR_ELIC` → `INTERRUPTING` → `ERROR` / `SHUTTING_DOWN`.
 
 Rules:
 
@@ -228,6 +207,7 @@ bun test tests/tui/               # TUI component tests
 bun test tests/frontends/slack/   # Slack pipeline + integration tests
 bun test tests/minislack/         # Fake Slack server
 bun test --watch                  # Watch mode
+bun run docs:check                # Grep-asserts high-risk facts in this doc
 ```
 
 **Contract tests** (`tests/protocol/contract.test.ts`) validate:
@@ -243,9 +223,3 @@ bun test --watch                  # Watch mode
 ## Logging
 
 Session logs live at `~/.bantai/logs/<session-id>.log`. Each run gets a unique file; the session ID and log path are printed on exit. Use `--debug` for event-level logging; default is `info`. Import the singleton via `import { log } from "./utils/logger"`.
-
-## OpenTUI JSX Elements (TUI only)
-
-From `@opentui/solid`: `<box>` (flexbox), `<text>`, `<scrollbox>` (`stickyScroll`, `stickyStart`), `<textarea>`, `<markdown>`, `<code>` (tree-sitter), `<diff>` (unified diff).
-
-Key APIs: `render()`, `useKeyboard()`, `useRenderer()`, `useTerminalDimensions()`.

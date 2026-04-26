@@ -17,28 +17,82 @@ import { listThemes } from "../frontends/tui/theme/registry"
 import { listStatusBars } from "../frontends/tui/status-bar/registry"
 
 /**
- * Output format for `bantai run`. Mirrors `claude -p`'s `--output-format` so
- * scripts that wrap one can swap to the other with minimal changes.
+ * Output format descriptors for `bantai run`. Mirrors `claude -p`'s
+ * `--output-format` so scripts that wrap one can swap to the other with
+ * minimal changes.
  *
- * - `text` — final assistant text only. Intermediate text segments emitted
- *   between tool calls are dropped; nothing else (no tool metadata, no
- *   thinking, no usage) is printed. Single trailing newline. Best for pipes.
- * - `stream-text` — DEFAULT. Streams every assistant text segment live as it
- *   arrives, with a `\n\n` separator between segments interrupted by a tool
- *   call. Best for human-watchable progress.
- * - `json` — buffers the whole event stream and prints a single JSON array on
- *   completion. Best for post-hoc structured analysis.
- * - `stream-json` — newline-delimited JSON, one event per line, emitted live.
- *   Best for piping into a streaming consumer.
+ * Cluster 10 (anti-drift sprint): the format set used to be a string-
+ * literal union, an `OUTPUT_FORMATS` array, an exhaustive switch in
+ * `createRunFormatter`, a hand-typed `--output-format` help string in
+ * `program.ts`, and a hand-typed `format === "json" || format === "stream-json"`
+ * predicate in `runHeadless`. Each one had a copy of the closed set
+ * waiting to drift on the next addition. The descriptor table here is
+ * the single source of truth for all three pieces.
  */
-export type OutputFormat = "text" | "stream-text" | "json" | "stream-json"
+export interface OutputFormatDescriptor {
+  /** Stable id used at the CLI / consumer boundary. */
+  id: string
+  /** One-line help description shown in `--help`. */
+  description: string
+  /**
+   * True if the format emits machine-readable JSON (whole-array or NDJSON).
+   * `runHeadless` skips the human-friendly trailing newline on these.
+   */
+  structured: boolean
+  /** True for the format used when `--output-format` is omitted. */
+  default?: true
+}
 
-export const OUTPUT_FORMATS: readonly OutputFormat[] = [
-  "text",
-  "stream-text",
-  "json",
-  "stream-json",
-] as const
+export const OUTPUT_FORMATS_REGISTRY = [
+  {
+    id: "text",
+    description:
+      "final assistant text only (intermediate segments dropped) — best for pipes",
+    structured: false,
+  },
+  {
+    id: "stream-text",
+    description: "every assistant text segment live (default)",
+    structured: false,
+    default: true,
+  },
+  {
+    id: "json",
+    description: "single JSON array on completion — best for post-hoc analysis",
+    structured: true,
+  },
+  {
+    id: "stream-json",
+    description: "newline-delimited JSON, one event per line, live",
+    structured: true,
+  },
+] as const satisfies readonly OutputFormatDescriptor[]
+
+export type OutputFormat = typeof OUTPUT_FORMATS_REGISTRY[number]["id"]
+
+/** Backwards-compatible array of just the ids. */
+export const OUTPUT_FORMATS: readonly OutputFormat[] = OUTPUT_FORMATS_REGISTRY
+  .map((f) => f.id)
+
+export function isKnownOutputFormat(id: string): id is OutputFormat {
+  return OUTPUT_FORMATS_REGISTRY.some((f) => f.id === id)
+}
+
+/** True if the format is one of the JSON variants. */
+export function isStructuredOutputFormat(id: OutputFormat): boolean {
+  return OUTPUT_FORMATS_REGISTRY.find((f) => f.id === id)?.structured ?? false
+}
+
+/** Default format when `--output-format` is omitted. */
+export const DEFAULT_OUTPUT_FORMAT: OutputFormat =
+  ((OUTPUT_FORMATS_REGISTRY as readonly OutputFormatDescriptor[]).find((f) => f.default)?.id ?? "stream-text") as OutputFormat
+
+/** Help string built from the registry — used by `--output-format`. */
+export function listOutputFormatsForCli(): string {
+  return (OUTPUT_FORMATS_REGISTRY as readonly OutputFormatDescriptor[])
+    .map((f) => (f.default ? `${f.id} (default)` : f.id))
+    .join(", ")
+}
 
 // ---------------------------------------------------------------------------
 // CLIFlags — the stability contract consumed by config resolution, backend

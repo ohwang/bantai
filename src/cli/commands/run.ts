@@ -16,6 +16,7 @@
  */
 
 import type { CLIFlags, OutputFormat } from "../options"
+import { DEFAULT_OUTPUT_FORMAT, isStructuredOutputFormat } from "../options"
 import type { AgentBackend, ConversationEvent } from "../../protocol/types"
 import { instantiateBackend } from "../../protocol/registry"
 import { log } from "../../utils/logger"
@@ -151,7 +152,7 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
     log.setLevel("debug")
   }
   backendTrace.setEnabled(flags.debugBackend)
-  const outputFormat: OutputFormat = flags.outputFormat ?? "stream-text"
+  const outputFormat: OutputFormat = flags.outputFormat ?? DEFAULT_OUTPUT_FORMAT
   log.info("Starting bantai run (headless)", {
     backend: flags.backend,
     cwd: flags.config.cwd,
@@ -193,7 +194,7 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
   // Start the session and stream events
   const stream = backend.start(flags.config)
   const formatter = createRunFormatter(outputFormat)
-  const isStructuredFormat = outputFormat === "json" || outputFormat === "stream-json"
+  const isStructuredFormat = isStructuredOutputFormat(outputFormat)
 
   const writeFromFormatter = (event: ConversationEvent) => {
     const out = formatter.onEvent(event)

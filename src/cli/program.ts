@@ -13,7 +13,7 @@
  */
 
 import { Command } from "commander"
-import { addGlobalOptions, addTuiOptions, resolveFlags } from "./options"
+import { addGlobalOptions, addTuiOptions, listOutputFormatsForCli, resolveFlags } from "./options"
 import { launchTui } from "../frontends/tui/launcher"
 import { launchSlack } from "../frontends/slack/launcher"
 import { launchMinislack } from "../minislack/launcher"
@@ -59,7 +59,7 @@ export async function runCli(argv: string[]): Promise<void> {
     .argument("<message...>", "Message to send")
     .option(
       "--output-format <format>",
-      "Output format: text, stream-text (default), json, stream-json",
+      `Output format: ${listOutputFormatsForCli()}`,
     )
   addGlobalOptions(runCmd)
   addTuiOptions(runCmd)

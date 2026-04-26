@@ -128,6 +128,25 @@ export interface FrontendBridge {
   applyStatusBar?(id: string): ApplyStatusBarResult
 
   currentStatusBarId?(): string | undefined
+
+  // -------------------------------------------------------------------------
+  // Side chat (/btw) — open a transient overlay that streams a tool-less
+  // answer from a forked session without touching main ConversationState.
+  // Frontends that don't render an overlay simply omit this method; the
+  // /btw command then surfaces a system_message saying side chat is
+  // unsupported on this surface.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Open a side-chat overlay with the given question. The frontend is
+   * responsible for invoking `backend.sideQuery(question, { signal })`,
+   * rendering the streamed events into a parallel ephemeral store, and
+   * tearing down on dismiss.
+   *
+   * Returns `true` if the overlay opened, `false` if side chat is not
+   * supported in this frontend (e.g. headless / Slack).
+   */
+  openSideChat?(question: string): boolean
 }
 
 /**

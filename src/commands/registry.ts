@@ -190,6 +190,7 @@ import { settingsCommand } from "./builtin/settings"
 import { backendCommand } from "./builtin/backend"
 import { switchCommand } from "./builtin/switch"
 import { abCommand } from "./builtin/ab"
+import { btwCommand } from "./builtin/btw"
 import { crossagentCommand } from "../subagents/commands"
 
 /** Create a registry with all built-in commands */
@@ -223,6 +224,7 @@ export function createCommandRegistry(): CommandRegistry {
   registry.register(backendCommand)
   registry.register(switchCommand)
   registry.register(abCommand)
+  registry.register(btwCommand)
   registry.register(crossagentCommand)
 
   return registry

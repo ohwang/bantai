@@ -13,7 +13,7 @@ import { resolve } from "node:path"
 import { TextAttributes } from "@opentui/core"
 import { useSession } from "../context/session"
 import { useAgent } from "../context/agent"
-import { friendlyModelName, modelContextWindow } from "../../../protocol/models"
+import { friendlyModelName, resolveContextWindow } from "../../../protocol/models"
 import { colors } from "../theme/tokens"
 
 /**
@@ -78,8 +78,11 @@ export function HeaderBar() {
     const friendly = friendlyModelName(raw)
 
     // Prefer the SDK's dynamic context window (includes extended thinking),
-    // fall back to the hardcoded map for pre-session-init or Ctrl+P model changes.
-    const ctxWindow = model?.contextWindow ?? modelContextWindow(raw)
+    // fall back to the hardcoded map for pre-session-init or Ctrl+P model
+    // changes. `resolveContextWindow` also tries `model.id` so ACP backends
+    // whose `currentModel` is a display name (e.g. `"Gemini 3 (Auto)"` mapped
+    // from id `"auto-gemini-3"`) still hit MODEL_CONTEXT_WINDOWS correctly.
+    const ctxWindow = resolveContextWindow(model, raw)
     const ctxLabel = ctxWindow >= 1_000_000
       ? `${ctxWindow / 1_000_000}M context`
       : `${ctxWindow / 1_000}K context`

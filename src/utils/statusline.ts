@@ -14,7 +14,7 @@
 import path from "node:path"
 import os from "node:os"
 import { log } from "./logger"
-import { friendlyModelName, modelContextWindow } from "../protocol/models"
+import { friendlyModelName, resolveContextWindow } from "../protocol/models"
 import type { SessionContextState } from "../frontends/tui/context/session"
 import type { PermissionMode, RateLimitEntry } from "../protocol/types"
 import { loadConfigSync, type StatusLineSetting } from "../config/settings"
@@ -187,7 +187,10 @@ export function buildStatusLineInput(
   const cwd = process.cwd()
   const model = sessionState.session?.models?.[0]
   const rawModel = sessionState.currentModel || (model?.name ?? opts.configModel ?? "")
-  const ctxWindow = model?.contextWindow ?? modelContextWindow(rawModel)
+  // `resolveContextWindow` consults `model.id` before falling back to the
+  // raw display name, so ACP backends (Gemini, Qwen) that ship `id != name`
+  // still resolve to the right cap (otherwise the % math is 5x too high).
+  const ctxWindow = resolveContextWindow(model, rawModel)
 
   // Context window percentages — lastTurnInputTokens is the input token count
   // from the most recent API response, matching Claude Code's used_percentage

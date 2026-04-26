@@ -33,7 +33,7 @@ const navigation: ShortcutEntry[] = [
   { key: "Ctrl+E", label: "Toggle show-all" },
   { key: "Ctrl+T", label: "Toggle thinking" },
   { key: "Ctrl+Shift+P", label: "Cycle model" },
-  { key: "Ctrl+Up/Down", label: "Scroll" },
+  { key: "Ctrl+Up/Down \u00B7 Alt+K/J", label: "Scroll" },
   { key: "Ctrl+L", label: "Scroll to bottom" },
 ]
 

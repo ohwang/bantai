@@ -18,7 +18,7 @@
 
 import type { JSX } from "solid-js"
 import { createSignal, createEffect, createMemo, onCleanup, Show, For, Index, batch } from "solid-js"
-import { type ScrollBoxRenderable } from "@opentui/core"
+import { type KeyEvent, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { ScrollView } from "./scroll-view"
 import { useMessages } from "../context/messages"
@@ -55,6 +55,29 @@ export type { ViewLevel }
 function isNearBottom(ref: ScrollBoxRenderable, threshold = 3): boolean {
   const viewportHeight = ref.viewport.height
   return ref.scrollTop + viewportHeight >= ref.scrollHeight - threshold
+}
+
+/**
+ * Map a keyboard event to a scroll direction for the conversation view.
+ *
+ * Ctrl+Up / Alt+K → "up"
+ * Ctrl+Down / Alt+J → "down"
+ *
+ * Alt+J/K is the home-row vim-style alternative to Ctrl+Up/Down — same step
+ * size, same sticky-bottom bookkeeping. Ctrl+J would collide with Enter (LF),
+ * Ctrl+K with Emacs kill-line; Alt+J/K is free in our keymap.
+ *
+ * Pure helper so it's unit-testable without booting OpenTUI.
+ */
+export function matchScrollKey(
+  event: Pick<KeyEvent, "name" | "ctrl" | "option" | "meta" | "super" | "shift">,
+): "up" | "down" | null {
+  if (event.shift || event.meta || event.super) return null
+  if (event.ctrl && !event.option && event.name === "up") return "up"
+  if (event.ctrl && !event.option && event.name === "down") return "down"
+  if (event.option && !event.ctrl && event.name === "k") return "up"
+  if (event.option && !event.ctrl && event.name === "j") return "down"
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +270,7 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
 
   // Ctrl+O toggles collapsed/expanded, Ctrl+Shift+E shows all, Ctrl+Shift+T toggles thinking
   // (Ctrl+E and Ctrl+T freed for Emacs end-of-line and transpose-chars)
-  // Ctrl+Up/Down scrolls the conversation
+  // Ctrl+Up/Down and Alt+K/J (vim home-row) scroll the conversation
   useKeyboard((event) => {
     if (event.ctrl && event.name === "o") {
       event.preventDefault()
@@ -293,12 +316,15 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
         queueMicrotask(() => scrollboxRef?.scrollBy(999999))
       }
     }
-    if (event.ctrl && event.name === "up") {
+    // Conversation scroll — Ctrl+Up/Down (arrows) and Alt+K/J (vim home-row).
+    // Same step size and sticky-bottom bookkeeping for both binding pairs.
+    const scrollDir = matchScrollKey(event)
+    if (scrollDir === "up") {
       event.preventDefault()
       scrollboxRef?.scrollBy(-3)
       setScrolledAway(true)
     }
-    if (event.ctrl && event.name === "down") {
+    if (scrollDir === "down") {
       event.preventDefault()
       scrollboxRef?.scrollBy(3)
       if (scrollboxRef && isNearBottom(scrollboxRef)) {

@@ -12,6 +12,8 @@ import type { Command } from "commander"
 import type { SessionConfig, PermissionMode } from "../protocol/types"
 import { knownBackendIds } from "../protocol/registry"
 import { listPermissionModesForCli } from "../protocol/permission-modes"
+import { listThemes } from "../frontends/tui/theme/registry"
+import { listStatusBars } from "../frontends/tui/status-bar/registry"
 
 /**
  * Output format for `bantai run`. Mirrors `claude -p`'s `--output-format` so
@@ -129,8 +131,14 @@ export function addTuiOptions(cmd: Command): Command {
     .option("--max-thinking-tokens <n>", "Fixed thinking token budget (sets thinking to enabled)", parseIntPositive)
     .option("--effort <level>", "Reasoning effort (low, medium, high, xhigh, max)")
     .option("--system-prompt <text>", "System prompt")
-    .option("--theme <id>", "Theme preset (dark, high-contrast, catppuccin, dracula, solarized, light, one-light)")
-    .option("--status-bar <id>", "Native status bar preset (default, minimal, detailed)")
+    .option(
+      "--theme <id>",
+      `Theme preset (${listThemes().map((t) => t.id).join(", ")})`,
+    )
+    .option(
+      "--status-bar <id>",
+      `Native status bar preset (${listStatusBars().map((p) => p.id).join(", ")})`,
+    )
     .option("--no-diagnostics-mcp", "Disable the MCP diagnostics server")
     .option("--acp-command <cmd>", "ACP agent command (for --backend acp)")
     .option("--acp-args <arg>", "ACP agent args (repeatable, for --backend acp)", collectArgs, [])

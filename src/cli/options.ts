@@ -12,6 +12,30 @@ import type { Command } from "commander"
 import type { SessionConfig, PermissionMode } from "../protocol/types"
 import { knownBackendIds } from "../protocol/registry"
 
+/**
+ * Output format for `bantai run`. Mirrors `claude -p`'s `--output-format` so
+ * scripts that wrap one can swap to the other with minimal changes.
+ *
+ * - `text` — final assistant text only. Intermediate text segments emitted
+ *   between tool calls are dropped; nothing else (no tool metadata, no
+ *   thinking, no usage) is printed. Single trailing newline. Best for pipes.
+ * - `stream-text` — DEFAULT. Streams every assistant text segment live as it
+ *   arrives, with a `\n\n` separator between segments interrupted by a tool
+ *   call. Best for human-watchable progress.
+ * - `json` — buffers the whole event stream and prints a single JSON array on
+ *   completion. Best for post-hoc structured analysis.
+ * - `stream-json` — newline-delimited JSON, one event per line, emitted live.
+ *   Best for piping into a streaming consumer.
+ */
+export type OutputFormat = "text" | "stream-text" | "json" | "stream-json"
+
+export const OUTPUT_FORMATS: readonly OutputFormat[] = [
+  "text",
+  "stream-text",
+  "json",
+  "stream-json",
+] as const
+
 // ---------------------------------------------------------------------------
 // CLIFlags — the stability contract consumed by config resolution, backend
 // creation, and TUI launch. Shape is identical to the old parseFlags() output.
@@ -60,6 +84,13 @@ export interface CLIFlags {
    * creating a normal backend. See `team/bantai-follow-tui.md`.
    */
   follow?: { sessionId: string }
+
+  /**
+   * Output format for `bantai run`. Ignored by interactive surfaces.
+   * Resolved from the `--output-format` flag; absent → `stream-text` default
+   * applied by `runHeadless`.
+   */
+  outputFormat?: OutputFormat
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +245,20 @@ export function resolveFlags(
   const acpArgs = (opts.acpArgs as string[] | undefined)
   const resolvedAcpArgs = acpArgs && acpArgs.length > 0 ? acpArgs : undefined
 
+  // Output format (only meaningful for `bantai run`; absent → run.ts default)
+  let outputFormat: OutputFormat | undefined
+  if (opts.outputFormat !== undefined) {
+    const val = opts.outputFormat as string
+    if ((OUTPUT_FORMATS as readonly string[]).includes(val)) {
+      outputFormat = val as OutputFormat
+    } else {
+      console.error(
+        `Error: --output-format must be one of ${OUTPUT_FORMATS.join(", ")}`,
+      )
+      process.exit(1)
+    }
+  }
+
   return {
     config,
     prompt: resolvedPrompt,
@@ -227,6 +272,7 @@ export function resolveFlags(
     statusBar: opts.statusBar as string | undefined,
     acpCommand: opts.acpCommand as string | undefined,
     acpArgs: resolvedAcpArgs,
+    outputFormat,
   }
 }
 

@@ -2,24 +2,42 @@
  * Run Command — headless/non-interactive mode
  *
  * `bantai run <message..>` sends a single message to the default backend,
- * streams text_delta events to stdout, and exits on turn_complete.
+ * streams events to stdout in the requested `--output-format`, and exits on
+ * `turn_complete`.
+ *
+ * Output formats (mirror `claude -p`):
+ *   - `text`         — final assistant text only.
+ *   - `stream-text`  — DEFAULT. Live text deltas, tool-interleaved segments
+ *                      separated by `\n\n`.
+ *   - `json`         — single JSON array of every event, dumped on completion.
+ *   - `stream-json`  — NDJSON, one event per line, live.
  *
  * Designed for scripting and CI pipelines — no TUI, no interactive input.
  */
 
-import type { CLIFlags } from "../options"
+import type { CLIFlags, OutputFormat } from "../options"
 import type { AgentBackend, ConversationEvent } from "../../protocol/types"
 import { instantiateBackend } from "../../protocol/registry"
 import { log } from "../../utils/logger"
 import { backendTrace } from "../../utils/backend-trace"
 
+// ---------------------------------------------------------------------------
+// Formatter — per-format strategy. `onEvent` returns bytes to write live;
+// `onComplete` returns trailing bytes to flush after the stream ends. Pure
+// over the event stream so it's unit-testable without a real backend.
+// ---------------------------------------------------------------------------
+
+export interface RunFormatter {
+  onEvent(event: ConversationEvent): string | null
+  onComplete(): string | null
+}
+
 /**
- * Tracks whether a text-breaking event (e.g. a tool call) occurred between two
+ * Tracks whether a text-breaking event (e.g. a tool call) occurred between
  * runs of `text_delta` events, and emits a `\n\n` separator before the next
- * text segment so consecutive agent "paragraphs" don't run into each other in
- * the headless transcript.
+ * text segment so consecutive agent "paragraphs" don't run into each other.
  *
- * Exported for unit-testability; `runHeadless` consumes it directly.
+ * Used by the `stream-text` formatter; exported for unit-testability.
  */
 export function createTextSegmentSeparator() {
   let hasWrittenText = false
@@ -41,27 +59,82 @@ export function createTextSegmentSeparator() {
   }
 }
 
-/**
- * Format a single agent event for the headless transcript. Pure function over
- * the separator state so it can be unit-tested without a real backend.
- *
- * Returns `null` when the event produces no transcript output (everything that
- * isn't a `text_delta` today).
- */
-export function formatHeadlessEvent(
-  event: ConversationEvent,
-  sep: ReturnType<typeof createTextSegmentSeparator>,
-): string | null {
-  switch (event.type) {
-    case "text_delta":
-      return sep.prefixForText() + event.text
-    case "tool_use_start":
-      sep.markBreak()
-      return null
-    default:
-      return null
+function createStreamTextFormatter(): RunFormatter {
+  const sep = createTextSegmentSeparator()
+  return {
+    onEvent(event) {
+      switch (event.type) {
+        case "text_delta":
+          return sep.prefixForText() + event.text
+        case "tool_use_start":
+          sep.markBreak()
+          return null
+        default:
+          return null
+      }
+    },
+    // Trailing newline so the prompt isn't pasted onto the agent's last word.
+    onComplete: () => "\n",
   }
 }
+
+function createTextFormatter(): RunFormatter {
+  // Final-only mode: buffer the most recent run of text_deltas, reset on tool
+  // calls. The last buffer at turn_complete is the "final answer", which is
+  // what claude -p emits as `result.result`.
+  let lastSegment = ""
+  return {
+    onEvent(event) {
+      switch (event.type) {
+        case "text_delta":
+          lastSegment += event.text
+          return null
+        case "tool_use_start":
+          lastSegment = ""
+          return null
+        default:
+          return null
+      }
+    },
+    onComplete: () => lastSegment + "\n",
+  }
+}
+
+function createJsonFormatter(): RunFormatter {
+  const events: ConversationEvent[] = []
+  return {
+    onEvent(event) {
+      events.push(event)
+      return null
+    },
+    onComplete: () => JSON.stringify(events) + "\n",
+  }
+}
+
+function createStreamJsonFormatter(): RunFormatter {
+  return {
+    onEvent: (event) => JSON.stringify(event) + "\n",
+    onComplete: () => null,
+  }
+}
+
+export function createRunFormatter(format: OutputFormat): RunFormatter {
+  switch (format) {
+    case "text":
+      return createTextFormatter()
+    case "stream-text":
+      return createStreamTextFormatter()
+    case "json":
+      return createJsonFormatter()
+    case "stream-json":
+      return createStreamJsonFormatter()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// runHeadless — drives the backend stream and pipes events through the chosen
+// formatter to stdout.
+// ---------------------------------------------------------------------------
 
 /**
  * Run a single message through the backend and stream output to stdout.
@@ -78,7 +151,12 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
     log.setLevel("debug")
   }
   backendTrace.setEnabled(flags.debugBackend)
-  log.info("Starting bantai run (headless)", { backend: flags.backend, cwd: flags.config.cwd })
+  const outputFormat: OutputFormat = flags.outputFormat ?? "stream-text"
+  log.info("Starting bantai run (headless)", {
+    backend: flags.backend,
+    cwd: flags.config.cwd,
+    outputFormat,
+  })
 
   // Fill in persisted defaults
   const { loadConfig } = await import("../../config/settings")
@@ -114,53 +192,61 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
 
   // Start the session and stream events
   const stream = backend.start(flags.config)
-  const separator = createTextSegmentSeparator()
+  const formatter = createRunFormatter(outputFormat)
+  const isStructuredFormat = outputFormat === "json" || outputFormat === "stream-json"
+
+  const writeFromFormatter = (event: ConversationEvent) => {
+    const out = formatter.onEvent(event)
+    if (out !== null) process.stdout.write(out)
+  }
 
   try {
     for await (const event of stream) {
-      switch (event.type) {
-        case "text_delta":
-        case "tool_use_start": {
-          const out = formatHeadlessEvent(event, separator)
-          if (out !== null) process.stdout.write(out)
-          break
-        }
+      writeFromFormatter(event)
 
-        case "turn_complete":
-          // End of the assistant's response — newline and exit
-          process.stdout.write("\n")
+      switch (event.type) {
+        case "turn_complete": {
+          const tail = formatter.onComplete()
+          if (tail !== null) process.stdout.write(tail)
           backend.close()
           process.exit(0)
           break
-
-        case "error":
-          console.error(`\nError: ${event.message}`)
+        }
+        case "error": {
+          // For text-oriented formats the error needs a human-visible
+          // surface on stderr; structured formats already captured it as
+          // an event in the stream.
+          if (!isStructuredFormat) {
+            console.error(`\nError: ${event.message}`)
+          }
           backend.close()
           process.exit(1)
           break
-
-        case "permission_request":
-          // In headless mode, auto-approve if dangerously-skip-permissions,
-          // otherwise deny with explanation
+        }
+        case "permission_request": {
           if (flags.config.permissionMode === "bypassPermissions" || flags.config.permissionMode === "dontAsk") {
             backend.approveToolUse(event.id)
           } else {
             backend.denyToolUse(event.id, "Denied: running in non-interactive mode. Use --dangerously-skip-permissions to auto-approve.")
           }
           break
+        }
 
         default:
-          // Silently consume other events (tool_use_end, thinking_delta, …).
           break
       }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error(`\nError: ${msg}`)
+    if (!isStructuredFormat) {
+      console.error(`\nError: ${msg}`)
+    }
     backend.close()
     process.exit(1)
   }
 
-  // Stream ended without turn_complete — clean exit
+  // Stream ended without turn_complete — flush trailing bytes and clean up.
+  const tail = formatter.onComplete()
+  if (tail !== null) process.stdout.write(tail)
   backend.close()
 }

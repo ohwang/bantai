@@ -57,6 +57,10 @@ export async function runCli(argv: string[]): Promise<void> {
   const runCmd = new Command("run")
     .description("Run non-interactively with default backend")
     .argument("<message...>", "Message to send")
+    .option(
+      "--output-format <format>",
+      "Output format: text, stream-text (default), json, stream-json",
+    )
   addGlobalOptions(runCmd)
   addTuiOptions(runCmd)
   runCmd.action(async (messageParts: string[], _opts: unknown, cmd: Command) => {

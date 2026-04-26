@@ -31,6 +31,7 @@ const VALID_BACKENDS = new Set<string>([
   "codex",
   "gemini",
   "copilot",
+  "qwen",
   "acp",
   "mock",
 ])

@@ -10,7 +10,7 @@ import {
 describe("backend registry", () => {
   it("exposes the canonical backend ids", () => {
     const ids = listBackends().map((b) => b.id).sort()
-    expect(ids).toEqual(["acp", "claude", "codex", "copilot", "gemini", "mock"])
+    expect(ids).toEqual(["acp", "claude", "codex", "copilot", "gemini", "mock", "qwen"])
   })
 
   it("looks up descriptors by id", () => {

@@ -324,7 +324,7 @@ Prompt.
   })
 
   it("accepts valid backend values", () => {
-    const backends = ["claude", "codex", "gemini", "copilot", "acp", "mock"] as const
+    const backends = ["claude", "codex", "gemini", "copilot", "qwen", "acp", "mock"] as const
     for (const backend of backends) {
       const content = `---
 name: backend-${backend}

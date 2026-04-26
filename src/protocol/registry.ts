@@ -28,6 +28,7 @@ export type BackendId =
   | "codex"
   | "gemini"
   | "copilot"
+  | "qwen"
   | "acp"
   | "mock"
 
@@ -79,6 +80,12 @@ export const BACKEND_REGISTRY: BackendDescriptor[] = [
     displayName: "GitHub Copilot",
     description: "GitHub Copilot via `gh copilot --acp`",
     isAvailable: () => binaryOnPath("gh"),
+  },
+  {
+    id: "qwen",
+    displayName: "Qwen Code",
+    description: "Qwen Code via the qwen ACP adapter (local Qwen3-Coder via ~/.qwen/settings.json)",
+    isAvailable: () => binaryOnPath("qwen"),
   },
   {
     id: "acp",

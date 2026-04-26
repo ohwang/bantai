@@ -25,7 +25,8 @@ export function createBackend(opts: BackendFactoryOptions): AgentBackend {
     case "codex":
       return new CodexAdapter()
     case "gemini":
-    case "copilot": {
+    case "copilot":
+    case "qwen": {
       const preset = ACP_PRESETS[opts.backend]!
       return new AcpAdapter({ ...preset, presetName: opts.backend })
     }

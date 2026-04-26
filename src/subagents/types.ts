@@ -10,7 +10,7 @@ export interface AgentDefinition {
   name: string
   description?: string
   systemPrompt: string // markdown body
-  backend?: string // "claude" | "gemini" | "copilot" | "codex" | "acp" | "mock"
+  backend?: string // "claude" | "gemini" | "copilot" | "qwen" | "codex" | "acp" | "mock"
   model?: string
   permissionMode?: PermissionMode // defaults to "bypassPermissions" for subagents
   maxTurns?: number
@@ -28,7 +28,7 @@ export interface AgentDefinition {
 // ---------------------------------------------------------------------------
 
 export interface BackendFactoryOptions {
-  backend: string // "claude" | "codex" | "gemini" | "copilot" | "acp" | "mock"
+  backend: string // "claude" | "codex" | "gemini" | "copilot" | "qwen" | "acp" | "mock"
   acpCommand?: string
   acpArgs?: string[]
 }

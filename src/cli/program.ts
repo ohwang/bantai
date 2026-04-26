@@ -125,9 +125,9 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(followCmd)
 
   // -----------------------------------------------------------------------
-  // Backend subcommands: claude, codex, gemini
+  // Backend subcommands: claude, codex, gemini, qwen
   // -----------------------------------------------------------------------
-  for (const backendName of ["claude", "codex", "gemini"] as const) {
+  for (const backendName of ["claude", "codex", "gemini", "qwen"] as const) {
     const cmd = new Command(backendName)
       .description(`Launch TUI with ${backendName} backend`)
       .argument("[prompt]", "Initial prompt")

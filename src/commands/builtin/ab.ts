@@ -16,7 +16,7 @@
 
 import { createOrchestrator } from "../../ab/orchestrator"
 import type { Target } from "../../ab/types"
-import { listBackends, type BackendId } from "../../protocol/registry"
+import { isKnownBackendId, knownBackendIds, listBackends } from "../../protocol/registry"
 import { friendlyBackendName, friendlyModelName } from "../../protocol/models"
 import { log } from "../../utils/logger"
 import type { AbPanelData } from "../frontend"
@@ -31,20 +31,18 @@ export interface ParsedAbArgs {
   errors: string[]
 }
 
-const KNOWN_BACKEND_IDS = new Set<BackendId>(["claude", "codex", "gemini", "copilot", "acp", "mock"])
-
 /** Parse a single `--a=` / `--b=` flag value of the form `backend[:model]`. */
 function parseTargetSpec(spec: string, errors: string[]): Target | undefined {
   const colon = spec.indexOf(":")
   const backendId = colon === -1 ? spec : spec.slice(0, colon)
   const model = colon === -1 ? undefined : spec.slice(colon + 1)
-  if (!KNOWN_BACKEND_IDS.has(backendId as BackendId)) {
+  if (!isKnownBackendId(backendId)) {
     errors.push(
-      `Unknown backend "${backendId}". Known: ${Array.from(KNOWN_BACKEND_IDS).join(", ")}`,
+      `Unknown backend "${backendId}". Known: ${knownBackendIds().join(", ")}`,
     )
     return undefined
   }
-  return { backendId: backendId as BackendId, model: model || undefined }
+  return { backendId, model: model || undefined }
 }
 
 /**
@@ -90,9 +88,9 @@ function defaultTargets(currentBackend: string): { a: Target; b: Target } {
   // Prefer current backend as A; pick first different available backend as B.
   // Fall back to the same backend for both if nothing else is available.
   const all = listBackends().filter((b) => !b.requiresExtraConfig && b.isAvailable())
-  const a: Target = { backendId: (currentBackend as BackendId) }
+  const a: Target = { backendId: currentBackend }
   const otherCandidate = all.find((b) => b.id !== currentBackend) ?? all[0]
-  const b: Target = { backendId: (otherCandidate?.id ?? "claude") as BackendId }
+  const b: Target = { backendId: otherCandidate?.id ?? "claude" }
   return { a, b }
 }
 

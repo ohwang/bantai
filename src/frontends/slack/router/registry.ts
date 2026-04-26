@@ -30,7 +30,7 @@
 import type { SessionHost } from "../../../session/host"
 import type { AgentBackend, AgentEvent, ConversationEvent, PermissionMode, SessionConfig, SessionOrigin, UserMessage } from "../../../protocol/types"
 import { SubagentManager } from "../../../subagents/manager"
-import { createBackend } from "../../../subagents/backend-factory"
+import { instantiateBackend } from "../../../protocol/registry"
 import { createSessionHost } from "../../../session/host"
 import { log } from "../../../utils/logger"
 import type { ProjectConfig } from "./resolver"
@@ -738,7 +738,7 @@ export function buildSessionConfigFromProject(
 // ---------------------------------------------------------------------------
 
 function defaultBuildHost(opts: BuildHostOpts): HostPair {
-  const backend = createBackend({ backend: opts.project.backend })
+  const backend = instantiateBackend(opts.project.backend)
   const subagentManager = new SubagentManager()
   const host = createSessionHost({
     backend,

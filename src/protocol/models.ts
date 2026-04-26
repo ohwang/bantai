@@ -4,6 +4,8 @@
  * Consumed by header-bar, conversation, and status-bar components.
  */
 
+import { getBackendDescriptor } from "./registry"
+
 /** Map raw API model IDs to friendly display names */
 export const MODEL_NAMES: Record<string, string> = {
   "claude-opus-4-7": "Opus 4.7",
@@ -144,14 +146,15 @@ export function friendlyModelName(name: string): string {
   return name.replace(/^[Cc]laude\s+/, "")
 }
 
-/** Convert backend capability name to a user-facing brand name */
+/**
+ * Convert a backend capability name to a user-facing brand name.
+ *
+ * Looks up `BackendDescriptor.displayName` from the registry so adding a new
+ * backend doesn't require touching this file. The `claude*` prefix is
+ * special-cased because Claude reports versioned capability names
+ * (`claude-v1`, `claude-v2`, …) but they all map to the same brand.
+ */
 export function friendlyBackendName(backendName: string): string {
   if (backendName.startsWith("claude")) return "Claude"
-  if (backendName === "gemini") return "Gemini"
-  if (backendName === "copilot") return "GitHub Copilot"
-  if (backendName === "qwen") return "Qwen Code"
-  if (backendName === "codex") return "Codex"
-  if (backendName === "mock") return "Mock"
-  if (backendName === "acp") return "ACP agent"
-  return "the assistant"
+  return getBackendDescriptor(backendName)?.displayName ?? "the assistant"
 }

@@ -10,7 +10,7 @@ export interface AgentDefinition {
   name: string
   description?: string
   systemPrompt: string // markdown body
-  backend?: string // "claude" | "gemini" | "copilot" | "qwen" | "codex" | "acp" | "mock"
+  backend?: string // any id registered in BACKEND_REGISTRY (see protocol/registry.ts)
   model?: string
   permissionMode?: PermissionMode // defaults to "bypassPermissions" for subagents
   maxTurns?: number
@@ -21,16 +21,6 @@ export interface AgentDefinition {
   acpCommand?: string // for generic ACP backend
   acpArgs?: string[]
   filePath: string // source file path
-}
-
-// ---------------------------------------------------------------------------
-// Backend Factory — used by both primary backend and subagent creation
-// ---------------------------------------------------------------------------
-
-export interface BackendFactoryOptions {
-  backend: string // "claude" | "codex" | "gemini" | "copilot" | "qwen" | "acp" | "mock"
-  acpCommand?: string
-  acpArgs?: string[]
 }
 
 // ---------------------------------------------------------------------------

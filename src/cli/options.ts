@@ -10,6 +10,7 @@
 
 import type { Command } from "commander"
 import type { SessionConfig, PermissionMode } from "../protocol/types"
+import { knownBackendIds } from "../protocol/registry"
 
 // ---------------------------------------------------------------------------
 // CLIFlags — the stability contract consumed by config resolution, backend
@@ -86,7 +87,7 @@ export function addTuiOptions(cmd: Command): Command {
     .option("-p, --prompt <text>", "Initial prompt")
     .option("-c, --continue", "Continue most recent session")
     .option("-r, --resume [id]", "Resume a session (omit id for interactive picker)")
-    .option("-b, --backend <name>", "Backend (claude, codex, gemini, copilot, qwen, acp, mock)")
+    .option("-b, --backend <name>", `Backend (${knownBackendIds().join(", ")})`)
     .option("--permission-mode <mode>", "Permission mode (default, acceptEdits, bypassPermissions, plan, dontAsk, auto)")
     .option("--dangerously-skip-permissions", "Shorthand for full-access bypass mode")
     .option("--max-turns <n>", "Maximum turns", parseIntPositive)

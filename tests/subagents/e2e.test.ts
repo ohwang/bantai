@@ -9,7 +9,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { SubagentManager } from "../../src/subagents/manager"
 import { loadDefinitionsFromDir } from "../../src/subagents/definitions"
-import { createBackend } from "../../src/subagents/backend-factory"
+import { instantiateBackend } from "../../src/protocol/registry"
 import type { AgentEvent } from "../../src/protocol/types"
 import type { AgentDefinition } from "../../src/subagents/types"
 import { join } from "path"
@@ -90,35 +90,35 @@ describe("E2E: Subagent System", () => {
 
   describe("Backend factory", () => {
     test("creates mock backend", () => {
-      const backend = createBackend({ backend: "mock" })
+      const backend = instantiateBackend("mock")
       expect(backend).toBeDefined()
       expect(backend.capabilities().name).toBe("mock")
       backend.close()
     })
 
     test("creates claude backend", () => {
-      const backend = createBackend({ backend: "claude" })
+      const backend = instantiateBackend("claude")
       expect(backend).toBeDefined()
       expect(backend.capabilities().name).toBe("claude")
       backend.close()
     })
 
     test("creates codex backend", () => {
-      const backend = createBackend({ backend: "codex" })
+      const backend = instantiateBackend("codex")
       expect(backend).toBeDefined()
       expect(backend.capabilities().name).toBe("codex")
       backend.close()
     })
 
     test("creates gemini backend", () => {
-      const backend = createBackend({ backend: "gemini" })
+      const backend = instantiateBackend("gemini")
       expect(backend).toBeDefined()
       expect(backend.capabilities().name).toBe("gemini")
       backend.close()
     })
 
     test("throws on unknown backend", () => {
-      expect(() => createBackend({ backend: "nonexistent" })).toThrow()
+      expect(() => instantiateBackend("nonexistent")).toThrow()
     })
   })
 

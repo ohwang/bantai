@@ -59,7 +59,7 @@ export function getCrossagentSdkMcpConfig(): McpSdkServerConfigWithInstance | nu
         {
           definition_name: z.string().describe("Name of the agent definition (from .claude/agents/ files)"),
           prompt: z.string().describe("Initial prompt/task for the subagent"),
-          backend: z.string().optional().describe("Override backend (claude, gemini, copilot, qwen, codex, acp, mock)"),
+          backend: z.string().optional().describe("Override backend (any id from the registry — see /backend)"),
           model: z.string().optional().describe("Override model"),
         },
         async (args) => {

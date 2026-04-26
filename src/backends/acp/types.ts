@@ -419,35 +419,15 @@ export interface AcpSessionLoadParams {
 // Result is AcpSessionNewResult (same shape)
 
 // ---------------------------------------------------------------------------
-// ACP presets for known agents
+// ACP preset shape — used by the registry's BackendDescriptor.acpPreset to
+// describe how to spawn an ACP-speaking subprocess. The actual catalogue of
+// known presets (gemini / copilot / qwen / …) lives in
+// `src/protocol/registry.ts` so adding a new ACP backend is a single registry
+// entry rather than a parallel map here.
 // ---------------------------------------------------------------------------
 
 export interface AcpPreset {
   command: string
   args: string[]
   displayName: string
-}
-
-export const ACP_PRESETS: Record<string, AcpPreset> = {
-  "gemini": {
-    command: "gemini",
-    args: ["--acp"],
-    displayName: "Gemini CLI",
-  },
-  "copilot": {
-    command: "gh",
-    args: ["copilot", "--acp"],
-    displayName: "GitHub Copilot",
-  },
-  "qwen": {
-    // Qwen Code (qwenlm/qwen-code) — Gemini CLI fork tuned for Qwen3-Coder.
-    // Speaks ACP via `qwen --acp` (preserved from upstream Gemini CLI).
-    // Local-model config lives in ~/.qwen/settings.json (modelProviders);
-    // ACP mode and provider selection are orthogonal — `qwen --acp` will use
-    // whatever provider settings.json resolves to (LM Studio / Ollama / vLLM /
-    // DashScope / etc.). See https://github.com/QwenLM/qwen-code.
-    command: "qwen",
-    args: ["--acp"],
-    displayName: "Qwen Code",
-  },
 }

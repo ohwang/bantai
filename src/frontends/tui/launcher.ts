@@ -14,7 +14,7 @@
 import { existsSync, statSync } from "node:fs"
 import type { CLIFlags } from "../../cli/options"
 import type { AgentBackend, SessionOrigin } from "../../protocol/types"
-import { createBackend } from "../../subagents/backend-factory"
+import { instantiateBackend } from "../../protocol/registry"
 import { startApp } from "./app"
 import { log } from "../../utils/logger"
 import { backendTrace } from "../../utils/backend-trace"
@@ -188,8 +188,7 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
     flags.config.persistSession = false
   } else {
     try {
-      backend = createBackend({
-        backend: flags.backend,
+      backend = instantiateBackend(flags.backend, {
         acpCommand: flags.acpCommand,
         acpArgs: flags.acpArgs,
       })

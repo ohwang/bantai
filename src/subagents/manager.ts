@@ -10,7 +10,7 @@
  * concurrently.
  */
 
-import { createBackend } from "./backend-factory"
+import { instantiateBackend } from "../protocol/registry"
 import { log } from "../utils/logger"
 import type { AgentEvent, SessionConfig } from "../protocol/types"
 import type { SpawnOptions, SubagentStatus, RunningSubagent } from "./types"
@@ -39,8 +39,7 @@ export class SubagentManager {
     const def = opts.definition
     const backendName = opts.backendOverride ?? def.backend ?? "claude"
 
-    const backend = createBackend({
-      backend: backendName,
+    const backend = instantiateBackend(backendName, {
       acpCommand: def.acpCommand,
       acpArgs: def.acpArgs,
     })

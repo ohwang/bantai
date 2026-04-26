@@ -23,12 +23,14 @@ import os from "node:os"
 import fs from "node:fs"
 import { log } from "../utils/logger"
 import type { PermissionMode } from "../protocol/types"
+import { isKnownBackendId, knownBackendIds, type BackendId } from "../protocol/registry"
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type BackendId = "claude" | "codex" | "gemini" | "copilot" | "acp" | "mock"
+// Re-export for downstream callers that imported BackendId from here.
+export type { BackendId }
 
 export interface StatusLineSetting {
   type: "command"
@@ -330,9 +332,8 @@ export function coerceSettingValue(key: keyof BantaiConfig, raw: string): unknow
     case "model":
       return trimmed
     case "backend": {
-      const valid: BackendId[] = ["claude", "codex", "gemini", "copilot", "acp", "mock"]
-      if (!valid.includes(trimmed as BackendId)) {
-        throw new Error(`expected one of ${valid.join("|")} for backend, got "${raw}"`)
+      if (!isKnownBackendId(trimmed)) {
+        throw new Error(`expected one of ${knownBackendIds().join("|")} for backend, got "${raw}"`)
       }
       return trimmed
     }

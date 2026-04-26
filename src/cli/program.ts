@@ -19,6 +19,7 @@ import { launchSlack } from "../frontends/slack/launcher"
 import { launchMinislack } from "../minislack/launcher"
 import type { FixtureName } from "../minislack/testing/fixtures"
 import { runHeadless } from "./commands/run"
+import { listCliSubcommandBackends } from "../protocol/registry"
 
 const VERSION = "0.1.0"
 
@@ -125,11 +126,13 @@ export async function runCli(argv: string[]): Promise<void> {
   program.addCommand(followCmd)
 
   // -----------------------------------------------------------------------
-  // Backend subcommands: claude, codex, gemini, qwen
+  // Backend subcommands — derived from the registry. Any descriptor with
+  // `exposeAsCliSubcommand: true` automatically gets a `bantai <id>` verb.
   // -----------------------------------------------------------------------
-  for (const backendName of ["claude", "codex", "gemini", "qwen"] as const) {
+  for (const descriptor of listCliSubcommandBackends()) {
+    const backendName = descriptor.id
     const cmd = new Command(backendName)
-      .description(`Launch TUI with ${backendName} backend`)
+      .description(`Launch TUI with ${descriptor.displayName} backend`)
       .argument("[prompt]", "Initial prompt")
     addGlobalOptions(cmd)
     addTuiOptions(cmd)

@@ -3,6 +3,7 @@ import { join, basename } from "node:path"
 import { homedir } from "node:os"
 import type { AgentDefinition } from "./types"
 import type { PermissionMode, EffortLevel } from "../protocol/types"
+import { isKnownBackendId, knownBackendIds } from "../protocol/registry"
 import { log } from "../utils/logger"
 
 // ---------------------------------------------------------------------------
@@ -24,16 +25,6 @@ const VALID_EFFORT_LEVELS = new Set<string>([
   "high",
   "xhigh",
   "max",
-])
-
-const VALID_BACKENDS = new Set<string>([
-  "claude",
-  "codex",
-  "gemini",
-  "copilot",
-  "qwen",
-  "acp",
-  "mock",
 ])
 
 interface FrontmatterResult {
@@ -182,10 +173,10 @@ export function parseDefinition(
     def.description = fields.description
   }
   if (typeof fields.backend === "string") {
-    if (VALID_BACKENDS.has(fields.backend)) {
+    if (isKnownBackendId(fields.backend)) {
       def.backend = fields.backend
     } else {
-      log.warn(`Unknown backend "${fields.backend}" in ${filePath} — valid options: ${Array.from(VALID_BACKENDS).join(", ")}`)
+      log.warn(`Unknown backend "${fields.backend}" in ${filePath} — valid options: ${knownBackendIds().join(", ")}`)
     }
   }
   if (typeof fields.model === "string") {

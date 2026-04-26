@@ -14,8 +14,10 @@
 
 import type { McpServerSpec, ResolvedSlackConfig, VerbosityLevel } from "../config/schema"
 import { log } from "../../../utils/logger"
+import type { BackendId } from "../../../protocol/registry"
 
-export type BackendId = "claude" | "codex" | "gemini" | "copilot" | "acp" | "mock"
+// Re-export for downstream Slack modules that imported BackendId from here.
+export type { BackendId }
 
 export interface ProjectConfig {
   /** The channel id this config is for (e.g. `C0ABC123`). */

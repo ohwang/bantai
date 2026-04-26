@@ -9,7 +9,7 @@
 
 import type { CLIFlags } from "../options"
 import type { AgentBackend, ConversationEvent } from "../../protocol/types"
-import { createBackend } from "../../subagents/backend-factory"
+import { instantiateBackend } from "../../protocol/registry"
 import { log } from "../../utils/logger"
 import { backendTrace } from "../../utils/backend-trace"
 
@@ -97,8 +97,7 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
   // Create backend
   let backend: AgentBackend
   try {
-    backend = createBackend({
-      backend: flags.backend,
+    backend = instantiateBackend(flags.backend, {
       acpCommand: flags.acpCommand,
       acpArgs: flags.acpArgs,
     })

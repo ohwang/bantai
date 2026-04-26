@@ -14,8 +14,11 @@ import {
   query as sdkQuery,
   startup as sdkStartup,
   listSessions as sdkListSessions,
+  forkSession as sdkForkSession,
+  deleteSession as sdkDeleteSession,
   type Options as SDKOptions,
   type SDKUserMessage as SDKUserMsg,
+  type SDKMessage as SDKMsg,
   type ModelInfo as SDKModelInfo,
   type WarmQuery as SDKWarmQuery,
 } from "@anthropic-ai/claude-agent-sdk"
@@ -248,6 +251,16 @@ export class ClaudeAdapter implements AgentBackend {
   // Tools denied for the duration of this session (via "deny for session" option)
   private sessionDeniedTools = new Set<string>()
 
+  // Most-recent session ID observed from SDK system/init or result messages.
+  // Used by sideQuery() to pick the fork source. Updated by the background
+  // event loop in iterateQuery().
+  private liveSessionId: string | null = null
+
+  // Working dir of the active session — used as the `dir` hint for forkSession()
+  // so we don't have to scan every Claude project directory looking for the
+  // source file.
+  private sessionCwd: string | null = null
+
   // Permission bridge state (passed to extracted functions)
   private get bridgeState(): PermissionBridgeState {
     return {
@@ -346,6 +359,11 @@ export class ClaudeAdapter implements AgentBackend {
 
   async *start(config: SessionConfig): AsyncGenerator<AgentEvent> {
     try {
+      // Stash session cwd for sideQuery() forkSession() lookups. The SDK
+      // resolves session files via the encoded-cwd project key, so passing the
+      // wrong dir makes forkSession scan all projects (slower, more error-prone).
+      this.sessionCwd = config.cwd ?? process.cwd()
+
       // Stash replay context from /switch so the next real user message picks
       // it up as prepended history. Must NOT be sent as its own turn.
       if (config.replayContext) {
@@ -590,6 +608,182 @@ export class ClaudeAdapter implements AgentBackend {
     throw new Error("Fork via start() with config.forkSession = true")
   }
 
+  /**
+   * Side query — fork the live session, send a single tool-less prompt into the
+   * fork, stream the answer, then discard the fork.
+   *
+   * The cost story rests on prompt-cache reuse: the fork inherits the parent
+   * session's exact prompt prefix (handled by the SDK's `forkSession`), so the
+   * side turn's input tokens hit the server-side cache. We deliberately do
+   * NOT inject any system prompt or "you are answering a side question" prefix
+   * — that would invalidate the cache key.
+   *
+   * Tool-disabling is achieved via three independent levers, all on the
+   * forked query's options: `mcpServers: {}`, `allowedTools: []`, and
+   * `permissionMode: "deny"`. If any tool_use_* events leak through despite
+   * this, we drop them with a warn-level log (per AGENTS.md "never silently
+   * drop external data").
+   *
+   * Lifecycle: on completion, error, or signal abort, the fork is closed and
+   * the forked JSONL file is unlinked via `deleteSession()` so we don't leak
+   * disk under `~/.claude/projects/<cwd-key>/`. This MUST run on every exit
+   * path; the `try/finally` is load-bearing.
+   */
+  async *sideQuery(
+    prompt: string,
+    opts: { signal: AbortSignal },
+  ): AsyncIterable<AgentEvent> {
+    const sourceSessionId = this.liveSessionId
+    if (!sourceSessionId) {
+      yield {
+        type: "error",
+        code: "side_chat_no_session",
+        message:
+          "Side chat requires a live Claude session — wait for the main session to initialize and try again.",
+        severity: "recoverable",
+      }
+      return
+    }
+
+    const dir = this.sessionCwd ?? process.cwd()
+    let forkedSessionId: string | null = null
+    let forkQuery: SDKQuery | null = null
+
+    // Abort plumbing — when the caller signals abort, close the fork query;
+    // the SDK iterator will end and finally-block teardown unlinks the JSONL.
+    const onAbort = () => {
+      try {
+        forkQuery?.close()
+      } catch (err) {
+        log.warn("side chat: forkQuery.close() failed during abort", {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    if (opts.signal.aborted) {
+      yield {
+        type: "error",
+        code: "side_chat_aborted",
+        message: "Side chat aborted before it started.",
+        severity: "recoverable",
+      }
+      return
+    }
+    opts.signal.addEventListener("abort", onAbort, { once: true })
+
+    try {
+      const forkResult = await sdkForkSession(sourceSessionId, {
+        dir,
+        title: "side chat (bantai)",
+      })
+      forkedSessionId = forkResult.sessionId
+      log.debug("side chat: fork created", {
+        sourceSessionId,
+        forkedSessionId,
+        dir,
+      })
+
+      // Tool-less options. Cache-key integrity: don't inject systemPrompt,
+      // appendSystemPrompt, or any other prefix — let the fork inherit the
+      // parent's prompt prefix verbatim. The SDK has no "deny" mode; the
+      // closest equivalent is `dontAsk`, which denies anything not pre-
+      // approved. Combined with an empty `allowedTools` allowlist, this
+      // means every tool_use is denied without the user being prompted.
+      const sideOptions: SDKOptions = {
+        resume: forkedSessionId,
+        cwd: dir,
+        mcpServers: {},
+        allowedTools: [],
+        permissionMode: "dontAsk",
+        // Don't persist this fork to a separate JSONL — we delete it anyway,
+        // but minimising on-disk churn means a dropped close() doesn't leak.
+        persistSession: true, // SDK requires this for resume; teardown unlinks
+        includePartialMessages: true,
+        settingSources: ["user", "project", "local"],
+      }
+
+      forkQuery = this.sdk.query({ prompt, options: sideOptions })
+
+      // Stream events. Side chat emits a deliberate SUBSET of AgentEvent —
+      // turn_start / text_delta / thinking_delta / turn_complete / error.
+      // Anything else (permission_request, tool_use_*, session_init repeats)
+      // is dropped with a warn so a model that misbehaves under "deny" mode
+      // is visible in logs rather than silently surfacing an unanswerable
+      // permission prompt to the user.
+      const sideStreamState = new ToolStreamState()
+      for await (const msg of forkQuery as AsyncIterable<SDKMsg>) {
+        if (opts.signal.aborted) break
+        const events = mapSDKMessage(msg, sideStreamState)
+        for (const event of events) {
+          switch (event.type) {
+            case "turn_start":
+            case "text_delta":
+            case "thinking_delta":
+            case "turn_complete":
+            case "error":
+              yield event
+              break
+            case "session_init":
+              // Side query inherits the parent session's prompt cache; the
+              // synthetic init event from the fork carries no info the
+              // overlay needs. Suppress at debug-level (per AGENTS.md
+              // "never silently drop").
+              log.debug("side chat: suppressing session_init from fork", {
+                forkedSessionId,
+              })
+              break
+            case "permission_request":
+            case "tool_use_start":
+            case "tool_use_progress":
+            case "tool_use_end":
+              log.warn(
+                "side chat: tool/permission event leaked despite tool-less fork — dropping",
+                { eventType: event.type, forkedSessionId },
+              )
+              break
+            default:
+              log.debug("side chat: ignoring non-side event", {
+                eventType: event.type,
+              })
+              break
+          }
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      log.warn("side chat: query failed", { error: message, forkedSessionId })
+      yield {
+        type: "error",
+        code: "side_chat_error",
+        message: `Side chat failed: ${message}`,
+        severity: "recoverable",
+      }
+    } finally {
+      opts.signal.removeEventListener("abort", onAbort)
+      try {
+        forkQuery?.close()
+      } catch (err) {
+        log.debug("side chat: forkQuery.close() during teardown threw", {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      // Unlink the fork's JSONL so we don't leak files under
+      // ~/.claude/projects/<cwd-key>/. Tolerate failure — the main session is
+      // unaffected either way.
+      if (forkedSessionId) {
+        try {
+          await sdkDeleteSession(forkedSessionId, { dir })
+          log.debug("side chat: fork deleted", { forkedSessionId })
+        } catch (err) {
+          log.warn("side chat: failed to delete fork JSONL", {
+            forkedSessionId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+    }
+  }
+
   close(): void {
     trace.write({
       dir: "out",
@@ -745,6 +939,14 @@ export class ClaudeAdapter implements AgentBackend {
           })
           const events = mapSDKMessage(msg, this.streamState)
           for (const event of events) {
+            // Track the live session id so sideQuery() can fork from the
+            // correct source — both `session_init` (start of session) and
+            // `turn_complete` (carries SDK result.session_id) refresh it.
+            if (event.type === "session_init" && event.sessionId) {
+              this.liveSessionId = event.sessionId
+            } else if (event.type === "turn_complete" && event.sessionId) {
+              this.liveSessionId = event.sessionId
+            }
             trace.write({
               dir: "internal",
               stage: "mapped_event",

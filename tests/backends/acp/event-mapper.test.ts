@@ -998,7 +998,7 @@ describe("ACP Event Mapper", () => {
   // ---------------------------------------------------------------------------
 
   describe("usage_update → cost_update", () => {
-    it("maps used/size to cost_update with contextTokens", () => {
+    it("maps used/size to cost_update with contextTokens and contextWindow", () => {
       const events = mapAcpUpdate(
         makeParams({
           sessionUpdate: "usage_update",
@@ -1013,6 +1013,7 @@ describe("ACP Event Mapper", () => {
       expect(cost.inputTokens).toBe(5000)
       expect(cost.outputTokens).toBe(0)
       expect(cost.contextTokens).toBe(5000)
+      expect(cost.contextWindow).toBe(128000)
       expect(cost.cost).toBeUndefined()
     })
 
@@ -1031,10 +1032,14 @@ describe("ACP Event Mapper", () => {
       expect(cost.type).toBe("cost_update")
       expect(cost.inputTokens).toBe(3000)
       expect(cost.contextTokens).toBe(3000)
+      expect(cost.contextWindow).toBe(128000)
       expect(cost.cost).toBe(0.05)
     })
 
-    it("returns empty array when neither used nor cost is present", () => {
+    it("emits a cost_update with only contextWindow when only `size` is reported", () => {
+      // Edge case: an agent that reports just the context-window cap without
+      // a per-call usage figure. We still surface it so the reducer can patch
+      // `session.models[].contextWindow`.
       const events = mapAcpUpdate(
         makeParams({
           sessionUpdate: "usage_update",
@@ -1042,7 +1047,87 @@ describe("ACP Event Mapper", () => {
         }),
       )
 
+      expect(events).toHaveLength(1)
+      const cost = events[0]! as any
+      expect(cost.contextWindow).toBe(128000)
+      expect(cost.contextTokens).toBeUndefined()
+    })
+
+    it("returns empty array when used, size, and cost are all missing", () => {
+      const events = mapAcpUpdate(
+        makeParams({
+          sessionUpdate: "usage_update",
+          other: "field",
+        }),
+      )
+
       expect(events).toHaveLength(0)
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // agent_message_chunk piggyback usage (Qwen Code emitUsageMetadata path)
+  // ---------------------------------------------------------------------------
+
+  describe("agent_message_chunk._meta.usage → cost_update", () => {
+    it("emits a cost_update alongside the text mapping when _meta.usage is present", () => {
+      const events = mapAcpUpdate(
+        makeParams({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "hello" },
+          _meta: {
+            usage: {
+              inputTokens: 12345,
+              outputTokens: 678,
+              totalTokens: 13023,
+            },
+            durationMs: 1500,
+          },
+        }),
+      )
+
+      expect(events).toHaveLength(2)
+      const text = events[0]! as any
+      expect(text.type).toBe("text_delta")
+      expect(text.text).toBe("hello")
+      const cost = events[1]! as any
+      expect(cost.type).toBe("cost_update")
+      expect(cost.inputTokens).toBe(12345)
+      expect(cost.outputTokens).toBe(678)
+      expect(cost.contextTokens).toBe(12345)
+    })
+
+    it("emits cost_update even when text is empty (Qwen's keep-alive usage carrier)", () => {
+      // Qwen Code 0.15.x emits an `agent_message_chunk` with `text: ""` purely
+      // to attach `_meta.usage`; the text branch logs+drops the empty string,
+      // but we still want the usage to flow to the reducer.
+      const events = mapAcpUpdate(
+        makeParams({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "" },
+          _meta: {
+            usage: { inputTokens: 9000, outputTokens: 0 },
+          },
+        }),
+      )
+
+      expect(events).toHaveLength(1)
+      const cost = events[0]! as any
+      expect(cost.type).toBe("cost_update")
+      expect(cost.contextTokens).toBe(9000)
+    })
+
+    it("ignores _meta without usage", () => {
+      const events = mapAcpUpdate(
+        makeParams({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "ok" },
+          _meta: { other: "field" },
+        }),
+      )
+
+      expect(events).toHaveLength(1)
+      expect((events[0]! as any).type).toBe("text_delta")
     })
   })
 

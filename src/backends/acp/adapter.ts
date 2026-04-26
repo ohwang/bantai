@@ -582,16 +582,25 @@ export class AcpAdapter extends BaseAdapter {
     return m.name ?? m.modelId ?? m.value ?? ""
   }
 
-  /** Normalize a list of AcpModel into ModelInfo[], skipping entries with no ID */
+  /** Normalize a list of AcpModel into ModelInfo[], skipping entries with no ID.
+   *  Qwen Code (0.15.x) reports the per-model context window via
+   *  `_meta.contextLimit`; surface it as `ModelInfo.contextWindow` so the
+   *  status bar's `model.contextWindow ?? modelContextWindow(raw)` chain
+   *  resolves correctly without the (formatAcpModelId-mangled) IDs ever
+   *  needing a hardcoded entry in MODEL_CONTEXT_WINDOWS. */
   private normalizeModelList(models: AcpModel[]): ModelInfo[] {
     const result: ModelInfo[] = []
     for (const m of models) {
       const id = this.normalizeModelId(m)
       if (!id) continue
+      const meta = m._meta as { contextLimit?: unknown } | undefined
+      const ctx = meta?.contextLimit
+      const contextWindow = typeof ctx === "number" && ctx > 0 ? ctx : undefined
       result.push({
         id,
         name: this.normalizeModelName(m) || id,
         provider: this.presetName,
+        ...(contextWindow !== undefined ? { contextWindow } : {}),
       })
     }
     return result
@@ -1250,7 +1259,34 @@ export class AcpAdapter extends BaseAdapter {
       })
 
       // Wait for the prompt result (which signals turn completion)
-      const result = (await resultPromise) as { stopReason: string } | undefined
+      const result = (await resultPromise) as
+        | {
+            stopReason: string
+            _meta?: {
+              quota?: {
+                token_count?: { input_tokens?: number; output_tokens?: number }
+              }
+            }
+          }
+        | undefined
+
+      // Gemini CLI surfaces per-turn token usage on the prompt response
+      // (`_meta.quota.token_count`) instead of via a `usage_update`
+      // notification. Emit a synthetic cost_update so the reducer's existing
+      // path populates `state.lastTurnInputTokens`, which the status bar
+      // divides by `session.models[].contextWindow ?? modelContextWindow(id)`
+      // to render the context-fill percentage.
+      const quota = result?._meta?.quota?.token_count
+      const inTok = typeof quota?.input_tokens === "number" ? quota.input_tokens : undefined
+      const outTok = typeof quota?.output_tokens === "number" ? quota.output_tokens : undefined
+      if (inTok !== undefined || outTok !== undefined) {
+        this.eventChannel?.push({
+          type: "cost_update",
+          inputTokens: inTok ?? 0,
+          outputTokens: outTok ?? 0,
+          contextTokens: inTok,
+        })
+      }
 
       // Emit turn_complete with stop reason
       this.eventChannel?.push({

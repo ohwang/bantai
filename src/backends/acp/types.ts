@@ -101,7 +101,10 @@ export interface AcpModel {
   value?: string      // ACP spec ID
   name?: string       // Display name (may be absent)
   description?: string
-  _meta?: Record<string, unknown>  // Copilot adds _meta with copilotUsage etc.
+  // Copilot adds `_meta.copilotUsage`; Qwen Code adds `_meta.contextLimit`
+  // (the per-model context-window cap, used by the status bar's % math when
+  // present). Treated as opaque here — consumers narrow per-field.
+  _meta?: Record<string, unknown>
 }
 
 // ---------------------------------------------------------------------------

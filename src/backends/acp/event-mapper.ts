@@ -54,8 +54,18 @@ export function mapAcpUpdate(params: AcpSessionUpdateParams): AgentEvent[] {
   }
 
   switch (update.sessionUpdate) {
-    case "agent_message_chunk":
-      return mapAgentMessageChunk(update as AcpAgentMessageChunk)
+    case "agent_message_chunk": {
+      // Qwen Code piggybacks token usage onto an empty `agent_message_chunk`
+      // by attaching `_meta.usage = { inputTokens, outputTokens, ... }` and
+      // `_meta.durationMs` (see emitUsageMetadata in qwen-code 0.15.x).
+      // Emit a cost_update alongside the text mapping so the reducer's
+      // existing `cost_update` path populates `state.lastTurnInputTokens`
+      // (Qwen never sends a real `usage_update`).
+      return [
+        ...mapAgentMessageChunk(update as AcpAgentMessageChunk),
+        ...mapEmbeddedUsage(update as { _meta?: unknown }),
+      ]
+    }
 
     case "agent_thought_chunk":
       return mapAgentThoughtChunk(update as AcpAgentThoughtChunk)
@@ -73,14 +83,25 @@ export function mapAcpUpdate(params: AcpSessionUpdateParams): AgentEvent[] {
       return mapAvailableCommands(update as AcpAvailableCommandsUpdate)
 
     case "usage_update": {
-      const u = update as { sessionUpdate: string; used?: number; size?: number; cost?: { amount: number; currency: string } }
+      // ACP spec: `{ used: number, size: number, cost?: { amount, currency } }`.
+      // `size` is the live model context window (already-defined by the spec —
+      // we just propagate it). Neither Gemini CLI 0.37.0 nor Qwen Code 0.15.x
+      // emits this notification today, but it's part of the protocol and the
+      // mapping is trivially correct, so we keep it for forward compatibility.
+      const u = update as {
+        sessionUpdate: string
+        used?: number
+        size?: number
+        cost?: { amount: number; currency: string }
+      }
       const events: AgentEvent[] = []
-      if (u.used != null || u.cost) {
+      if (u.used != null || u.cost || u.size != null) {
         events.push({
           type: "cost_update",
           inputTokens: u.used ?? 0,
           outputTokens: 0,
           contextTokens: u.used,
+          contextWindow: u.size,
           cost: u.cost?.amount,
         })
       }
@@ -136,6 +157,35 @@ export function mapAcpUpdate(params: AcpSessionUpdateParams): AgentEvent[] {
         data: { method: "session/update", update },
       }]
   }
+}
+
+// ---------------------------------------------------------------------------
+// Embedded usage (Qwen Code piggybacks per-turn token usage on
+// `agent_message_chunk._meta.usage` — see qwen-code 0.15.x emitUsageMetadata).
+// Returns a `cost_update` event when the shape matches; otherwise empty.
+// ---------------------------------------------------------------------------
+
+function mapEmbeddedUsage(update: { _meta?: unknown }): AgentEvent[] {
+  const meta = update._meta as
+    | {
+        usage?: {
+          inputTokens?: number
+          outputTokens?: number
+          totalTokens?: number
+          thoughtTokens?: number
+          cachedReadTokens?: number
+        }
+      }
+    | undefined
+  const usage = meta?.usage
+  if (!usage) return []
+  if (usage.inputTokens == null && usage.outputTokens == null) return []
+  return [{
+    type: "cost_update",
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    contextTokens: usage.inputTokens,
+  }]
 }
 
 // ---------------------------------------------------------------------------

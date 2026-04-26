@@ -180,3 +180,50 @@ describe("AcpAdapter normalizeModelList — Qwen-style _meta.contextLimit", () =
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// session_init emission: `currentModelId` carries the live model identity
+// ---------------------------------------------------------------------------
+
+describe("AcpAdapter session_init — currentModelId propagation", () => {
+  it("emits session_init with `currentModelId` set to the adapter's currentModel field", () => {
+    // This is the bridge that lets the reducer pick the right ModelInfo from
+    // a multi-entry `availableModels` list (e.g. Qwen Code, where the live
+    // model is whichever one matches `currentModelId` — NOT necessarily
+    // models[0], which is the user's settings.json order).
+    const { adapter } = createTestAdapter()
+    const events: AgentEvent[] = []
+    ;(adapter as any).eventChannel = {
+      push: (e: AgentEvent) => events.push(e),
+      isClosed: () => false,
+      next: async () => ({ done: true, value: undefined }),
+      close: () => {},
+    }
+    ;(adapter as any).discoveredModels = [
+      { modelId: "coder-model(qwen-oauth)", name: "coder-model", _meta: { contextLimit: 1_000_000 } },
+      { modelId: "qwen/qwen3.6-35b-a3b(openai)", name: "Qwen3.6 35B-A3B (LM Studio, local)", _meta: { contextLimit: 262_144 } },
+    ]
+    ;(adapter as any).currentModel = "qwen/qwen3.6-35b-a3b(openai)"
+    ;(adapter as any).discoveredConfigOptions = []
+    ;(adapter as any).sessionId = "test-session-002"
+    // Fire the same emission path that resetSession uses — it's the simpler
+    // of the two session_init sites (no replay/seed prelude to mock out).
+    ;(adapter as any).eventChannel.push({
+      type: "session_init",
+      sessionId: (adapter as any).sessionId,
+      tools: [],
+      models: (adapter as any).normalizeModelList((adapter as any).discoveredModels),
+      ...((adapter as any).currentModel ? { currentModelId: (adapter as any).currentModel } : {}),
+    })
+
+    const init = events.find((e) => e.type === "session_init") as
+      | Extract<AgentEvent, { type: "session_init" }>
+      | undefined
+    expect(init).toBeDefined()
+    expect(init!.currentModelId).toBe("qwen/qwen3.6-35b-a3b(openai)")
+    // The matching ModelInfo must carry contextWindow=262_144 so resolveContextWindow
+    // returns the user's actual cap (not the unrelated coder-model 1M).
+    const live = init!.models.find((m) => m.id === init!.currentModelId)
+    expect(live?.contextWindow).toBe(262_144)
+  })
+})

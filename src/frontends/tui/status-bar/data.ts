@@ -18,7 +18,7 @@ import { useAgent } from "../context/agent"
 import { useMessages } from "../context/messages"
 import { useSession } from "../context/session"
 import type { PermissionMode, SandboxInfo, RateLimitEntry } from "../../../protocol/types"
-import { friendlyModelName, resolveContextWindow } from "../../../protocol/models"
+import { findCurrentModel, friendlyModelName, resolveContextWindow } from "../../../protocol/models"
 import { setTerminalProgress } from "../../../utils/terminal-notify"
 import { toast } from "../context/toast"
 import { colors } from "../theme/tokens"
@@ -380,7 +380,7 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
       // Update terminal progress (context window fill)
       const fill = state.lastTurnInputTokens
       if (fill > 0) {
-        const model = state.session?.models?.[0]
+        const model = findCurrentModel(state.session?.models, state.currentModel)
         const raw = state.currentModel || model?.name || ""
         const ctxWindow = resolveContextWindow(model, raw)
         const pct = Math.min(100, Math.round((fill / ctxWindow) * 100))
@@ -410,7 +410,7 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
   // doesn't flash "unknown model" on startup (mirrors the external bash
   // statusline which uses `.model.display_name` from the input payload).
   const modelDisplay = () => {
-    const model = state.session?.models?.[0]
+    const model = findCurrentModel(state.session?.models, state.currentModel)
     const raw = state.currentModel || model?.name || agent.config.model || ""
     if (!raw) return `unknown model (${backendName()})`
     const friendly = friendlyModelName(raw)
@@ -508,7 +508,7 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
   const ctxPct = createMemo(() => {
     const fill = state.lastTurnInputTokens
     if (fill === 0) return 0
-    const model = state.session?.models?.[0]
+    const model = findCurrentModel(state.session?.models, state.currentModel)
     const raw = state.currentModel || model?.name || ""
     const ctxWindow = resolveContextWindow(model, raw)
     return Math.round((fill / ctxWindow) * 100)

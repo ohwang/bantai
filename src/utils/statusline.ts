@@ -14,7 +14,7 @@
 import path from "node:path"
 import os from "node:os"
 import { log } from "./logger"
-import { friendlyModelName, resolveContextWindow } from "../protocol/models"
+import { findCurrentModel, friendlyModelName, resolveContextWindow } from "../protocol/models"
 import type { SessionContextState } from "../frontends/tui/context/session"
 import type { PermissionMode, RateLimitEntry } from "../protocol/types"
 import { loadConfigSync, type StatusLineSetting } from "../config/settings"
@@ -185,7 +185,10 @@ export function buildStatusLineInput(
   if (sessionStartMs === 0) sessionStartMs = Date.now()
 
   const cwd = process.cwd()
-  const model = sessionState.session?.models?.[0]
+  // `findCurrentModel`, not `models?.[0]`: ACP backends like Qwen Code report
+  // the user's full settings.json model list and the live selection isn't
+  // necessarily index 0 (see findCurrentModel JSDoc).
+  const model = findCurrentModel(sessionState.session?.models, sessionState.currentModel)
   const rawModel = sessionState.currentModel || (model?.name ?? opts.configModel ?? "")
   // `resolveContextWindow` consults `model.id` before falling back to the
   // raw display name, so ACP backends (Gemini, Qwen) that ship `id != name`

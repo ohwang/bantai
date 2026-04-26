@@ -137,6 +137,20 @@ export type SessionInitEvent = {
   models: ModelInfo[]
   account?: AccountInfo
   sessionId?: string
+  /** Which entry in `models[]` is currently active.
+   *
+   *  Used by the reducer to pick the correct `ModelInfo` for `state.currentModel`
+   *  and by `findCurrentModel(...)` to look up the live `contextWindow`.
+   *
+   *  Critical for ACP backends like Qwen Code, which reports an `availableModels`
+   *  array where `[0]` is NOT necessarily the active model — e.g. with three
+   *  models configured, `[0]` may be `coder-model` (1M context) while the live
+   *  selection is `qwen/qwen3.6-35b-a3b(openai)` (262K). Without this field the
+   *  reducer falls back to `models[0]` and the status bar shows the wrong cap.
+   *
+   *  Backends with a single model per session (Claude, Codex) may omit this —
+   *  consumers fall back to `models[0]` when absent. */
+  currentModelId?: string
 }
 export type SessionStateEvent = {
   type: "session_state"

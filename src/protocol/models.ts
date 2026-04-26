@@ -7,6 +7,41 @@
 import { getBackendDescriptor } from "./registry"
 import type { ModelInfo } from "./types"
 
+/**
+ * Find the active `ModelInfo` in a session's model list.
+ *
+ * Why this exists: most UI surfaces (status bar, header, diagnostics) want to
+ * read the **current** model's `contextWindow` — but `state.session.models[]`
+ * is the full available list, in whatever order the backend reported it. For
+ * single-model backends (Claude, Codex) `[0]` happens to be current. For
+ * multi-model ACP backends like Qwen Code, the array is the user's full
+ * configured set and the active model can be anywhere in it (the bug:
+ * Qwen returned `[coder-model (1M), qwen3.6 (262K), gpt-oss (32K)]` with
+ * `qwen3.6` active, and the status bar showed 1M).
+ *
+ * Match strategy:
+ *   1. Exact `id` match against `currentModel`.
+ *   2. Exact `name` match against `currentModel` (handles backends that put
+ *      the display name in `state.currentModel` rather than the id).
+ *   3. Fall back to `models[0]` for backwards compatibility with single-model
+ *      backends and the pre-`session_init` case.
+ *
+ * Returns `undefined` only when `models` itself is empty.
+ */
+export function findCurrentModel(
+  models: ModelInfo[] | undefined,
+  currentModel: string | null,
+): ModelInfo | undefined {
+  if (!models || models.length === 0) return undefined
+  if (currentModel) {
+    const byId = models.find((m) => m.id === currentModel)
+    if (byId) return byId
+    const byName = models.find((m) => m.name === currentModel)
+    if (byName) return byName
+  }
+  return models[0]
+}
+
 /** Map raw API model IDs to friendly display names */
 export const MODEL_NAMES: Record<string, string> = {
   "claude-opus-4-7": "Opus 4.7",

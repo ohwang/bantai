@@ -19,7 +19,7 @@ import { useAgent } from "../context/agent"
 import { useMessages } from "../context/messages"
 import { colors } from "../theme/tokens"
 import { log } from "../../../utils/logger"
-import { friendlyModelName, MODEL_NAMES, MODEL_CONTEXT_WINDOWS, modelContextWindow } from "../../../protocol/models"
+import { findCurrentModel, friendlyModelName, MODEL_NAMES, MODEL_CONTEXT_WINDOWS, modelContextWindow } from "../../../protocol/models"
 import { getStatusLineDiagnostics } from "../../../utils/statusline"
 import { listStatusBars } from "../status-bar/registry"
 import { activeStatusBarId } from "../status-bar/active"
@@ -308,7 +308,9 @@ export function DiagnosticsPanel(_props: { onClose: () => void }) {
     result.push({ title: "TOKENS & COST", entries: tokenEntries })
 
     // -- CONTEXT WINDOW --
-    const ctxModel = session.session?.models?.[0]
+    // `findCurrentModel` (not `models?.[0]`) so multi-model ACP backends
+    // pick the live entry's contextWindow, not the first-listed one.
+    const ctxModel = findCurrentModel(session.session?.models, session.currentModel)
     const ctxWindow = ctxModel?.contextWindow ?? modelContextWindow(rawModel)
     const ctxFill = session.lastTurnInputTokens
     const ctxPct = ctxWindow > 0 && ctxFill > 0 ? ((ctxFill / ctxWindow) * 100).toFixed(1) : "0.0"

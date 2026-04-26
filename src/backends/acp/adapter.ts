@@ -749,6 +749,11 @@ export class AcpAdapter extends BaseAdapter {
         sessionId: this.sessionId,
         tools: [],
         models: this.normalizeModelList(this.discoveredModels),
+        // `currentModel` is the formatAcpModelId() id reported by `session/new`
+        // — pass it through so the reducer doesn't fall back to `models[0]`,
+        // which for Qwen Code is whichever model the user listed first in
+        // `~/.qwen/settings.json`, NOT the live selection.
+        ...(this.currentModel ? { currentModelId: this.currentModel } : {}),
       })
 
       this.emitConfigOptions()
@@ -1079,6 +1084,12 @@ export class AcpAdapter extends BaseAdapter {
         sessionId: this.sessionId,
         tools: [],
         models: this.normalizeModelList(this.discoveredModels),
+        // Tell the reducer which entry in `models[]` is the live one — for
+        // Qwen Code, the array order is the user's settings.json order, not
+        // current-first. Without this, the status bar reads `models[0]`'s
+        // contextWindow (e.g. coder-model = 1M) instead of the actual current
+        // model's (e.g. qwen3.6 = 262K from `_meta.contextLimit`).
+        ...(this.currentModel ? { currentModelId: this.currentModel } : {}),
       })
 
       // 5b. Emit config options if the agent exposed any

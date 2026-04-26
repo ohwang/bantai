@@ -106,7 +106,17 @@ export function reduce(
   switch (event.type) {
     // ----- Session lifecycle -----
 
-    case "session_init":
+    case "session_init": {
+      // Pick the active model: prefer `event.currentModelId` (ACP backends
+      // with multi-model lists, e.g. Qwen Code) and fall back to `models[0]`
+      // (single-model backends like Claude / Codex). `state.currentModel`
+      // stores the **display name** by long-standing convention — keep that.
+      const activeModel = event.currentModelId
+        ? event.models?.find((m) => m.id === event.currentModelId)
+        : undefined
+      const fallbackModel = event.models?.[0]
+      const nextCurrentModel =
+        activeModel?.name ?? fallbackModel?.name ?? next.currentModel
       return {
         ...next,
         sessionState: "IDLE",
@@ -116,12 +126,13 @@ export function reduce(
           account: event.account,
           sessionId: event.sessionId,
         },
-        currentModel: event.models?.[0]?.name ?? next.currentModel,
+        currentModel: nextCurrentModel,
         // Todos are per-session in-memory state — a new session_init always
         // starts from an empty list, even if the prior session left a
         // partial TodoWrite around (e.g. after resetSession / /new).
         todos: [],
       }
+    }
 
     // ----- Turn lifecycle -----
 

@@ -8,10 +8,12 @@ import {
   MODEL_NAMES,
   MODEL_CONTEXT_WINDOWS,
   DEFAULT_CONTEXT_WINDOW,
+  findCurrentModel,
   friendlyModelName,
   modelContextWindow,
   resolveContextWindow,
 } from "../../src/protocol/models"
+import type { ModelInfo } from "../../src/protocol/types"
 
 describe("friendlyModelName", () => {
   it("maps claude-opus-4-6 to 'Opus 4.6'", () => {
@@ -122,5 +124,62 @@ describe("resolveContextWindow", () => {
     const model = { id: "auto-gemini-3", name: "Gemini 3 (Auto)", contextWindow: 0 }
     // Should fall through to the id lookup, not multiply by zero downstream.
     expect(resolveContextWindow(model, "Gemini 3 (Auto)")).toBe(1_000_000)
+  })
+})
+
+describe("findCurrentModel", () => {
+  // Realistic Qwen Code 0.15.x payload — three configured models, the live
+  // one is `[1]` (NOT `[0]`). This is the exact shape that broke the status
+  // bar: `models[0]` (coder-model, 1M ctx) hijacked the % math even though
+  // the user was running the local 262K qwen3.6 model.
+  const QWEN_MODELS: ModelInfo[] = [
+    { id: "coder-model(qwen-oauth)", name: "coder-model", provider: "qwen", contextWindow: 1_000_000 },
+    { id: "qwen/qwen3.6-35b-a3b(openai)", name: "Qwen3.6 35B-A3B (LM Studio, local)", provider: "qwen", contextWindow: 262_144 },
+    { id: "openai/gpt-oss-20b(openai)", name: "GPT-OSS 20B (LM Studio, local)", provider: "qwen", contextWindow: 32_768 },
+  ]
+
+  it("returns the model whose id matches `currentModel` even when it isn't first", () => {
+    // Critical regression: this is the bug we shipped this fix for.
+    const model = findCurrentModel(QWEN_MODELS, "qwen/qwen3.6-35b-a3b(openai)")
+    expect(model?.id).toBe("qwen/qwen3.6-35b-a3b(openai)")
+    expect(model?.contextWindow).toBe(262_144)
+  })
+
+  it("falls back to a name match when `currentModel` is the display name", () => {
+    // Some surfaces (header-bar's `state.currentModel`) carry the **name**
+    // rather than the id — `findCurrentModel` must accept both.
+    const model = findCurrentModel(QWEN_MODELS, "GPT-OSS 20B (LM Studio, local)")
+    expect(model?.id).toBe("openai/gpt-oss-20b(openai)")
+    expect(model?.contextWindow).toBe(32_768)
+  })
+
+  it("falls back to `models[0]` when `currentModel` is null (pre-session_init)", () => {
+    // Before session_init lands, `state.currentModel` is null — preserve the
+    // historical behaviour of "best guess = first reported model".
+    const model = findCurrentModel(QWEN_MODELS, null)
+    expect(model?.id).toBe("coder-model(qwen-oauth)")
+  })
+
+  it("falls back to `models[0]` when `currentModel` matches nothing in the list", () => {
+    // Defensive: a stale `currentModel` (left over from a previous backend)
+    // shouldn't crash — fall through to the first reported model.
+    const model = findCurrentModel(QWEN_MODELS, "deleted-model")
+    expect(model?.id).toBe("coder-model(qwen-oauth)")
+  })
+
+  it("returns undefined when the model list is empty or undefined", () => {
+    expect(findCurrentModel(undefined, "anything")).toBeUndefined()
+    expect(findCurrentModel([], "anything")).toBeUndefined()
+  })
+
+  it("prefers id-match over name-match when both are present", () => {
+    // Shouldn't happen in practice (id ≠ name across distinct entries) but
+    // pin the deterministic behaviour: id wins so behaviour matches the
+    // adapter's `currentModelId` semantic.
+    const models: ModelInfo[] = [
+      { id: "alpha", name: "Beta", provider: "x" },
+      { id: "Beta", name: "Gamma", provider: "x" },
+    ]
+    expect(findCurrentModel(models, "Beta")?.id).toBe("Beta")
   })
 })

@@ -49,6 +49,51 @@ describe("ConversationState reducer", () => {
       ])
       expect(state.session!.account?.email).toBe("test@example.com")
     })
+
+    it("sets currentModel from `currentModelId` lookup, NOT blindly from models[0]", () => {
+      // Regression: Qwen Code reports the user's full settings.json model
+      // list in arbitrary order — `models[0]` may be `coder-model` (1M ctx)
+      // even when the live selection is `qwen3.6` (262K). Without the
+      // currentModelId-aware lookup, `state.currentModel` ended up as
+      // "coder-model" and the status bar showed the wrong context window.
+      const state = applyEvents([
+        {
+          type: "session_init",
+          tools: [],
+          models: [
+            { id: "coder-model(qwen-oauth)", name: "coder-model", provider: "qwen", contextWindow: 1_000_000 },
+            { id: "qwen/qwen3.6-35b-a3b(openai)", name: "Qwen3.6 35B-A3B (LM Studio, local)", provider: "qwen", contextWindow: 262_144 },
+          ],
+          currentModelId: "qwen/qwen3.6-35b-a3b(openai)",
+        },
+      ])
+      expect(state.currentModel).toBe("Qwen3.6 35B-A3B (LM Studio, local)")
+    })
+
+    it("falls back to models[0]?.name when currentModelId is omitted (Claude/Codex single-model)", () => {
+      const state = applyEvents([
+        {
+          type: "session_init",
+          tools: [],
+          models: [{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "anthropic" }],
+        },
+      ])
+      expect(state.currentModel).toBe("Claude Sonnet 4.6")
+    })
+
+    it("falls back to models[0]?.name when currentModelId points at no entry (defensive)", () => {
+      // A stale id from a prior session shouldn't crash — fall back to the
+      // first reported model rather than leaving currentModel unchanged.
+      const state = applyEvents([
+        {
+          type: "session_init",
+          tools: [],
+          models: [{ id: "auto-gemini-3", name: "Gemini 3 (Auto)", provider: "gemini" }],
+          currentModelId: "deleted-model",
+        },
+      ])
+      expect(state.currentModel).toBe("Gemini 3 (Auto)")
+    })
   })
 
   // -----------------------------------------------------------------------

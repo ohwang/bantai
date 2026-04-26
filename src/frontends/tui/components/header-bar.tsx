@@ -13,7 +13,7 @@ import { resolve } from "node:path"
 import { TextAttributes } from "@opentui/core"
 import { useSession } from "../context/session"
 import { useAgent } from "../context/agent"
-import { friendlyModelName, resolveContextWindow } from "../../../protocol/models"
+import { findCurrentModel, friendlyModelName, resolveContextWindow } from "../../../protocol/models"
 import { colors } from "../theme/tokens"
 
 /**
@@ -68,7 +68,12 @@ export function HeaderBar() {
     // the active backend, which would display a Claude model name for Codex
     // sessions before session_init arrives. Better to admit we don't know
     // yet than to pretend.
-    const model = state.session?.models?.[0]
+    //
+    // `findCurrentModel` (rather than `models?.[0]`) because Qwen Code's ACP
+    // bundle reports the user's full settings.json model list in arbitrary
+    // order — the active model can be `models[1]` or later, and the wrong
+    // entry's `contextWindow` would otherwise drive the status bar's % math.
+    const model = findCurrentModel(state.session?.models, state.currentModel)
     const raw = state.currentModel || model?.name || ""
 
     // No model reported by the backend yet — show the backend name alongside

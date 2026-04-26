@@ -375,16 +375,23 @@ export function createSessionRegistry(opts: CreateRegistryOpts): SessionRegistry
                 if (event.sessionId) {
                   store.setBackendSessionId(key, event.sessionId)
                 }
-                const firstModel = event.models[0]
-                if (firstModel?.id && entry.model !== firstModel.id) {
-                  entry.model = firstModel.id
+                // For multi-model ACP backends (Qwen Code) `models[0]` is
+                // whichever model the user listed first in their settings —
+                // not necessarily the live one. Prefer the explicit
+                // `currentModelId` when the adapter ships it.
+                const activeModel =
+                  (event.currentModelId
+                    ? event.models.find((m) => m.id === event.currentModelId)
+                    : undefined) ?? event.models[0]
+                if (activeModel?.id && entry.model !== activeModel.id) {
+                  entry.model = activeModel.id
                   summaryDirty = true
                 }
                 if (
-                  firstModel?.contextWindow &&
-                  entry.contextWindow !== firstModel.contextWindow
+                  activeModel?.contextWindow &&
+                  entry.contextWindow !== activeModel.contextWindow
                 ) {
-                  entry.contextWindow = firstModel.contextWindow
+                  entry.contextWindow = activeModel.contextWindow
                   summaryDirty = true
                 }
               } else if (event.type === "model_changed") {

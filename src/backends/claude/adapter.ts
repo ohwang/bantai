@@ -176,6 +176,12 @@ type ClaudeSdkRuntime = {
   query: typeof sdkQuery
   startup: typeof sdkStartup
   listSessions: typeof sdkListSessions
+  /** Optional — only required by sideQuery(). Falling back to the live SDK
+   *  module export keeps existing call sites that pass a partial runtime
+   *  (e.g. older tests) working unchanged. */
+  forkSession?: typeof sdkForkSession
+  /** Optional — paired with forkSession; teardown unlinks the JSONL. */
+  deleteSession?: typeof sdkDeleteSession
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 5_000
@@ -183,6 +189,8 @@ const defaultClaudeSdkRuntime: ClaudeSdkRuntime = {
   query: sdkQuery,
   startup: sdkStartup,
   listSessions: sdkListSessions,
+  forkSession: sdkForkSession,
+  deleteSession: sdkDeleteSession,
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +680,8 @@ export class ClaudeAdapter implements AgentBackend {
     opts.signal.addEventListener("abort", onAbort, { once: true })
 
     try {
-      const forkResult = await sdkForkSession(sourceSessionId, {
+      const forkFn = this.sdk.forkSession ?? sdkForkSession
+      const forkResult = await forkFn(sourceSessionId, {
         dir,
         title: "side chat (bantai)",
       })
@@ -772,7 +781,8 @@ export class ClaudeAdapter implements AgentBackend {
       // unaffected either way.
       if (forkedSessionId) {
         try {
-          await sdkDeleteSession(forkedSessionId, { dir })
+          const deleteFn = this.sdk.deleteSession ?? sdkDeleteSession
+          await deleteFn(forkedSessionId, { dir })
           log.debug("side chat: fork deleted", { forkedSessionId })
         } catch (err) {
           log.warn("side chat: failed to delete fork JSONL", {

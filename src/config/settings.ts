@@ -23,6 +23,10 @@ import os from "node:os"
 import fs from "node:fs"
 import { log } from "../utils/logger"
 import type { PermissionMode } from "../protocol/types"
+import {
+  isKnownPermissionMode,
+  listPermissionModesForCli,
+} from "../protocol/permission-modes"
 import { isKnownBackendId, knownBackendIds, type BackendId } from "../protocol/registry"
 
 // ---------------------------------------------------------------------------
@@ -338,9 +342,10 @@ export function coerceSettingValue(key: keyof BantaiConfig, raw: string): unknow
       return trimmed
     }
     case "permissionMode": {
-      const valid: PermissionMode[] = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"]
-      if (!valid.includes(trimmed as PermissionMode)) {
-        throw new Error(`expected one of ${valid.join("|")} for permissionMode, got "${raw}"`)
+      if (!isKnownPermissionMode(trimmed)) {
+        throw new Error(
+          `expected one of ${listPermissionModesForCli()} for permissionMode, got "${raw}"`,
+        )
       }
       return trimmed
     }

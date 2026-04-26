@@ -1140,6 +1140,12 @@ export interface PermissionModeDetail {
 /**
  * Permission mode — shared vocabulary across backends.
  *
+ * The closed enumeration lives in `protocol/permission-modes.ts`; this is
+ * a re-export so existing `import { PermissionMode } from "../protocol/types"`
+ * call sites keep working. New code should import from
+ * `protocol/permission-modes` directly when it also needs helpers
+ * (`isKnownPermissionMode`, `knownPermissionModeIds`, etc.).
+ *
  * IMPORTANT: These names provide a common UI language, but the actual
  * enforcement varies by backend. See SandboxInfo for per-backend details.
  *
@@ -1151,13 +1157,8 @@ export interface PermissionModeDetail {
  * - "auto"              — Model classifier decides approve/deny per request
  *                         (no prompt surfaced when the classifier is confident)
  */
-export type PermissionMode =
-  | "default"
-  | "acceptEdits"
-  | "bypassPermissions"
-  | "plan"
-  | "dontAsk"
-  | "auto"
+export type { PermissionMode } from "./permission-modes"
+import type { PermissionMode } from "./permission-modes"
 
 export interface TokenUsage {
   inputTokens: number

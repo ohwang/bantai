@@ -2,22 +2,14 @@ import { existsSync, readdirSync, readFileSync as _readFileSync } from "node:fs"
 import { join, basename } from "node:path"
 import { homedir } from "node:os"
 import type { AgentDefinition } from "./types"
-import type { PermissionMode, EffortLevel } from "../protocol/types"
+import type { EffortLevel } from "../protocol/types"
+import { isKnownPermissionMode } from "../protocol/permission-modes"
 import { isKnownBackendId, knownBackendIds } from "../protocol/registry"
 import { log } from "../utils/logger"
 
 // ---------------------------------------------------------------------------
 // Frontmatter parser
 // ---------------------------------------------------------------------------
-
-const VALID_PERMISSION_MODES = new Set<string>([
-  "default",
-  "acceptEdits",
-  "bypassPermissions",
-  "plan",
-  "dontAsk",
-  "auto",
-])
 
 const VALID_EFFORT_LEVELS = new Set<string>([
   "low",
@@ -192,9 +184,9 @@ export function parseDefinition(
   // PermissionMode (validated)
   if (
     typeof fields.permissionMode === "string" &&
-    VALID_PERMISSION_MODES.has(fields.permissionMode)
+    isKnownPermissionMode(fields.permissionMode)
   ) {
-    def.permissionMode = fields.permissionMode as PermissionMode
+    def.permissionMode = fields.permissionMode
   }
 
   // EffortLevel (validated)

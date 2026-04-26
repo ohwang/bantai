@@ -27,6 +27,7 @@ import { useSession } from "../context/session"
 import { useAgent } from "../context/agent"
 import { colors } from "../theme/tokens"
 import type { PermissionMode } from "../../../protocol/types"
+import { cyclerPermissionModeIds } from "../../../protocol/permission-modes"
 import { getStatusLineConfig, buildStatusLineInput, executeStatusLineCommand } from "../../../utils/statusline"
 import { ansiToStyledText } from "../../../utils/ansi-to-styled"
 import { useStatusBarData, rateLimitColor } from "../status-bar/data"
@@ -35,16 +36,13 @@ import { activeStatusBarId } from "../status-bar/active"
 import type { StatusBarPreset } from "../status-bar/types"
 
 // ---------------------------------------------------------------------------
-// Permission mode cycle order
+// Permission mode cycle order — single source of truth in
+// `protocol/permission-modes.ts`. The cycler intersects this with the active
+// backend's `supportedPermissionModes`, so adding a mode to the registry with
+// `inCycler: true` automatically wires it into Shift-Tab.
 // ---------------------------------------------------------------------------
 
-const PERM_MODE_CYCLE: PermissionMode[] = [
-  "default",
-  "acceptEdits",
-  "auto",
-  "bypassPermissions",
-  "plan",
-]
+const PERM_MODE_CYCLE: readonly PermissionMode[] = cyclerPermissionModeIds()
 
 function permissionModeLabel(mode: PermissionMode | undefined): string {
   switch (mode) {

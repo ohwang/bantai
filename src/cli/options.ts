@@ -11,6 +11,7 @@
 import type { Command } from "commander"
 import type { SessionConfig, PermissionMode } from "../protocol/types"
 import { knownBackendIds } from "../protocol/registry"
+import { listPermissionModesForCli } from "../protocol/permission-modes"
 
 /**
  * Output format for `bantai run`. Mirrors `claude -p`'s `--output-format` so
@@ -119,7 +120,7 @@ export function addTuiOptions(cmd: Command): Command {
     .option("-c, --continue", "Continue most recent session")
     .option("-r, --resume [id]", "Resume a session (omit id for interactive picker)")
     .option("-b, --backend <name>", `Backend (${knownBackendIds().join(", ")})`)
-    .option("--permission-mode <mode>", "Permission mode (default, acceptEdits, bypassPermissions, plan, dontAsk, auto)")
+    .option("--permission-mode <mode>", `Permission mode (${listPermissionModesForCli()})`)
     .option("--dangerously-skip-permissions", "Shorthand for full-access bypass mode")
     .option("--max-turns <n>", "Maximum turns", parseIntPositive)
     .option("--max-budget <usd>", "Maximum budget in USD", parseFloatPositive)

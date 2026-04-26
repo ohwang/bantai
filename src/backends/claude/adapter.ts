@@ -10,7 +10,15 @@
  * - Process lifecycle management (SIGINT/SIGTERM/SIGHUP cleanup)
  */
 
-import { query as sdkQuery, listSessions as sdkListSessions, type Options as SDKOptions, type SDKUserMessage as SDKUserMsg, type ModelInfo as SDKModelInfo } from "@anthropic-ai/claude-agent-sdk"
+import {
+  query as sdkQuery,
+  startup as sdkStartup,
+  listSessions as sdkListSessions,
+  type Options as SDKOptions,
+  type SDKUserMessage as SDKUserMsg,
+  type ModelInfo as SDKModelInfo,
+  type WarmQuery as SDKWarmQuery,
+} from "@anthropic-ai/claude-agent-sdk"
 import { getDiagnosticsSdkMcpConfig } from "../../mcp/server"
 import { getCrossagentSdkMcpConfig } from "../../subagents/mcp-tools"
 import { log } from "../../utils/logger"
@@ -160,17 +168,32 @@ import {
 // ---------------------------------------------------------------------------
 
 type SDKQuery = ReturnType<typeof sdkQuery>
+type ClaudeSdkRuntime = {
+  query: typeof sdkQuery
+  startup: typeof sdkStartup
+  listSessions: typeof sdkListSessions
+}
+
+const DEFAULT_STARTUP_TIMEOUT_MS = 5_000
+const defaultClaudeSdkRuntime: ClaudeSdkRuntime = {
+  query: sdkQuery,
+  startup: sdkStartup,
+  listSessions: sdkListSessions,
+}
 
 // ---------------------------------------------------------------------------
 // Claude V1 Adapter
 // ---------------------------------------------------------------------------
 
 export class ClaudeAdapter implements AgentBackend {
+  constructor(private readonly sdk: ClaudeSdkRuntime = defaultClaudeSdkRuntime) {}
+
   private static sdkVersion: string = (() => {
     try { return require("@anthropic-ai/claude-agent-sdk/package.json").version } catch { return "unknown" }
   })()
 
   private activeQuery: SDKQuery | null = null
+  private pendingWarmQuery: SDKWarmQuery | null = null
   private messageQueue = new AsyncQueue<UserMessage>()
   // Pending replay context from /switch — prepended to the next user message
   // as a marked historical section so the model treats it as background
@@ -354,18 +377,8 @@ export class ClaudeAdapter implements AgentBackend {
       // Create the message iterable for multi-turn
       const messageIterable = this.createMessageIterable(config)
 
-      // Start the query
-      log.info("ClaudeAdapter: creating SDK query", { model: options.model, permissionMode: options.permissionMode, hasMcpServers: !!(options.mcpServers && Object.keys(options.mcpServers).length) })
-      trace.write({
-        dir: "out",
-        stage: "sdk_call",
-        type: "query",
-        payload: { options },
-      })
-      this.activeQuery = sdkQuery({
-        prompt: messageIterable,
-        options,
-      })
+      // Start the query via a pre-warmed SDK subprocess when possible.
+      this.activeQuery = await this.createQuery(messageIterable, options)
       log.info("ClaudeAdapter: SDK query created", { hasQuery: !!this.activeQuery })
 
       // Signal readiness — replay stashed, SDK query kicked off, message
@@ -559,7 +572,7 @@ export class ClaudeAdapter implements AgentBackend {
 
   async listSessions(): Promise<SessionInfo[]> {
     try {
-      const sessions = await sdkListSessions({ dir: process.cwd() })
+      const sessions = await this.sdk.listSessions({ dir: process.cwd() })
       return sessions.map((s) => ({
         id: s.sessionId,
         title: s.summary ?? s.firstPrompt ?? "Untitled",
@@ -602,6 +615,13 @@ export class ClaudeAdapter implements AgentBackend {
       this.eventChannel = null
     }
 
+    // Close any pre-warmed subprocess that has not yet been consumed by
+    // WarmQuery.query(). Once consumed, activeQuery owns the underlying process.
+    if (this.pendingWarmQuery) {
+      this.pendingWarmQuery.close()
+      this.pendingWarmQuery = null
+    }
+
     // Close the active query
     if (this.activeQuery) {
       this.activeQuery.close()
@@ -619,6 +639,69 @@ export class ClaudeAdapter implements AgentBackend {
     }
     this.pendingElicitations.clear()
     this.pendingElicitationInputs.clear()
+  }
+
+
+  private async createQuery(
+    prompt: string | AsyncIterable<SDKUserMsg>,
+    options: SDKOptions,
+  ): Promise<SDKQuery> {
+    log.info("ClaudeAdapter: prewarming SDK query", {
+      model: options.model,
+      permissionMode: options.permissionMode,
+      initializeTimeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
+      hasMcpServers: !!(options.mcpServers && Object.keys(options.mcpServers).length),
+    })
+    trace.write({
+      dir: "out",
+      stage: "sdk_call",
+      type: "startup",
+      payload: { options, initializeTimeoutMs: DEFAULT_STARTUP_TIMEOUT_MS },
+    })
+
+    try {
+      const warmQuery = await this.sdk.startup({
+        options,
+        initializeTimeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
+      })
+
+      if (this.closed) {
+        warmQuery.close()
+        throw new Error("claude closed during startup")
+      }
+
+      this.pendingWarmQuery = warmQuery
+      let query: SDKQuery
+      try {
+        query = warmQuery.query(prompt)
+      } catch (err) {
+        this.pendingWarmQuery = null
+        warmQuery.close()
+        throw err
+      }
+      this.pendingWarmQuery = null
+      log.info("ClaudeAdapter: using pre-warmed SDK query")
+      trace.write({
+        dir: "out",
+        stage: "sdk_call",
+        type: "warm_query",
+        payload: { options },
+      })
+      return query
+    } catch (err) {
+      if (this.closed) throw err
+      const message = err instanceof Error ? err.message : String(err)
+      log.warn("ClaudeAdapter: SDK startup prewarm failed; falling back to cold query", {
+        error: message,
+      })
+      trace.write({
+        dir: "out",
+        stage: "sdk_call",
+        type: "query",
+        payload: { options, warmFallbackReason: message },
+      })
+      return this.sdk.query({ prompt, options })
+    }
   }
 
   // -----------------------------------------------------------------------

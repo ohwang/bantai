@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, mock } from "bun:test"
 import { ClaudeAdapter } from "../../src/backends/claude/adapter"
 import { mapSDKMessage, mapStreamEvent, mapAssistantMessage, ToolStreamState } from "../../src/backends/claude/event-mapper"
 import { parseElicitationInput, handlePermission } from "../../src/backends/claude/permission-bridge"
@@ -7,6 +7,27 @@ import type { AgentEvent } from "../../src/protocol/types"
 
 /** Narrow an AgentEvent to a specific union member by its `type` discriminant. */
 type EventOf<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>
+
+function createFakeSdkQuery(messages: any[] = [{
+  type: "system",
+  subtype: "init",
+  tools: [],
+  model: "claude-sonnet-4-6",
+  cwd: process.cwd(),
+  session_id: "test-session",
+}]): any {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const message of messages) yield message
+    },
+    close: mock(() => {}),
+    interrupt: mock(() => {}),
+    setModel: mock(async () => {}),
+    setPermissionMode: mock(async () => {}),
+    applyFlagSettings: mock(async () => {}),
+    supportedModels: mock(async () => []),
+  }
+}
 
 describe("ClaudeAdapter", () => {
   describe("capabilities", () => {
@@ -97,6 +118,97 @@ describe("ClaudeAdapter", () => {
       // this.eventChannel?.close() should be safe (not this.eventChannel!.close())
       const channel = (adapter as any).eventChannel
       expect(() => channel?.close()).not.toThrow()
+    })
+  })
+
+
+  describe("SDK startup prewarming", () => {
+    it("uses startup() and sends the prompt through the returned WarmQuery", async () => {
+      const coldQuery = mock(() => createFakeSdkQuery())
+      const warmQueryFn = mock((_prompt: unknown) => createFakeSdkQuery())
+      const warmClose = mock(() => {})
+      const startup = mock(async () => ({
+        query: warmQueryFn,
+        close: warmClose,
+        [Symbol.asyncDispose]: async () => warmClose(),
+      }))
+      const adapter = new ClaudeAdapter({
+        query: coldQuery as any,
+        startup: startup as any,
+        listSessions: mock(async () => []) as any,
+      } as any)
+
+      const gen = adapter.start({ cwd: process.cwd(), model: "claude-sonnet-4-6" })
+      const first = await gen.next()
+
+      expect(startup).toHaveBeenCalledTimes(1)
+      expect(warmQueryFn).toHaveBeenCalledTimes(1)
+      expect(coldQuery).not.toHaveBeenCalled()
+      expect(first.done).toBe(false)
+      expect(first.value?.type).toBe("session_init")
+
+      adapter.close()
+    })
+
+    it("falls back to cold query when startup() fails", async () => {
+      const coldQuery = mock(() => createFakeSdkQuery())
+      const startup = mock(async () => {
+        throw new Error("startup failed")
+      })
+      const adapter = new ClaudeAdapter({
+        query: coldQuery as any,
+        startup: startup as any,
+        listSessions: mock(async () => []) as any,
+      } as any)
+
+      const gen = adapter.start({ cwd: process.cwd(), model: "claude-sonnet-4-6" })
+      const first = await gen.next()
+
+      expect(startup).toHaveBeenCalledTimes(1)
+      expect(coldQuery).toHaveBeenCalledTimes(1)
+      expect(first.done).toBe(false)
+      expect(first.value?.type).toBe("session_init")
+
+      adapter.close()
+    })
+
+    it("falls back and closes the warm handle when WarmQuery.query() fails", async () => {
+      const coldQuery = mock(() => createFakeSdkQuery())
+      const warmClose = mock(() => {})
+      const startup = mock(async () => ({
+        query: mock(() => {
+          throw new Error("warm query failed")
+        }),
+        close: warmClose,
+        [Symbol.asyncDispose]: async () => warmClose(),
+      }))
+      const adapter = new ClaudeAdapter({
+        query: coldQuery as any,
+        startup: startup as any,
+        listSessions: mock(async () => []) as any,
+      } as any)
+
+      const gen = adapter.start({ cwd: process.cwd(), model: "claude-sonnet-4-6" })
+      const first = await gen.next()
+
+      expect(startup).toHaveBeenCalledTimes(1)
+      expect(warmClose).toHaveBeenCalledTimes(1)
+      expect(coldQuery).toHaveBeenCalledTimes(1)
+      expect(first.done).toBe(false)
+      expect(first.value?.type).toBe("session_init")
+
+      adapter.close()
+    })
+
+    it("closes an unconsumed warm query on adapter close", () => {
+      const adapter = new ClaudeAdapter()
+      const warmClose = mock(() => {})
+      ;(adapter as any).pendingWarmQuery = { close: warmClose }
+
+      adapter.close()
+
+      expect(warmClose).toHaveBeenCalledTimes(1)
+      expect((adapter as any).pendingWarmQuery).toBeNull()
     })
   })
 

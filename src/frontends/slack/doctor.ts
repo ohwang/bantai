@@ -17,6 +17,8 @@
  */
 
 import type { App } from "@slack/bolt"
+import { realpath } from "node:fs/promises"
+import path from "node:path"
 import {
   createBoltApp,
   runBootDiagnostics,
@@ -25,6 +27,26 @@ import {
 } from "./transport/bolt"
 import { loadSlackConfig } from "./config/loader"
 import type { ResolvedSlackConfig } from "./config/schema"
+
+/**
+ * Per-channel `project_dir` symlink-drift finding. `configured` is the
+ * (already-resolved-to-absolute) path the loader handed us; `realpath`
+ * is what `realpath()` returned. They differ iff the configured path
+ * traverses at least one symlink. `code` is one of:
+ *   - "differs"    — paths differ; this is the real footgun signal.
+ *   - "stat_error" — `realpath()` threw (path missing, permission, …).
+ *                    Surfaced as a finding so the operator at least
+ *                    knows the path is broken at config-load time
+ *                    instead of finding out on the first message.
+ */
+export interface ProjectDirRealpathFinding {
+  channelId: string
+  channelName?: string
+  configured: string
+  realpath?: string
+  code: "differs" | "stat_error"
+  message: string
+}
 
 export interface SlackDoctorReport {
   /** Where the config was loaded from. */
@@ -40,6 +62,15 @@ export interface SlackDoctorReport {
     url?: string
   }
   findings: DiagnosticFinding[]
+  /**
+   * One entry per channel whose resolved `project_dir` differs from its
+   * `realpath()`. The most common cause is the slack-agent-projects
+   * `./repos/<repo>` symlinks that sapcli used to create — they routed
+   * through `../../<repo>` so the kernel landed bantai on a different
+   * absolute path than the config referred to. Empty array means every
+   * channel is symlink-clean. Channels without `project_dir` are skipped.
+   */
+  projectDirRealpath: ProjectDirRealpathFinding[]
   /**
    * Admin surface findings — always present (defaults fire on absent
    * `admin` block) but `enabled=false` means nothing will bind.
@@ -91,6 +122,7 @@ export async function runSlackDoctor(
   try {
     const auth = await verifyAuth(app)
     const findings = await runBootDiagnostics(app)
+    const projectDirRealpath = await checkProjectDirRealpaths(config)
     const admin: SlackDoctorReport["admin"] = {
       enabled: config.admin.enabled,
       host: config.admin.host,
@@ -119,6 +151,7 @@ export async function runSlackDoctor(
         ...(auth.url ? { url: auth.url } : {}),
       },
       findings,
+      projectDirRealpath,
       admin,
     }
   } finally {
@@ -156,6 +189,18 @@ export function formatSlackDoctorReport(report: SlackDoctorReport): string {
     }
   }
   lines.push("")
+  if (report.projectDirRealpath.length === 0) {
+    lines.push("project_dir: every channel resolves to its realpath")
+  } else {
+    lines.push(
+      `project_dir: ${report.projectDirRealpath.length} symlink-drift finding(s)`,
+    )
+    for (const f of report.projectDirRealpath) {
+      const id = f.channelName ? `${f.channelName} (${f.channelId})` : f.channelId
+      lines.push(`  - ${id} [${f.code}]: ${f.message}`)
+    }
+  }
+  lines.push("")
   lines.push("admin:")
   lines.push(`  enabled:    ${report.admin.enabled ? "yes" : "no"}`)
   if (report.admin.enabled) {
@@ -168,6 +213,63 @@ export function formatSlackDoctorReport(report: SlackDoctorReport): string {
     }
   }
   return lines.join("\n")
+}
+
+/**
+ * For each channel with a `project_dir`, compare the loader-resolved
+ * absolute path to its `realpath()`. Differences mean the cwd bantai
+ * chdirs into is not the cwd the config refers to — exactly the symlink
+ * footgun the sapcli sibling-symlink removal addressed.
+ *
+ * Inline configs (`source === "<inline>"`) skip relative-path channels
+ * because the loader returns those unresolved (no on-disk dir to anchor
+ * against); the test harness asserts on the absolute-path branch.
+ *
+ * Exported for test injection — `checkProjectDirRealpaths(config, fakeRealpath)`
+ * lets tests drive specific path/realpath outcomes without touching the
+ * real filesystem.
+ */
+export async function checkProjectDirRealpaths(
+  config: ResolvedSlackConfig,
+  realpathFn: (p: string) => Promise<string> = realpath,
+): Promise<ProjectDirRealpathFinding[]> {
+  const out: ProjectDirRealpathFinding[] = []
+  for (const channel of config.channels) {
+    const projectDir = channel.project_dir
+    if (projectDir === undefined) continue
+    // Skip relative paths that the loader couldn't anchor (inline-config
+    // case). They will eventually be resolved by the routing layer
+    // against process.cwd, but that's not a stable input for the doctor.
+    if (!path.isAbsolute(projectDir)) continue
+    let resolved: string
+    try {
+      resolved = await realpathFn(projectDir)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      out.push({
+        channelId: channel.id,
+        ...(channel.name ? { channelName: channel.name } : {}),
+        configured: projectDir,
+        code: "stat_error",
+        message: `realpath(${projectDir}) failed: ${reason}`,
+      })
+      continue
+    }
+    if (resolved !== projectDir) {
+      out.push({
+        channelId: channel.id,
+        ...(channel.name ? { channelName: channel.name } : {}),
+        configured: projectDir,
+        realpath: resolved,
+        code: "differs",
+        message:
+          `project_dir resolves through a symlink: configured=${projectDir} ` +
+          `realpath=${resolved} — JSONL session files will be keyed by the ` +
+          `realpath, not the configured path.`,
+      })
+    }
+  }
+  return out
 }
 
 /**

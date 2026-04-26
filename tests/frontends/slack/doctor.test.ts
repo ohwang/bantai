@@ -1,10 +1,51 @@
 import { describe, expect, it } from "bun:test"
 import {
+  checkProjectDirRealpaths,
   formatSlackDoctorReport,
   runSlackDoctor,
   type SlackDoctorReport,
 } from "../../../src/frontends/slack/doctor"
-import type { ResolvedSlackConfig } from "../../../src/frontends/slack/config/schema"
+import type {
+  ChannelOverride,
+  ResolvedSlackConfig,
+} from "../../../src/frontends/slack/config/schema"
+
+function makeConfig(channels: ChannelOverride[]): ResolvedSlackConfig {
+  return {
+    workspace: { mode: "socket", webhookPath: "/slack/events" },
+    defaults: {
+      backend: "claude",
+      permission_mode: "default",
+      require_mention: true,
+      trigger_name: "bantai",
+      verbosity: "normal",
+      session_banner: true,
+      approvers: [],
+      auto_join_threads: true,
+      thread_require_explicit_mention: false,
+      thread_history_limit: 20,
+      interactive_replies: false,
+      debounce_ms: 0,
+      native_streaming: false,
+      show_cost: false,
+      turn_timeout_s: 0,
+      max_budget_usd: 0,
+      idle_timeout_s: 3600,
+    },
+    channels,
+    mcpServers: {},
+    storePath: "",
+    admin: {
+      enabled: false,
+      host: "127.0.0.1",
+      port: 4242,
+      tokenPath: "/t/token",
+      readOnly: false,
+      sessionRingSize: 200,
+    },
+    source: "/etc/bantai/slack.json",
+  }
+}
 
 describe("formatSlackDoctorReport", () => {
   it("renders a clean report when all probes pass", () => {
@@ -19,6 +60,7 @@ describe("formatSlackDoctorReport", () => {
         url: "https://acme.slack.com/",
       },
       findings: [],
+      projectDirRealpath: [],
       admin: {
         enabled: false,
         host: "127.0.0.1",
@@ -48,6 +90,7 @@ describe("formatSlackDoctorReport", () => {
         { code: "channels.read", message: "probe channels.read threw: missing_scope" },
         { code: "users.read", message: "probe users.read returned error=ratelimited" },
       ],
+      projectDirRealpath: [],
       admin: {
         enabled: false,
         host: "127.0.0.1",
@@ -71,6 +114,7 @@ describe("formatSlackDoctorReport", () => {
       persistenceEnabled: false,
       auth: { botUserId: "U0BOT", botId: "" },
       findings: [],
+      projectDirRealpath: [],
       admin: {
         enabled: false,
         host: "127.0.0.1",
@@ -310,6 +354,7 @@ describe("runSlackDoctor", () => {
       persistenceEnabled: false,
       auth: { botUserId: "U0B", botId: "B0B" },
       findings: [],
+      projectDirRealpath: [],
       admin: {
         enabled: true,
         host: "127.0.0.1",
@@ -335,6 +380,7 @@ describe("runSlackDoctor", () => {
       persistenceEnabled: false,
       auth: { botUserId: "U0B", botId: "B0B" },
       findings: [],
+      projectDirRealpath: [],
       admin: {
         enabled: true,
         host: "0.0.0.0",
@@ -348,6 +394,67 @@ describe("runSlackDoctor", () => {
     expect(text).toContain("WARNING:    admin.host=0.0.0.0 is not loopback")
   })
 
+  it("renders the project_dir section as clean when no findings", () => {
+    const text = formatSlackDoctorReport({
+      source: "<inline>",
+      mode: "socket",
+      persistenceEnabled: false,
+      auth: { botUserId: "U0B", botId: "B0B" },
+      findings: [],
+      projectDirRealpath: [],
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/t/token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
+    })
+    expect(text).toContain("project_dir: every channel resolves to its realpath")
+  })
+
+  it("renders symlink-drift findings under the project_dir section", () => {
+    const text = formatSlackDoctorReport({
+      source: "<inline>",
+      mode: "socket",
+      persistenceEnabled: false,
+      auth: { botUserId: "U0B", botId: "B0B" },
+      findings: [],
+      projectDirRealpath: [
+        {
+          channelId: "C0ATNA044TV",
+          channelName: "proj-bantai",
+          configured: "/sap/repos/bantai",
+          realpath: "/parent/bantai",
+          code: "differs",
+          message:
+            "project_dir resolves through a symlink: configured=/sap/repos/bantai realpath=/parent/bantai — JSONL session files will be keyed by the realpath, not the configured path.",
+        },
+        {
+          channelId: "C0AU0TJQ9RQ",
+          channelName: "chambernotes",
+          configured: "/missing/path",
+          code: "stat_error",
+          message: "realpath(/missing/path) failed: ENOENT: no such file or directory",
+        },
+      ],
+      admin: {
+        enabled: false,
+        host: "127.0.0.1",
+        port: 4242,
+        tokenPath: "/t/token",
+        readOnly: false,
+        sessionRingSize: 200,
+      },
+    })
+    expect(text).toContain("project_dir: 2 symlink-drift finding(s)")
+    expect(text).toContain("- proj-bantai (C0ATNA044TV) [differs]:")
+    expect(text).toContain("realpath=/parent/bantai")
+    expect(text).toContain("- chambernotes (C0AU0TJQ9RQ) [stat_error]:")
+    expect(text).toContain("ENOENT")
+  })
+
   it("omits detail lines when admin is disabled", () => {
     const text = formatSlackDoctorReport({
       source: "<inline>",
@@ -355,6 +462,7 @@ describe("runSlackDoctor", () => {
       persistenceEnabled: false,
       auth: { botUserId: "U0B", botId: "B0B" },
       findings: [],
+      projectDirRealpath: [],
       admin: {
         enabled: false,
         host: "127.0.0.1",
@@ -368,5 +476,96 @@ describe("runSlackDoctor", () => {
     expect(text).toContain("enabled:    no")
     expect(text).not.toContain("bind:")
     expect(text).not.toContain("token:")
+  })
+})
+
+describe("checkProjectDirRealpaths", () => {
+  it("returns an empty array when every project_dir matches its realpath", async () => {
+    const config = makeConfig([
+      { id: "C1", name: "one", project_dir: "/abs/one" },
+      { id: "C2", name: "two", project_dir: "/abs/two" },
+    ])
+    const findings = await checkProjectDirRealpaths(
+      config,
+      async (p) => p, // identity = no symlink traversal
+    )
+    expect(findings).toEqual([])
+  })
+
+  it("emits a `differs` finding when realpath drifts (the sapcli symlink case)", async () => {
+    const config = makeConfig([
+      {
+        id: "C0ATNA044TV",
+        name: "proj-bantai",
+        project_dir: "/home/bantai/slack-agent-projects/repos/bantai",
+      },
+    ])
+    const findings = await checkProjectDirRealpaths(config, async (p) => {
+      // Simulate the legacy `repos/bantai -> ../../bantai` symlink.
+      if (p === "/home/bantai/slack-agent-projects/repos/bantai") {
+        return "/home/bantai/repos/bantai"
+      }
+      return p
+    })
+    expect(findings).toHaveLength(1)
+    expect(findings[0]!).toMatchObject({
+      channelId: "C0ATNA044TV",
+      channelName: "proj-bantai",
+      configured: "/home/bantai/slack-agent-projects/repos/bantai",
+      realpath: "/home/bantai/repos/bantai",
+      code: "differs",
+    })
+    expect(findings[0]!.message).toContain("realpath=/home/bantai/repos/bantai")
+  })
+
+  it("emits a `stat_error` finding when realpath() throws", async () => {
+    const config = makeConfig([
+      { id: "C-missing", name: "missing", project_dir: "/no/such/dir" },
+    ])
+    const findings = await checkProjectDirRealpaths(config, async () => {
+      const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException
+      err.code = "ENOENT"
+      throw err
+    })
+    expect(findings).toHaveLength(1)
+    expect(findings[0]!).toMatchObject({
+      channelId: "C-missing",
+      configured: "/no/such/dir",
+      code: "stat_error",
+    })
+    expect(findings[0]!.realpath).toBeUndefined()
+    expect(findings[0]!.message).toContain("ENOENT")
+  })
+
+  it("skips channels without a project_dir", async () => {
+    const config = makeConfig([
+      { id: "C-no-dir", name: "no-project-dir" },
+      { id: "C-abs", name: "abs", project_dir: "/abs/here" },
+    ])
+    const findings = await checkProjectDirRealpaths(config, async (p) => p)
+    expect(findings).toEqual([])
+  })
+
+  it("skips relative project_dir values (loader leaves these for inline configs)", async () => {
+    const config = makeConfig([
+      { id: "C-rel", name: "relative", project_dir: "./repos/bantai" },
+    ])
+    let realpathCalls = 0
+    const findings = await checkProjectDirRealpaths(config, async (p) => {
+      realpathCalls += 1
+      return p
+    })
+    expect(findings).toEqual([])
+    expect(realpathCalls).toBe(0)
+  })
+
+  it("populates channelName only when set on the channel", async () => {
+    const config = makeConfig([
+      { id: "C-noname", project_dir: "/abs/noname" },
+    ])
+    const findings = await checkProjectDirRealpaths(config, async () => "/abs/elsewhere")
+    expect(findings).toHaveLength(1)
+    expect(findings[0]!.channelName).toBeUndefined()
+    expect(findings[0]!.channelId).toBe("C-noname")
   })
 })

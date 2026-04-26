@@ -47,6 +47,8 @@ import {
   applyStatusBar,
   getCurrentStatusBarId,
 } from "./status-bar/active"
+import { openSideChatOverlay } from "./components/side-chat-overlay"
+import type { AgentBackend } from "../../protocol/types"
 
 const SCREENSHOT_DIR = join(homedir(), ".bantai", "screenshots")
 
@@ -207,5 +209,9 @@ export const tuiFrontendBridge: FrontendBridge = {
 
   currentStatusBarId(): string | undefined {
     return getCurrentStatusBarId()
+  },
+
+  openSideChat(backend: AgentBackend, question: string): boolean {
+    return openSideChatOverlay(backend, question)
   },
 }

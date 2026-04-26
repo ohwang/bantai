@@ -45,7 +45,7 @@ export const btwCommand: SlashCommand = {
     }
 
     // Frontend support gate — needs an overlay to render into.
-    const opened = ctx.frontend?.openSideChat?.(question) ?? false
+    const opened = ctx.frontend?.openSideChat?.(ctx.backend, question) ?? false
     if (!opened) {
       ctx.pushEvent({
         type: "system_message",

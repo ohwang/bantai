@@ -37,6 +37,7 @@ import { PermissionDialog } from "./components/permission-dialog"
 import { ElicitationDialog } from "./components/elicitation"
 import { DiagnosticsPanel, scrollDiagnostics, scrollDiagnosticsToTop, scrollDiagnosticsToBottom, switchDiagnosticsTab } from "./components/diagnostics"
 import { SessionPicker } from "./components/session-picker"
+import { SideChatOverlay, isSideChatOpen, closeSideChatOverlay } from "./components/side-chat-overlay"
 import { MODEL_NAMES, friendlyModelName, friendlyBackendName } from "../../protocol/models"
 
 // Module-level exit function so slash commands can trigger clean shutdown
@@ -209,6 +210,10 @@ function Layout(props: { onExit?: () => void }) {
 
   const cleanExit = (reason: string) => {
     log.info("Clean exit", { reason })
+    // Tear down any in-flight `/btw` side turn before the backend closes —
+    // otherwise the SDK fork query gets killed mid-stream and its forked
+    // JSONL is left dangling in ~/.claude/projects/<cwd-key>/.
+    closeSideChatOverlay("session-shutdown")
     stopMcpHttpServer().catch(() => {})
     disableFocusReporting()
     sync.pushEvent({ type: "shutdown" })
@@ -661,6 +666,23 @@ function Layout(props: { onExit?: () => void }) {
        *  actually mounted. See team/backlog: scope-reactivity-to-visible-ui. */}
       <Show when={showDiagnostics()}>
         <DiagnosticsPanel onClose={() => setShowDiagnostics(false)} />
+      </Show>
+
+      {/* Side-chat overlay (`/btw`). Floats above the conversation pane
+       *  when active, streams a forked tool-less answer from the backend's
+       *  sideQuery() into a parallel ephemeral store, never reduces into
+       *  main ConversationState. Gated via <Show> so the component (and
+       *  its keyboard handler) only runs while open — so Esc anywhere else
+       *  is unaffected. */}
+      <Show when={isSideChatOpen()}>
+        <box
+          flexDirection="column"
+          width="100%"
+          height="100%"
+          backgroundColor={colors.bg.primary}
+        >
+          <SideChatOverlay />
+        </box>
       </Show>
     </box>
   )

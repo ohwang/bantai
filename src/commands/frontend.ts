@@ -143,10 +143,18 @@ export interface FrontendBridge {
    * rendering the streamed events into a parallel ephemeral store, and
    * tearing down on dismiss.
    *
+   * The backend is passed in (rather than read from a singleton) so the
+   * frontend bridge stays decoupled from any specific backend wiring layer
+   * — TUI, headless, and tests can all call this with whatever backend
+   * they have in hand.
+   *
    * Returns `true` if the overlay opened, `false` if side chat is not
    * supported in this frontend (e.g. headless / Slack).
    */
-  openSideChat?(question: string): boolean
+  openSideChat?(
+    backend: import("../protocol/types").AgentBackend,
+    question: string,
+  ): boolean
 }
 
 /**

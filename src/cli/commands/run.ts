@@ -8,10 +8,60 @@
  */
 
 import type { CLIFlags } from "../options"
-import type { AgentBackend } from "../../protocol/types"
+import type { AgentBackend, ConversationEvent } from "../../protocol/types"
 import { createBackend } from "../../subagents/backend-factory"
 import { log } from "../../utils/logger"
 import { backendTrace } from "../../utils/backend-trace"
+
+/**
+ * Tracks whether a text-breaking event (e.g. a tool call) occurred between two
+ * runs of `text_delta` events, and emits a `\n\n` separator before the next
+ * text segment so consecutive agent "paragraphs" don't run into each other in
+ * the headless transcript.
+ *
+ * Exported for unit-testability; `runHeadless` consumes it directly.
+ */
+export function createTextSegmentSeparator() {
+  let hasWrittenText = false
+  let pendingBreak = false
+  return {
+    /** Prefix to write immediately before a `text_delta`'s payload. */
+    prefixForText(): string {
+      const prefix = pendingBreak ? "\n\n" : ""
+      pendingBreak = false
+      hasWrittenText = true
+      return prefix
+    },
+    /** Mark that a tool call (or other text-breaking event) occurred. The next
+     *  `text_delta` will be preceded by `\n\n`, but only if some text has
+     *  already been emitted (so we don't write a leading separator). */
+    markBreak(): void {
+      if (hasWrittenText) pendingBreak = true
+    },
+  }
+}
+
+/**
+ * Format a single agent event for the headless transcript. Pure function over
+ * the separator state so it can be unit-tested without a real backend.
+ *
+ * Returns `null` when the event produces no transcript output (everything that
+ * isn't a `text_delta` today).
+ */
+export function formatHeadlessEvent(
+  event: ConversationEvent,
+  sep: ReturnType<typeof createTextSegmentSeparator>,
+): string | null {
+  switch (event.type) {
+    case "text_delta":
+      return sep.prefixForText() + event.text
+    case "tool_use_start":
+      sep.markBreak()
+      return null
+    default:
+      return null
+  }
+}
 
 /**
  * Run a single message through the backend and stream output to stdout.
@@ -65,13 +115,17 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
 
   // Start the session and stream events
   const stream = backend.start(flags.config)
+  const separator = createTextSegmentSeparator()
 
   try {
     for await (const event of stream) {
       switch (event.type) {
         case "text_delta":
-          process.stdout.write(event.text)
+        case "tool_use_start": {
+          const out = formatHeadlessEvent(event, separator)
+          if (out !== null) process.stdout.write(out)
           break
+        }
 
         case "turn_complete":
           // End of the assistant's response — newline and exit
@@ -97,7 +151,7 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
           break
 
         default:
-          // Silently consume other events (tool_use_start, etc.)
+          // Silently consume other events (tool_use_end, thinking_delta, …).
           break
       }
     }

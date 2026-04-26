@@ -1017,15 +1017,31 @@ export interface SessionConfig {
   readOnly?: boolean
 }
 
-/** Backend that owns a session */
-export type SessionOrigin = "claude" | "codex" | "gemini"
+/**
+ * Backend that owns a session.
+ *
+ * Mirrors `BackendId` from the registry — kept as a separate alias so that
+ * existing imports (`import { SessionOrigin } from "../protocol/types"`) keep
+ * working. New code should prefer `BackendId` from `protocol/registry` plus
+ * `isKnownBackendId()` for validation.
+ *
+ * Historically this was a closed `"claude" | "codex" | "gemini"` union, which
+ * silently rejected qwen sessions when the qwen backend landed (live bug L1).
+ * Widening to `string` is intentional: the registry is the runtime source of
+ * truth, and any backend that registers `sessionFile.listFromDisk` gets to
+ * tag its sessions with its own id.
+ */
+export type SessionOrigin = string
 
-/** Sessions grouped by backend for the multi-backend session picker */
-export interface MultiBackendSessions {
-  claude: SessionInfo[]
-  codex: SessionInfo[]
-  gemini: SessionInfo[]
-}
+/**
+ * Sessions grouped by backend id for the multi-backend session picker.
+ *
+ * Keys are `BackendId`s from the registry — the picker iterates
+ * `listSessionFileBackends()` (one descriptor per backend that owns disk
+ * storage) and indexes the record by id. Every backend that registers a
+ * `sessionFile.listFromDisk` handler contributes a key here.
+ */
+export type MultiBackendSessions = Record<string, SessionInfo[]>
 
 export interface SessionInfo {
   id: string

@@ -5,6 +5,7 @@ import {
   instantiateBackend,
   listAvailableBackends,
   listBackends,
+  listSessionFileBackends,
 } from "../../src/protocol/registry"
 
 describe("backend registry", () => {
@@ -43,5 +44,35 @@ describe("backend registry", () => {
     for (const entry of BACKEND_REGISTRY) {
       expect(entry.description.length).toBeGreaterThan(0)
     }
+  })
+
+  // L1 regression — multi-backend session picker used to hardcode
+  // [claude, codex, gemini] in three places (cross-backend.ts:32 union,
+  // launcher.ts Promise.all, session-picker.tsx tabs+counts). Adding qwen
+  // didn't update the trio, so qwen sessions silently disappeared from the
+  // picker. Now the picker iterates the registry, so any backend that
+  // registers `sessionFile.listFromDisk` is automatically included.
+  describe("session-file backends (L1 regression)", () => {
+    it("currently includes claude, codex, gemini", () => {
+      const ids = listSessionFileBackends().map((b) => b.id).sort()
+      expect(ids).toContain("claude")
+      expect(ids).toContain("codex")
+      expect(ids).toContain("gemini")
+    })
+
+    it("each session-file backend exposes the full handler trio", () => {
+      for (const b of listSessionFileBackends()) {
+        expect(typeof b.sessionFile?.listFromDisk).toBe("function")
+        expect(typeof b.sessionFile?.parseSummary).toBe("function")
+        expect(typeof b.sessionFile?.readBlocks).toBe("function")
+      }
+    })
+
+    it("backends without sessionFile do not appear in the picker list", () => {
+      const ids = new Set(listSessionFileBackends().map((b) => b.id))
+      // Mock and the generic ACP backend are explicit non-participants.
+      expect(ids.has("mock")).toBe(false)
+      expect(ids.has("acp")).toBe(false)
+    })
   })
 })

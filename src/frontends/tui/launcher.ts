@@ -262,28 +262,38 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
   flags.config.sessionOrigin = flags.backend
 
   // If --resume was used without a session ID, eagerly fetch sessions from
-  // ALL backends so the multi-backend picker can render immediately.
+  // every backend that registers a `sessionFile.listFromDisk` handler. The
+  // registry is the source of truth — adding a new backend with on-disk
+  // session storage automatically pulls it into the multi-backend picker
+  // (Sprint 1 / Cluster 1; live bug L1 — qwen sessions were silently dropped
+  // because this loop used to be a hardcoded [claude, codex, gemini] triple).
   let preloadedSessions: import("../../protocol/types").MultiBackendSessions | undefined
   if (flags.config.resumeInteractive) {
     try {
-      const {
-        listClaudeSessionsFromDisk,
-        listCodexSessionsFromDisk,
-        listGeminiSessionsFromDisk,
-        enrichSessions,
-      } = await import("../../session/cross-backend")
+      const { enrichSessions } = await import("../../session/cross-backend")
+      const { listSessionFileBackends } = await import("../../protocol/registry")
       const cwd = flags.config.cwd ?? process.cwd()
-      const backendKey = flags.backend as import("../../protocol/types").SessionOrigin
+      const backendKey = flags.backend
 
-      // Parallel disk scan for all backends
-      const [claudeDisk, codexDisk, geminiDisk] = await Promise.all([
-        Promise.resolve(listClaudeSessionsFromDisk(cwd)),
-        Promise.resolve(listCodexSessionsFromDisk()),
-        Promise.resolve(listGeminiSessionsFromDisk(cwd)),
-      ])
+      const fileBackends = listSessionFileBackends()
+
+      // Parallel disk scan across every registered backend with sessionFile.
+      const diskByBackend = await Promise.all(
+        fileBackends.map(async (b) => {
+          try {
+            return [b.id, b.sessionFile!.listFromDisk(cwd)] as const
+          } catch (err) {
+            log.warn("listFromDisk failed for backend", {
+              backend: b.id,
+              error: String(err),
+            })
+            return [b.id, [] as import("../../protocol/types").SessionInfo[]] as const
+          }
+        }),
+      )
 
       // For the active backend, also try the SDK's listSessions() for richer
-      // metadata (custom titles, message counts) and merge with disk results
+      // metadata (custom titles, message counts) and merge with disk results.
       let sdkSessions: import("../../protocol/types").SessionInfo[] = []
       try {
         sdkSessions = await backend.listSessions()
@@ -303,27 +313,26 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
         return [...sdk, ...disk.filter(s => !sdkIds.has(s.id))]
       }
 
-      const raw: import("../../protocol/types").MultiBackendSessions = {
-        claude: backendKey === "claude" ? merge(sdkSessions, claudeDisk) : claudeDisk,
-        codex: backendKey === "codex" ? merge(sdkSessions, codexDisk) : codexDisk,
-        gemini: backendKey === "gemini" ? merge(sdkSessions, geminiDisk) : geminiDisk,
+      const raw: import("../../protocol/types").MultiBackendSessions = {}
+      for (const [id, disk] of diskByBackend) {
+        raw[id] = id === backendKey ? merge(sdkSessions, disk) : disk
       }
 
-      // Enrich top-20 per backend with deep-parsed metadata
-      preloadedSessions = {
-        claude: enrichSessions(raw.claude, cwd, 20),
-        codex: enrichSessions(raw.codex, cwd, 20),
-        gemini: enrichSessions(raw.gemini, cwd, 20),
+      // Enrich top-20 per backend with deep-parsed metadata.
+      preloadedSessions = {}
+      for (const [id, sessions] of Object.entries(raw)) {
+        preloadedSessions[id] = enrichSessions(sessions, cwd, 20)
       }
 
-      log.info("Preloaded multi-backend sessions", {
-        claude: preloadedSessions.claude.length,
-        codex: preloadedSessions.codex.length,
-        gemini: preloadedSessions.gemini.length,
-      })
+      const counts: Record<string, number> = {}
+      for (const [id, sessions] of Object.entries(preloadedSessions)) {
+        counts[id] = sessions.length
+      }
+      log.info("Preloaded multi-backend sessions", counts)
     } catch (err) {
       log.warn("Failed to preload sessions", { error: String(err) })
-      preloadedSessions = { claude: [], codex: [], gemini: [] }
+      // Empty record: every fileBackend gets an empty list when reachable.
+      preloadedSessions = {}
     }
   }
 

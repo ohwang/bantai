@@ -17,7 +17,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join, basename } from "node:path"
 import { log } from "../utils/logger"
-import { readSessionHistory } from "../backends/claude/session-reader"
 import { findClaudeSessionFileAnywhere } from "../backends/follow/find-session"
 import type {
   Block,
@@ -28,8 +27,15 @@ import type {
   ToolStatus,
 } from "../protocol/types"
 
-/** Known backend names that can originate sessions */
-export type SessionOrigin = "claude" | "codex" | "gemini" | null
+/**
+ * Backend name returned by `detectSessionOrigin`.
+ *
+ * The string side is `BackendId` (registry-driven, no longer a closed
+ * literal — see `protocol/types.ts:SessionOrigin`); the `null` side means
+ * "no backend's file lookup matched this session id". Kept as a separate
+ * alias so callers can distinguish "unknown" from "known backend".
+ */
+export type SessionOrigin = string | null
 
 // ---------------------------------------------------------------------------
 // Home directory helper
@@ -706,38 +712,28 @@ export function parseGeminiSessionWithSummary(filePath: string): ParsedSession {
  *
  * Returns Block[] in the universal conversation format.
  * Returns empty array if the session can't be read.
+ *
+ * Dispatch is registry-driven (Cluster 1): each backend that owns on-disk
+ * sessions registers `sessionFile.readBlocks` next to its lister. This used
+ * to be a hand-rolled switch over "claude"/"codex"/"gemini" that silently
+ * dropped any future backend (qwen would have hit the default branch).
  */
 export function readForeignSession(
   sessionId: string,
   origin: SessionOrigin,
   cwd: string,
 ): Block[] {
-  switch (origin) {
-    case "claude":
-      return readSessionHistory(sessionId, cwd).blocks
-
-    case "codex": {
-      const codexFile = findCodexSessionFile(sessionId)
-      if (!codexFile) {
-        log.warn("Codex session file not found", { sessionId })
-        return []
-      }
-      return parseCodexSession(codexFile)
-    }
-
-    case "gemini": {
-      const geminiFile = findGeminiSessionFile(sessionId)
-      if (!geminiFile) {
-        log.warn("Gemini session file not found", { sessionId })
-        return []
-      }
-      return parseGeminiSession(geminiFile)
-    }
-
-    default:
-      log.warn("Cannot read session with unknown origin", { sessionId })
-      return []
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getBackendDescriptor } = require("../protocol/registry") as typeof import("../protocol/registry")
+  const desc = origin ? getBackendDescriptor(origin) : undefined
+  if (!desc?.sessionFile) {
+    log.warn("Cannot read session — backend has no sessionFile handler", {
+      sessionId,
+      origin,
+    })
+    return []
   }
+  return desc.sessionFile.readBlocks(sessionId, cwd)
 }
 
 // ---------------------------------------------------------------------------
@@ -967,31 +963,28 @@ export function findMostRecentSessionForBackend(
   backend: string | undefined,
   cwd: string,
 ): string | null {
-  // Backend-specific: only search that backend's sessions
-  if (backend === "codex") {
-    const sessions = listCodexSessionsFromDisk()
-    return sessions[0]?.id ?? null
-  }
-  if (backend === "gemini") {
-    const sessions = listGeminiSessionsFromDisk(cwd)
-    return sessions[0]?.id ?? null
-  }
-  if (backend === "claude") {
-    const sessions = listClaudeSessionsFromDisk(cwd)
-    return sessions[0]?.id ?? null
+  // Lazy import — see comment in enrichSessions().
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getBackendDescriptor, listSessionFileBackends } = require("../protocol/registry") as typeof import("../protocol/registry")
+
+  // Backend-specific: only search that backend's sessions.
+  if (backend) {
+    const desc = getBackendDescriptor(backend)
+    if (desc?.sessionFile) {
+      const sessions = desc.sessionFile.listFromDisk(cwd)
+      return sessions[0]?.id ?? null
+    }
+    // Unknown backend or no sessionFile handler — fall through to global.
   }
 
   // No backend specified (or unknown): find the globally most recent session
-  // across all backends.
+  // across every backend that registers `sessionFile.listFromDisk`.
   const all: Array<{ id: string; updatedAt: number }> = []
-  for (const s of listClaudeSessionsFromDisk(cwd)) {
-    all.push({ id: s.id, updatedAt: s.updatedAt })
-  }
-  for (const s of listCodexSessionsFromDisk()) {
-    all.push({ id: s.id, updatedAt: s.updatedAt })
-  }
-  for (const s of listGeminiSessionsFromDisk(cwd)) {
-    all.push({ id: s.id, updatedAt: s.updatedAt })
+  for (const desc of listSessionFileBackends()) {
+    if (!desc.sessionFile) continue
+    for (const s of desc.sessionFile.listFromDisk(cwd)) {
+      all.push({ id: s.id, updatedAt: s.updatedAt })
+    }
   }
   all.sort((a, b) => b.updatedAt - a.updatedAt)
   return all[0]?.id ?? null
@@ -1005,28 +998,41 @@ export function findMostRecentSessionForBackend(
  * Enrich sessions with deep-parsed metadata (turnCount, toolCallCount,
  * totalTokens, totalCostUsd). Only parses the first `limit` sessions to
  * bound startup latency. Remaining sessions keep their basic metadata.
+ *
+ * The per-origin parser is looked up via the registry's `sessionFile`
+ * descriptor (Cluster 1) — this used to be a hardcoded if/else over
+ * "claude"/"codex"/"gemini" that silently dropped any backend not in the
+ * triple. Sessions whose origin has no registered descriptor are returned
+ * unchanged with a single `log.debug` call.
  */
 export function enrichSessions(
   sessions: SessionInfo[],
   cwd: string,
   limit: number = 20,
 ): SessionInfo[] {
+  // Lazy import to keep the registry module from depending on this file at
+  // module-load time (cross-backend already imports backend session readers
+  // directly, so the cycle is incidental but worth avoiding).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getBackendDescriptor } = require("../protocol/registry") as typeof import("../protocol/registry")
   return sessions.map((session, i) => {
     if (i >= limit) return session
 
     try {
-      let summary: SessionResumeSummary | undefined
-
-      if (session.origin === "claude") {
-        const parsed = readSessionHistory(session.id, cwd)
-        summary = parsed.summary
-      } else if (session.origin === "codex") {
-        const file = findCodexSessionFile(session.id)
-        if (file) summary = parseCodexSessionWithSummary(file).summary
-      } else if (session.origin === "gemini") {
-        const file = findGeminiSessionFile(session.id)
-        if (file) summary = parseGeminiSessionWithSummary(file).summary
+      const origin = session.origin
+      if (!origin) return session
+      const desc = getBackendDescriptor(origin)
+      if (!desc?.sessionFile) {
+        log.debug("Cannot enrich session — backend has no sessionFile handler", {
+          id: session.id,
+          origin,
+        })
+        return session
       }
+      const summary: SessionResumeSummary | undefined = desc.sessionFile.parseSummary(
+        session.id,
+        cwd,
+      )
 
       if (!summary) return session
 

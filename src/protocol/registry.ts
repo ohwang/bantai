@@ -37,7 +37,20 @@ import { CodexAdapter } from "../backends/codex/adapter"
 import { AcpAdapter } from "../backends/acp/adapter"
 import { MockAdapter } from "../backends/mock/adapter"
 import type { AcpPreset } from "../backends/acp/types"
-import type { AgentBackend } from "./types"
+import type { AgentBackend, Block, SessionInfo, SessionResumeSummary } from "./types"
+import {
+  findCodexSessionFile,
+  findGeminiSessionFile,
+  listClaudeSessionsFromDisk,
+  listCodexSessionsFromDisk,
+  listGeminiSessionsFromDisk,
+  parseCodexSession,
+  parseCodexSessionWithSummary,
+  parseGeminiSession,
+  parseGeminiSessionWithSummary,
+} from "../session/cross-backend"
+import { readSessionHistory } from "../backends/claude/session-reader"
+import { log } from "../utils/logger"
 
 /**
  * Identifier used at the CLI / slash command / config boundary.
@@ -52,6 +65,39 @@ export type BackendId = string
 export interface BackendInstantiateOpts {
   acpCommand?: string
   acpArgs?: string[]
+}
+
+/**
+ * Per-backend handlers for reading session storage off disk.
+ *
+ * Backends that own a session file format on the local filesystem populate
+ * this; the multi-backend session picker iterates the registry to discover
+ * them. Backends that don't (e.g. mock, generic acp, copilot) omit it and
+ * the picker silently treats them as having zero on-disk sessions.
+ */
+export interface SessionFileHandlers {
+  /**
+   * Enumerate sessions visible from `cwd`. May return an empty array when the
+   * backend's session directory is missing (first run, never used). MUST NOT
+   * throw — wrap any I/O errors and return [].
+   */
+  listFromDisk: (cwd: string) => SessionInfo[]
+  /**
+   * Deep-parse a single session for the resume summary (turn count, tool
+   * count, token usage). Returns undefined when the session can't be located
+   * or parsed. Powers `enrichSessions` in the multi-backend picker so each
+   * backend's parser is registered alongside its lister rather than living
+   * in a parallel switch.
+   */
+  parseSummary: (sessionId: string, cwd: string) => SessionResumeSummary | undefined
+  /**
+   * Read a session's full conversation history as the universal `Block[]`.
+   * Used by cross-backend resume: the foreign backend's history is parsed
+   * via this handler, then formatted as a context-injection prompt for the
+   * destination backend. Returns [] when the session can't be read; the
+   * handler is responsible for `log.warn` on missing-file paths.
+   */
+  readBlocks: (sessionId: string, cwd: string) => Block[]
 }
 
 export interface BackendDescriptor {
@@ -85,6 +131,13 @@ export interface BackendDescriptor {
   isAvailable: () => boolean
   /** True if this backend requires extra arguments (`--acp-command ...`). */
   requiresExtraConfig?: boolean
+  /**
+   * Optional on-disk session storage handlers. When present, the backend
+   * participates in the multi-backend session picker (Sprint 1 / Cluster 1).
+   * Backends that don't store sessions on the local filesystem (mock,
+   * generic acp, copilot) omit this.
+   */
+  sessionFile?: SessionFileHandlers
 }
 
 function binaryOnPath(name: string): boolean {
@@ -103,6 +156,11 @@ export const BACKEND_REGISTRY: BackendDescriptor[] = [
     factory: () => new ClaudeAdapter(),
     exposeAsCliSubcommand: true,
     isAvailable: () => true,
+    sessionFile: {
+      listFromDisk: (cwd) => listClaudeSessionsFromDisk(cwd),
+      parseSummary: (id, cwd) => readSessionHistory(id, cwd).summary,
+      readBlocks: (id, cwd) => readSessionHistory(id, cwd).blocks,
+    },
   },
   {
     id: "codex",
@@ -111,6 +169,21 @@ export const BACKEND_REGISTRY: BackendDescriptor[] = [
     factory: () => new CodexAdapter(),
     exposeAsCliSubcommand: true,
     isAvailable: () => binaryOnPath("codex"),
+    sessionFile: {
+      listFromDisk: () => listCodexSessionsFromDisk(),
+      parseSummary: (id) => {
+        const file = findCodexSessionFile(id)
+        return file ? parseCodexSessionWithSummary(file).summary : undefined
+      },
+      readBlocks: (id) => {
+        const file = findCodexSessionFile(id)
+        if (!file) {
+          log.warn("Codex session file not found", { sessionId: id })
+          return []
+        }
+        return parseCodexSession(file)
+      },
+    },
   },
   {
     id: "gemini",
@@ -119,6 +192,21 @@ export const BACKEND_REGISTRY: BackendDescriptor[] = [
     acpPreset: { command: "gemini", args: ["--acp"], displayName: "Gemini CLI" },
     exposeAsCliSubcommand: true,
     isAvailable: () => binaryOnPath("gemini"),
+    sessionFile: {
+      listFromDisk: (cwd) => listGeminiSessionsFromDisk(cwd),
+      parseSummary: (id) => {
+        const file = findGeminiSessionFile(id)
+        return file ? parseGeminiSessionWithSummary(file).summary : undefined
+      },
+      readBlocks: (id) => {
+        const file = findGeminiSessionFile(id)
+        if (!file) {
+          log.warn("Gemini session file not found", { sessionId: id })
+          return []
+        }
+        return parseGeminiSession(file)
+      },
+    },
   },
   {
     id: "copilot",
@@ -200,6 +288,16 @@ export function isKnownBackendId(id: string): boolean {
 /** All registered backend ids, in registration order. */
 export function knownBackendIds(): string[] {
   return BACKEND_REGISTRY.map((b) => b.id)
+}
+
+/**
+ * Backends that own session storage on disk — i.e. the ones that contribute
+ * to the multi-backend session picker. Today: claude, codex, gemini. Adding
+ * a backend with `sessionFile.listFromDisk` automatically pulls it into the
+ * picker — no hand-rolled trio of imports required.
+ */
+export function listSessionFileBackends(): BackendDescriptor[] {
+  return BACKEND_REGISTRY.filter((b) => b.sessionFile !== undefined)
 }
 
 /**

@@ -18,6 +18,7 @@ import fuzzysort from "fuzzysort"
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions, useRenderer } from "@opentui/solid"
 import type { SessionInfo, SessionOrigin, MultiBackendSessions } from "../../../protocol/types"
+import { listSessionFileBackends } from "../../../protocol/registry"
 import { colors } from "../theme/tokens"
 import { log } from "../../../utils/logger"
 
@@ -28,11 +29,26 @@ import { log } from "../../../utils/logger"
 /** Maximum sessions visible without scrolling (each is 2 lines + 1 gap = 3) */
 const MAX_VISIBLE = 12
 
-/** Backend badge colors */
-const BADGE_COLORS: Record<SessionOrigin, () => string> = {
+/**
+ * Backend badge colors.
+ *
+ * Keyed by `BackendId` — the registry is the source of truth (Cluster 1).
+ * Backends without an explicit color fall back to a neutral palette via
+ * `badgeColor()`. Adding a new backend with `sessionFile.listFromDisk` does
+ * not require an edit here unless you want a distinctive color.
+ */
+const BADGE_COLORS: Record<string, () => string> = {
   claude: () => colors.accent.primary,
   codex: () => colors.status.success,
   gemini: () => colors.status.warning,
+  qwen: () => colors.status.info,
+  copilot: () => colors.text.secondary,
+}
+
+function badgeColor(origin: string | undefined): string {
+  if (!origin) return colors.text.muted
+  const fn = BADGE_COLORS[origin]
+  return fn ? fn() : colors.text.secondary
 }
 
 /** Min turns filter cycle */
@@ -169,29 +185,47 @@ export function SessionPicker(props: SessionPickerProps) {
 
   // ── Derived ────────────────────────────────────────────────────────────
 
+  /**
+   * Backend ids that contribute sessions — sourced from the registry rather
+   * than a hardcoded literal so that adding a new backend with
+   * `sessionFile.listFromDisk` automatically appears in the picker (Cluster 1).
+   */
+  const fileBackendIds = createMemo<string[]>(() =>
+    listSessionFileBackends().map((b) => b.id),
+  )
+
   /** Tab order: current backend → all → others (alphabetical) */
   const tabs = createMemo<TabId[]>(() => {
     const current = props.currentBackend
-    const others = (["claude", "codex", "gemini"] as SessionOrigin[])
-      .filter(b => b !== current)
+    const others = fileBackendIds()
+      .filter((b) => b !== current)
       .sort()
     return [current, "all", ...others]
   })
 
   /** Tab counts (unfiltered) */
-  const tabCounts = createMemo(() => ({
-    claude: props.sessions.claude.length,
-    codex: props.sessions.codex.length,
-    gemini: props.sessions.gemini.length,
-    all: props.sessions.claude.length + props.sessions.codex.length + props.sessions.gemini.length,
-  }))
+  const tabCounts = createMemo<Record<string, number>>(() => {
+    const counts: Record<string, number> = {}
+    let total = 0
+    for (const id of fileBackendIds()) {
+      const n = (props.sessions[id] ?? []).length
+      counts[id] = n
+      total += n
+    }
+    counts.all = total
+    return counts
+  })
 
   /** Raw sessions for the active tab (sorted by updatedAt) */
   const tabSessions = createMemo<SessionInfo[]>(() => {
     const tab = activeTab()
     if (tab === "all") {
-      return [...props.sessions.claude, ...props.sessions.codex, ...props.sessions.gemini]
-        .sort((a, b) => b.updatedAt - a.updatedAt)
+      const all: SessionInfo[] = []
+      for (const id of fileBackendIds()) {
+        const list = props.sessions[id]
+        if (list) all.push(...list)
+      }
+      return all.sort((a, b) => b.updatedAt - a.updatedAt)
     }
     return props.sessions[tab] ?? []
   })
@@ -474,7 +508,7 @@ export function SessionPicker(props: SessionPickerProps) {
               <box flexDirection="column" marginRight={2}>
                 <text
                   fg={isActive()
-                    ? (tab() !== "all" ? BADGE_COLORS[tab() as SessionOrigin]() : colors.text.primary)
+                    ? (tab() !== "all" ? badgeColor(tab() as string) : colors.text.primary)
                     : colors.text.secondary}
                   attributes={isActive() ? TextAttributes.BOLD : 0}
                 >
@@ -575,7 +609,7 @@ export function SessionPicker(props: SessionPickerProps) {
                     </text>
                     <Show when={showBadge()}>
                       <box flexGrow={1} />
-                      <text fg={origin() ? BADGE_COLORS[origin()!]() : colors.text.muted}>
+                      <text fg={badgeColor(origin())}>
                         {badge()}
                       </text>
                     </Show>

@@ -80,6 +80,73 @@ export function matchScrollKey(
   return null
 }
 
+/**
+ * Map a keyboard event to a message-hop direction.
+ *
+ * Alt+N → "next" (next user-or-assistant message)
+ * Alt+P → "prev" (previous user-or-assistant message)
+ *
+ * Mirrors the Emacs `M-n` / `M-p` idiom from compilation-mode, magit, gnus,
+ * and grep-mode — jumping between meaningful list items, skipping noise
+ * (here: tool calls, tool results, thinking blocks).
+ *
+ * Pure helper so it's unit-testable without booting OpenTUI.
+ */
+export function matchMessageHopKey(
+  event: Pick<KeyEvent, "name" | "ctrl" | "option" | "meta" | "super" | "shift">,
+): "next" | "prev" | null {
+  if (event.shift || event.ctrl || event.meta || event.super) return null
+  if (event.option && event.name === "n") return "next"
+  if (event.option && event.name === "p") return "prev"
+  return null
+}
+
+/**
+ * Pick the next/previous message-hop target relative to the current viewport.
+ *
+ * Inputs are the y-offsets of all message anchors (in render order) and the
+ * viewport's top y. Returns:
+ *   - `{ kind: "anchor", y }` — scroll so this anchor lands at the top.
+ *   - `{ kind: "edge" }`     — already past the boundary; caller scrolls to
+ *                              the very top (prev) or very bottom (next).
+ *   - `null`                  — no anchors at all (empty conversation).
+ *
+ * The 1-cell tolerance avoids no-op hops when the current anchor is already
+ * exactly at the viewport top (a hop would otherwise re-target itself).
+ *
+ * Pure so it's unit-testable without an OpenTUI render context.
+ */
+export function pickMessageHopTarget(
+  anchorYs: readonly number[],
+  viewportY: number,
+  dir: "next" | "prev",
+): { kind: "anchor"; y: number } | { kind: "edge" } | null {
+  if (anchorYs.length === 0) return null
+  const sorted = [...anchorYs].sort((a, b) => a - b)
+  if (dir === "prev") {
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const y = sorted[i]
+      if (y !== undefined && y < viewportY - 1) return { kind: "anchor", y }
+    }
+    return { kind: "edge" }
+  }
+  for (const y of sorted) {
+    if (y > viewportY + 1) return { kind: "anchor", y }
+  }
+  return { kind: "edge" }
+}
+
+/** Stable id for the wrapper box around a top-level user/assistant block.
+ *  Looked up at hop-time via `scrollboxRef.findDescendantById(...)`. */
+const messageAnchorId = (index: number) => `bantai-msg-anchor-${index}`
+
+/** Whether a Block is a top-level "message" — user or assistant. Tool calls,
+ *  tool results, thinking blocks, system, compact, shell, error, plan, and
+ *  resume-summary blocks are noise between turns and are skipped. */
+function isMessageBlock(b: Block): boolean {
+  return b.type === "user" || b.type === "assistant"
+}
+
 // ---------------------------------------------------------------------------
 // ConversationView — main export
 // ---------------------------------------------------------------------------
@@ -131,6 +198,23 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
       return prev ? (isToolGroup(prev) ? "tool" : (prev as Block).type) : undefined
     })
   )
+
+  // Stage 4 (parallel): indices in `grouped()` that are top-level user or
+  // assistant blocks — the hop targets for Alt+N / Alt+P. Tool groups,
+  // standalone tool blocks, thinking, system, compact, shell, error, plan,
+  // and resume-summary blocks are skipped (they're noise between turns).
+  // Streaming partial assistant turns count: the assistant block exists in
+  // committed() the moment text_delta lands, before turn_complete.
+  const messageHopIndices = createMemo(() => {
+    const arr = grouped()
+    const out: number[] = []
+    for (let i = 0; i < arr.length; i++) {
+      const it = arr[i]
+      if (it === undefined) continue
+      if (!isToolGroup(it) && isMessageBlock(it as Block)) out.push(i)
+    }
+    return out
+  })
 
   // Line-buffered streaming text: only show text up to the last newline.
   // Hides the in-progress partial line so text streams line-by-line, not
@@ -270,7 +354,9 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
 
   // Ctrl+O toggles collapsed/expanded, Ctrl+Shift+E shows all, Ctrl+Shift+T toggles thinking
   // (Ctrl+E and Ctrl+T freed for Emacs end-of-line and transpose-chars)
-  // Ctrl+Up/Down and Alt+K/J (vim home-row) scroll the conversation
+  // Ctrl+Up/Down and Alt+K/J (vim home-row) scroll line-by-line.
+  // Alt+N / Alt+P hop to next / previous user-or-assistant message boundary
+  // (Emacs M-n / M-p idiom — magit, gnus, compilation-mode).
   useKeyboard((event) => {
     if (event.ctrl && event.name === "o") {
       event.preventDefault()
@@ -329,6 +415,63 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
       scrollboxRef?.scrollBy(3)
       if (scrollboxRef && isNearBottom(scrollboxRef)) {
         setScrolledAway(false)
+      }
+    }
+
+    // Conversation message hop — Alt+N / Alt+P.
+    // Jumps to the next / previous user-or-assistant turn boundary, skipping
+    // tool calls, tool results, and thinking blocks. Same Emacs M-n / M-p
+    // idiom as compilation-mode, magit, gnus, grep-mode.
+    //
+    // Boundary handling:
+    //   - Alt+P past the first message → scroll to the very top.
+    //   - Alt+N past the last message  → scroll to the bottom AND re-engage
+    //     sticky-bottom (the "I'm caught up, follow streaming" state).
+    //   - Empty conversation             → no-op (pickMessageHopTarget → null).
+    //
+    // Anchor lookup: each grouped() item is wrapped in a `<box id={...}>`
+    // (see the Index callback below). We resolve the y-offset of each
+    // message-type wrapper at hop-time, so the math is independent of view
+    // level (collapsed / expanded / show_all) — the user-or-assistant block
+    // identity is what's invariant, not the rendered noise around it.
+    const hopDir = matchMessageHopKey(event)
+    if (hopDir !== null && scrollboxRef) {
+      event.preventDefault()
+      const idxs = messageHopIndices()
+      const anchorYs: number[] = []
+      for (const i of idxs) {
+        const el = scrollboxRef.findDescendantById(messageAnchorId(i))
+        if (el) anchorYs.push(el.y)
+      }
+      const target = pickMessageHopTarget(anchorYs, scrollboxRef.viewport.y, hopDir)
+      if (target === null) {
+        // Empty conversation — nothing to hop to.
+      } else if (target.kind === "edge" && hopDir === "prev") {
+        // At/above the first message — scroll to the very top.
+        scrollboxRef.scrollTo(0)
+        setScrolledAway(true)
+      } else if (target.kind === "edge" && hopDir === "next") {
+        // At/below the last message — scroll to the bottom and re-engage
+        // sticky-bottom if we land within the near-bottom threshold.
+        scrollboxRef.scrollBy({ x: 0, y: 999999 })
+        if (isNearBottom(scrollboxRef)) {
+          setScrolledAway(false)
+        }
+      } else if (target.kind === "anchor") {
+        // Top-align the target: shift the viewport by the anchor's offset
+        // relative to the current viewport top. Matches the Emacs M-n / M-p
+        // semantic where the next item lands at (or near) the top of the
+        // visible area.
+        scrollboxRef.scrollBy({ x: 0, y: target.y - scrollboxRef.viewport.y })
+        // Sticky-bottom: if top-aligning the anchor still leaves us within
+        // the near-bottom threshold (short tail content), re-engage sticky
+        // so streaming text continues to follow. Otherwise treat the hop as
+        // a deliberate move-away (mirrors Alt+K's behaviour).
+        if (hopDir === "next" && isNearBottom(scrollboxRef)) {
+          setScrolledAway(false)
+        } else {
+          setScrolledAway(true)
+        }
       }
     }
 
@@ -399,7 +542,14 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
 
           {/* Committed blocks (non-queued) — each block renders itself based on view level.
               In collapsed view, consecutive collapsible tools are merged into
-              a single CollapsedToolGroup summary line. */}
+              a single CollapsedToolGroup summary line.
+
+              Each item is wrapped in a `<box id={...}>` so Alt+N / Alt+P can
+              find user/assistant message boundaries via
+              `scrollboxRef.findDescendantById(messageAnchorId(index))`. The id
+              is purely a function of position (Index keys positionally) — the
+              hop logic only consults wrappers whose underlying block is a
+              user-or-assistant message (see `messageHopIndices`). */}
           <box flexDirection="column">
             <Index each={grouped()}>
               {(item, index) => {
@@ -408,21 +558,23 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
                 // — no reactive coupling with the list reconciliation.
                 const pt = () => prevTypes()[index]
                 return (
-                  <Show
-                    when={!isToolGroup(item()) && item()}
-                    fallback={
-                      <box marginTop={pt() !== "tool" ? 1 : 0}>
-                        <CollapsedToolGroup group={item() as ToolGroup} />
-                      </box>
-                    }
-                  >
-                    <BlockView
-                      block={item() as Block}
-                      viewLevel={viewLevel()}
-                      prevType={pt()}
-                      showThinking={showThinking()}
-                    />
-                  </Show>
+                  <box id={messageAnchorId(index)} flexDirection="column">
+                    <Show
+                      when={!isToolGroup(item()) && item()}
+                      fallback={
+                        <box marginTop={pt() !== "tool" ? 1 : 0}>
+                          <CollapsedToolGroup group={item() as ToolGroup} />
+                        </box>
+                      }
+                    >
+                      <BlockView
+                        block={item() as Block}
+                        viewLevel={viewLevel()}
+                        prevType={pt()}
+                        showThinking={showThinking()}
+                      />
+                    </Show>
+                  </box>
                 )
               }}
             </Index>

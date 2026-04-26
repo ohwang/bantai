@@ -20,6 +20,7 @@ import type {
 import { log } from "../utils/logger"
 import { stripImagePlaceholders } from "./text-utils"
 import { BUCKET_SLOT_STRATEGY } from "./rate-limits"
+import { actionForTool } from "./tool-actions"
 
 /** Strip raw XML tags emitted by the SDK for local command output (e.g. /compact responses) */
 function stripSDKXmlTags(text: string): string {
@@ -216,10 +217,12 @@ export function reduce(
           const input = block.input as Record<string, unknown> | null
           const filePath = input?.file_path as string | undefined
           if (filePath) {
-            const action: TurnFileChange["action"] =
-              block.tool === "Write" ? "create"
-              : block.tool === "Edit" ? "edit"
-              : "read"
+            // Cluster 13: tool → action lookup goes through `actionForTool`
+            // (protocol/tool-actions.ts) so MultiEdit / NotebookEdit /
+            // Update — and any future write-style tool added there — get
+            // the correct `"edit"` / `"create"` action instead of silently
+            // falling through to `"read"`.
+            const action = actionForTool(block.tool)
             turnFiles.push({ path: filePath, action, tool: block.tool })
           }
         }

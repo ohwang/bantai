@@ -734,15 +734,12 @@ export interface AgentBackend {
 // Session lifecycle state machine
 // ---------------------------------------------------------------------------
 
-export type SessionState =
-  | "INITIALIZING"
-  | "IDLE"
-  | "RUNNING"
-  | "WAITING_FOR_PERM"
-  | "WAITING_FOR_ELIC"
-  | "INTERRUPTING"
-  | "ERROR"
-  | "SHUTTING_DOWN"
+// SessionState is re-exported from `protocol/session-state.ts` so existing
+// `import { SessionState } from "../protocol/types"` call sites keep working.
+// New code should import from `protocol/session-state` directly when it also
+// needs helpers (`STATE_LABELS`, `STATE_GLYPHS`, `isKnownSessionState`).
+export type { SessionState } from "./session-state"
+import type { SessionState } from "./session-state"
 
 // ---------------------------------------------------------------------------
 // Block types — flat, append-only conversation model

@@ -17,6 +17,7 @@
 
 import { z } from "zod"
 import type { AgentEvent, SessionState } from "../../../protocol/types"
+import { knownSessionStateIds } from "../../../protocol/session-state"
 
 // ---------------------------------------------------------------------------
 // Versioning
@@ -42,15 +43,17 @@ export type AdminProtocolVersion = typeof ADMIN_PROTOCOL_VERSION
 
 export type SessionPhase = SessionState | "UNKNOWN"
 
+/**
+ * Closed list of admin-protocol session phases.
+ *
+ * Derived from `knownSessionStateIds()` (Cluster 6 / SessionState registry)
+ * so adding a new state to the protocol registry automatically updates
+ * this allowlist. The trailing "UNKNOWN" sentinel is monitor-specific —
+ * it represents "no phase reported yet" and isn't part of the state
+ * machine proper.
+ */
 export const SESSION_PHASES: readonly SessionPhase[] = [
-  "INITIALIZING",
-  "IDLE",
-  "RUNNING",
-  "WAITING_FOR_PERM",
-  "WAITING_FOR_ELIC",
-  "INTERRUPTING",
-  "ERROR",
-  "SHUTTING_DOWN",
+  ...knownSessionStateIds(),
   "UNKNOWN",
 ] as const
 

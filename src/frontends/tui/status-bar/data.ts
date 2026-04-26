@@ -18,6 +18,11 @@ import { useAgent } from "../context/agent"
 import { useMessages } from "../context/messages"
 import { useSession } from "../context/session"
 import type { PermissionMode, SandboxInfo, RateLimitEntry } from "../../../protocol/types"
+import {
+  STATE_GLYPHS,
+  STATE_SEVERITIES,
+  isKnownSessionState,
+} from "../../../protocol/session-state"
 import { findCurrentModel, friendlyModelName, resolveContextWindow } from "../../../protocol/models"
 import { setTerminalProgress } from "../../../utils/terminal-notify"
 import { toast } from "../context/toast"
@@ -620,33 +625,27 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
     return ""
   })
 
+  // Glyph + color come from the SessionState registry — same source the
+  // diagnostics panel uses, so the two views can never disagree (Cluster 6).
   const stateIcon = () => {
     if (messagesState.backgrounded) return "\u2B21"
-    switch (state.sessionState) {
-      case "INITIALIZING": return "\u25CC"
-      case "IDLE": return "\u25CF"
-      case "RUNNING": return "\u27F3"
-      case "WAITING_FOR_PERM": return "\u26A0"
-      case "WAITING_FOR_ELIC": return "?"
-      case "INTERRUPTING": return "\u23F8"
-      case "ERROR": return "\u2717"
-      case "SHUTTING_DOWN": return "\u25CC"
-      default: return "\u25CF"
-    }
+    const s = state.sessionState
+    return isKnownSessionState(s) ? STATE_GLYPHS[s] : "\u25CF"
   }
 
   const stateColor = () => {
     if (messagesState.backgrounded) return colors.status.warning
-    switch (state.sessionState) {
-      case "IDLE": return colors.state.idle
-      case "RUNNING": return colors.state.running
-      case "WAITING_FOR_PERM":
-      case "WAITING_FOR_ELIC":
-      case "INTERRUPTING":
+    const s = state.sessionState
+    if (!isKnownSessionState(s)) return colors.state.shuttingDown
+    switch (STATE_SEVERITIES[s]) {
+      case "active":
+        return colors.state.running
+      case "blocked":
         return colors.state.waiting
-      case "ERROR": return colors.state.error
-      case "SHUTTING_DOWN": return colors.state.shuttingDown
-      default: return colors.state.shuttingDown
+      case "error":
+        return colors.state.error
+      case "neutral":
+        return s === "IDLE" ? colors.state.idle : colors.state.shuttingDown
     }
   }
 

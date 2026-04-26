@@ -24,6 +24,7 @@
 
 import { createStore, produce } from "solid-js/store"
 import type { AgentEvent } from "../../../protocol/types"
+import { STATE_LABELS, isKnownSessionState } from "../../../protocol/session-state"
 import type {
   AdminFrame,
   AdminConfigSnapshot,
@@ -328,26 +329,19 @@ export function sortSessionsByActivity(
     })
 }
 
-/** Human-friendly label for a phase — used by the list + metadata panes. */
+/**
+ * Human-friendly label for a phase — used by the list + metadata panes.
+ *
+ * For real `SessionState`s the label comes from the SessionState registry
+ * (Cluster 6); this used to be a hand-rolled switch that diverged from
+ * `frontends/tui/status-bar/data.ts` and `frontends/tui/components/diagnostics.tsx`.
+ * "UNKNOWN" is monitor-specific (the admin protocol's "no phase reported
+ * yet" sentinel) — handled inline.
+ */
 export function phaseLabel(phase: SessionPhase): string {
-  switch (phase) {
-    case "INITIALIZING":
-      return "booting"
-    case "IDLE":
-      return "idle"
-    case "RUNNING":
-      return "running"
-    case "WAITING_FOR_PERM":
-      return "needs approval"
-    case "WAITING_FOR_ELIC":
-      return "needs input"
-    case "INTERRUPTING":
-      return "interrupting"
-    case "ERROR":
-      return "error"
-    case "SHUTTING_DOWN":
-      return "shutting down"
-    case "UNKNOWN":
-      return "—"
-  }
+  if (phase === "UNKNOWN") return "—"
+  if (isKnownSessionState(phase)) return STATE_LABELS[phase]
+  // Should be unreachable — `SessionPhase = SessionState | "UNKNOWN"`.
+  log.warn("phaseLabel called with unknown phase", { phase })
+  return phase
 }

@@ -11,6 +11,10 @@
  * Zig FFI (numeric color values crash the renderer — see AGENTS.md).
  */
 
+import type { SessionPhase } from "../slack/admin/protocol"
+
+type PhaseColors = Record<SessionPhase, string>
+
 export const mc = {
   bg: "#0f0f12",
   panelBg: "#151519",
@@ -24,7 +28,13 @@ export const mc = {
     hint: "#565663",
   },
 
-  /** Phase color mapping, in lower-casey banded scheme. */
+  /**
+   * Phase color mapping, in lower-casey banded scheme.
+   *
+   * Typed as `Record<SessionPhase, string>` so adding a new phase to
+   * the registry is a compile-time error here unless someone supplies
+   * a color (Cluster 6).
+   */
   phase: {
     INITIALIZING: "#87afff",
     IDLE: "#a0a0aa",
@@ -35,7 +45,7 @@ export const mc = {
     ERROR: "#ff5f5f",
     SHUTTING_DOWN: "#af5f5f",
     UNKNOWN: "#6c6c75",
-  } as const,
+  } satisfies PhaseColors,
 
   banner: {
     info: { bg: "#1f2a44", fg: "#87b0ff" },

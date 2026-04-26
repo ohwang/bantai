@@ -20,6 +20,10 @@ import { useMessages } from "../context/messages"
 import { colors } from "../theme/tokens"
 import { log } from "../../../utils/logger"
 import { findCurrentModel, friendlyModelName, MODEL_NAMES, MODEL_CONTEXT_WINDOWS, modelContextWindow } from "../../../protocol/models"
+import {
+  STATE_SEVERITIES,
+  isKnownSessionState,
+} from "../../../protocol/session-state"
 import { getStatusLineDiagnostics } from "../../../utils/statusline"
 import { listStatusBars } from "../status-bar/registry"
 import { activeStatusBarId } from "../status-bar/active"
@@ -678,15 +682,25 @@ function padRight(s: string, width: number): string {
   return s.length >= width ? s : s + " ".repeat(width - s.length)
 }
 
+// L5 regression: this used to be a hand-rolled switch that silently dropped
+// INITIALIZING and SHUTTING_DOWN into the `default` branch (rendering as
+// `colors.text.muted` instead of the canonical neutral state color). We now
+// map through `STATE_SEVERITIES` from the registry, so adding a state is a
+// compile-time error if anyone forgets to color it (Cluster 6).
 function stateColor(state: string): string {
-  switch (state) {
-    case "IDLE": return colors.state.idle
-    case "RUNNING": return colors.state.running
-    case "WAITING_FOR_PERM":
-    case "WAITING_FOR_ELIC":
-    case "INTERRUPTING": return colors.state.waiting
-    case "ERROR": return colors.state.error
-    default: return colors.text.muted
+  if (!isKnownSessionState(state)) return colors.text.muted
+  switch (STATE_SEVERITIES[state]) {
+    case "active":
+      return colors.state.running
+    case "blocked":
+      return colors.state.waiting
+    case "error":
+      return colors.state.error
+    case "neutral":
+      // INITIALIZING / IDLE / SHUTTING_DOWN — pick by id so IDLE stays
+      // green while INITIALIZING / SHUTTING_DOWN render as the dimmer
+      // shuttingDown shade.
+      return state === "IDLE" ? colors.state.idle : colors.state.shuttingDown
   }
 }
 

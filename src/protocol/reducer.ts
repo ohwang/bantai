@@ -18,14 +18,7 @@ import type {
   TurnFileChange,
 } from "./types"
 import { log } from "../utils/logger"
-
-/** Strip SDK image placeholders that native Claude Code doesn't display */
-function stripImagePlaceholders(text: string): string {
-  return text
-    .replace(/\[Image(?:\s*#?\s*\d+)?\]/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
+import { stripImagePlaceholders } from "./text-utils"
 
 /** Strip raw XML tags emitted by the SDK for local command output (e.g. /compact responses) */
 function stripSDKXmlTags(text: string): string {

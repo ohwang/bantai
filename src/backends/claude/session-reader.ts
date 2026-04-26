@@ -41,6 +41,7 @@ import type {
   TodoItem,
   ToolStatus,
 } from "../../protocol/types"
+import { stripImagePlaceholders } from "../../protocol/text-utils"
 import { synthesizeTodosUpdatedEvent } from "./event-mapper"
 import {
   detectSyntheticReason,
@@ -66,13 +67,8 @@ export function getSessionFilePath(sessionId: string, cwd: string): string {
   return join(homeDir, ".claude", "projects", projectKey, `${sessionId}.jsonl`)
 }
 
-/** Strip SDK image placeholders that native Claude Code doesn't display */
-function stripImagePlaceholders(text: string): string {
-  return text
-    .replace(/\[Image(?:\s*#?\s*\d+)?\]/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim()
-}
+// `stripImagePlaceholders` is hoisted to `protocol/text-utils.ts` so the
+// reducer and this resume reader share one implementation (Cluster 12).
 
 // Synthetic-turn detection (`detectSyntheticReason`) and user-message
 // content extraction (`extractUserMessageText`) used to live here. Both are

@@ -7,11 +7,11 @@
   "author": "Odin Wang <ohwxyz@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ohwang/bantai.git"
+    "url": "git+https://github.com/ohwxyz/bantai.git"
   },
-  "homepage": "https://github.com/ohwang/bantai",
+  "homepage": "https://github.com/ohwxyz/bantai",
   "bugs": {
-    "url": "https://github.com/ohwang/bantai/issues"
+    "url": "https://github.com/ohwxyz/bantai/issues"
   },
   "bin": {
     "bantai": "./bin/bantai",

@@ -10,6 +10,7 @@ import {
   DEFAULT_CONTEXT_WINDOW,
   friendlyModelName,
   modelContextWindow,
+  resolveContextWindow,
 } from "../../src/protocol/models"
 
 describe("friendlyModelName", () => {
@@ -85,5 +86,41 @@ describe("modelContextWindow", () => {
 
   it("honors a caller-provided fallback for unknown models", () => {
     expect(modelContextWindow("totally-made-up-model", 42)).toBe(42)
+  })
+})
+
+describe("resolveContextWindow", () => {
+  it("prefers the live model.contextWindow when set (Codex 0.122+ / Qwen _meta.contextLimit)", () => {
+    const model = { id: "auto-gemini-3", name: "Gemini 3 (Auto)", contextWindow: 750_000 }
+    // Even when the table has a different value for the id (1M),
+    // the live cap from the backend wins.
+    expect(resolveContextWindow(model, "Gemini 3 (Auto)")).toBe(750_000)
+  })
+
+  it("falls back to the model.id when the display name doesn't match the table", () => {
+    // Regression: Gemini ACP reports `id: "auto-gemini-3"` and
+    // `name: "Gemini 3 (Auto)"`; `state.currentModel` carries the name,
+    // which the table doesn't key on. Without an id-aware fallback the
+    // status bar shows DEFAULT_CONTEXT_WINDOW (200K) and the % math is 5x
+    // too high.
+    const model = { id: "auto-gemini-3", name: "Gemini 3 (Auto)" }
+    expect(resolveContextWindow(model, "Gemini 3 (Auto)")).toBe(1_000_000)
+  })
+
+  it("falls back to the raw display key when neither model.contextWindow nor model.id resolve", () => {
+    const model = { id: "unknown-foo", name: "claude-opus-4-7" }
+    // model.id misses; the raw lookup hits the canonical table.
+    expect(resolveContextWindow(model, "claude-opus-4-7")).toBe(1_000_000)
+  })
+
+  it("returns DEFAULT_CONTEXT_WINDOW when nothing matches", () => {
+    expect(resolveContextWindow(undefined, "")).toBe(DEFAULT_CONTEXT_WINDOW)
+    expect(resolveContextWindow({ id: "made-up", name: "made-up" }, "")).toBe(DEFAULT_CONTEXT_WINDOW)
+  })
+
+  it("treats a zero/negative model.contextWindow as missing (not a real cap)", () => {
+    const model = { id: "auto-gemini-3", name: "Gemini 3 (Auto)", contextWindow: 0 }
+    // Should fall through to the id lookup, not multiply by zero downstream.
+    expect(resolveContextWindow(model, "Gemini 3 (Auto)")).toBe(1_000_000)
   })
 })

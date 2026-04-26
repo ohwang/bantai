@@ -5,6 +5,7 @@
  */
 
 import { getBackendDescriptor } from "./registry"
+import type { ModelInfo } from "./types"
 
 /** Map raw API model IDs to friendly display names */
 export const MODEL_NAMES: Record<string, string> = {
@@ -52,11 +53,17 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "claude-sonnet-4-5-20250514": 200_000,
   "claude-3-5-sonnet-20241022": 200_000,
   "claude-3-5-haiku-20241022": 200_000,
-  // Gemini 3.x series
+  // Gemini 3.x series. `auto-gemini-3` is the bare ID Gemini CLI 0.37.0
+  // surfaces as `currentModelId` when running on the auto-routing 3.x preset
+  // (see DEFAULT_GEMINI_MODEL_AUTO in the gemini bundle); without it the
+  // status-bar context-fill lookup falls through to DEFAULT_CONTEXT_WINDOW
+  // (200K) and the percentage shows ~5x too high for typical Gemini usage.
+  "auto-gemini-3": 1_000_000,
   "gemini-3.1-pro-preview": 1_000_000,
   "gemini-3-flash-preview": 1_000_000,
   "gemini-3.1-flash-lite-preview": 1_000_000,
-  // Gemini 2.5 series
+  // Gemini 2.5 series — same auto-alias treatment as 3.x above.
+  "auto-gemini-2.5": 1_000_000,
   "gemini-2.5-pro": 1_000_000,
   "gemini-2.5-flash": 1_000_000,
   "gemini-2.5-flash-lite": 1_000_000,
@@ -71,6 +78,46 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 }
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
+
+/**
+ * Resolve a model's context-window cap with a three-tier fallback that works
+ * across all backends.
+ *
+ * Why this exists: `state.currentModel` (and many display surfaces) holds the
+ * model **display name**, not the API id. For Claude/Codex the two are equal
+ * so a `modelContextWindow(currentModel)` lookup happens to hit
+ * `MODEL_CONTEXT_WINDOWS` directly. For ACP backends (Gemini, Qwen) they
+ * differ — Gemini 0.37.0 reports `id: "auto-gemini-3", name: "Gemini 3 (Auto)"`
+ * and Qwen 0.15.x reports `id: "qwen3-coder-plus(qwen-oauth)",
+ * name: "Qwen 3 Coder Plus"` — and a raw-display-name lookup falls through
+ * to `DEFAULT_CONTEXT_WINDOW` (200K), making any % math 5x too high.
+ *
+ * Order:
+ *   1. `model.contextWindow` — populated dynamically by the backend
+ *      (Codex 0.122+ live cap, Qwen Code's `_meta.contextLimit`,
+ *      `cost_update.contextWindow` from the reducer).
+ *   2. `MODEL_CONTEXT_WINDOWS[model.id]` — keyed by the API id, so it
+ *      matches `auto-gemini-3` even when `currentModel` is `"Gemini 3 (Auto)"`.
+ *   3. `modelContextWindow(raw)` (defaults to `DEFAULT_CONTEXT_WINDOW`).
+ *
+ * @param model The current `ModelInfo` from `state.session.models[0]` (may be undefined before session_init).
+ * @param raw The display name typically read from `state.currentModel`.
+ */
+export function resolveContextWindow(
+  model: ModelInfo | undefined,
+  raw: string,
+): number {
+  if (typeof model?.contextWindow === "number" && model.contextWindow > 0) {
+    return model.contextWindow
+  }
+  if (model?.id) {
+    // Sentinel `0` distinguishes "miss" from "real default" without
+    // double-resolving the alias-suffix path.
+    const byId = modelContextWindow(model.id, 0)
+    if (byId > 0) return byId
+  }
+  return modelContextWindow(raw)
+}
 
 /** Matches Claude Code alias context-window suffixes like `opus[1m]`,
  *  `claude-opus-4-7[200k]`, or the SDK's display variants `[1M context]` /

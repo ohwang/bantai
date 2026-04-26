@@ -726,6 +726,33 @@ export interface AgentBackend {
    *  Backends that don't support this can leave it unimplemented. */
   resetSession?(): Promise<void>
 
+  /**
+   * Run a one-shot "side query" against a fork of the live session, without
+   * mutating main `ConversationState` or the on-disk session log.
+   *
+   * Backends MUST implement this by FORKING the live session (so the prompt
+   * cache is reused), then running the side prompt with tools disabled
+   * (`mcpServers: {}`, `allowedTools: []`, `permissionMode: "deny"`). The
+   * returned stream is a SUBSET of `AgentEvent`: only `turn_start`,
+   * `text_delta`, `thinking_delta`, `turn_complete`, and `error` are
+   * permitted — never `permission_request`, never `tool_use_*`.
+   *
+   * Consumers (the TUI side-chat overlay) drive a parallel ephemeral store
+   * keyed by side-query id and never feed these events into the main
+   * `reduce()` reducer.
+   *
+   * Backends that cannot fork yet MUST throw a clear error or yield a single
+   * `error` event explaining why side chat is unavailable on this backend —
+   * never silently degrade.
+   *
+   * Optional for backward compatibility; consumers should treat absence as
+   * "not supported on this backend".
+   */
+  sideQuery?(
+    prompt: string,
+    opts: { signal: AbortSignal },
+  ): AsyncIterable<AgentEvent>
+
   /** Resolves once the backend is truly ready to accept user messages:
    *  subprocess alive, handshake complete, any replayContext stashed, and
    *  the message loop listening. Used by /switch as the definitive readiness

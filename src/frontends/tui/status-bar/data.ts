@@ -18,7 +18,7 @@ import { useAgent } from "../context/agent"
 import { useMessages } from "../context/messages"
 import { useSession } from "../context/session"
 import type { PermissionMode, SandboxInfo, RateLimitEntry } from "../../../protocol/types"
-import { DEFAULT_CONTEXT_WINDOW, MODEL_CONTEXT_WINDOWS, friendlyModelName } from "../../../protocol/models"
+import { friendlyModelName, modelContextWindow } from "../../../protocol/models"
 import { setTerminalProgress } from "../../../utils/terminal-notify"
 import { toast } from "../context/toast"
 import { colors } from "../theme/tokens"
@@ -382,7 +382,7 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
       if (fill > 0) {
         const model = state.session?.models?.[0]
         const raw = state.currentModel || model?.name || ""
-        const ctxWindow = model?.contextWindow ?? MODEL_CONTEXT_WINDOWS[raw] ?? DEFAULT_CONTEXT_WINDOW
+        const ctxWindow = model?.contextWindow ?? modelContextWindow(raw)
         const pct = Math.min(100, Math.round((fill / ctxWindow) * 100))
         setTerminalProgress("running", pct)
       }
@@ -414,7 +414,7 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
     const raw = state.currentModel || model?.name || agent.config.model || ""
     if (!raw) return `unknown model (${backendName()})`
     const friendly = friendlyModelName(raw)
-    const ctxWindow = model?.contextWindow ?? MODEL_CONTEXT_WINDOWS[raw] ?? DEFAULT_CONTEXT_WINDOW
+    const ctxWindow = model?.contextWindow ?? modelContextWindow(raw)
     const ctxAbbrev = ctxWindow >= 1_000_000
       ? `${ctxWindow / 1_000_000}M`
       : `${ctxWindow / 1_000}K`
@@ -510,7 +510,7 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
     if (fill === 0) return 0
     const model = state.session?.models?.[0]
     const raw = state.currentModel || model?.name || ""
-    const ctxWindow = model?.contextWindow ?? MODEL_CONTEXT_WINDOWS[raw] ?? DEFAULT_CONTEXT_WINDOW
+    const ctxWindow = model?.contextWindow ?? modelContextWindow(raw)
     return Math.round((fill / ctxWindow) * 100)
   })
 

@@ -14,7 +14,7 @@
 import path from "node:path"
 import os from "node:os"
 import { log } from "./logger"
-import { friendlyModelName, MODEL_CONTEXT_WINDOWS, DEFAULT_CONTEXT_WINDOW } from "../protocol/models"
+import { friendlyModelName, modelContextWindow } from "../protocol/models"
 import type { SessionContextState } from "../frontends/tui/context/session"
 import type { PermissionMode, RateLimitEntry } from "../protocol/types"
 import { loadConfigSync, type StatusLineSetting } from "../config/settings"
@@ -187,7 +187,7 @@ export function buildStatusLineInput(
   const cwd = process.cwd()
   const model = sessionState.session?.models?.[0]
   const rawModel = sessionState.currentModel || (model?.name ?? opts.configModel ?? "")
-  const ctxWindow = model?.contextWindow ?? MODEL_CONTEXT_WINDOWS[rawModel] ?? DEFAULT_CONTEXT_WINDOW
+  const ctxWindow = model?.contextWindow ?? modelContextWindow(rawModel)
 
   // Context window percentages — lastTurnInputTokens is the input token count
   // from the most recent API response, matching Claude Code's used_percentage

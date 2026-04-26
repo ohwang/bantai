@@ -7,7 +7,9 @@ import { describe, expect, it } from "bun:test"
 import {
   MODEL_NAMES,
   MODEL_CONTEXT_WINDOWS,
+  DEFAULT_CONTEXT_WINDOW,
   friendlyModelName,
+  modelContextWindow,
 } from "../../src/protocol/models"
 
 describe("friendlyModelName", () => {
@@ -43,5 +45,45 @@ describe("MODEL_NAMES / MODEL_CONTEXT_WINDOWS coverage", () => {
   it("keeps claude-opus-4-6 listed alongside 4.7 (users can still select it)", () => {
     expect(MODEL_NAMES["claude-opus-4-6"]).toBe("Opus 4.6")
     expect(MODEL_CONTEXT_WINDOWS["claude-opus-4-6"]).toBe(1_000_000)
+  })
+})
+
+describe("modelContextWindow", () => {
+  it("returns the direct table value for known canonical IDs", () => {
+    expect(modelContextWindow("claude-opus-4-7")).toBe(1_000_000)
+    expect(modelContextWindow("claude-sonnet-4-6")).toBe(200_000)
+  })
+
+  it("parses Claude Code alias suffixes (e.g. 'opus[1m]') so the startup fallback agrees with session_init", () => {
+    // Regression: before this lookup was added, `opus[1m]` only resolved
+    // for the friendly name and the context-window lookup quietly fell
+    // through to DEFAULT_CONTEXT_WINDOW (200K) — producing an
+    // "Opus 4.7 (200K)" flash in the status bar at startup despite the
+    // user explicitly opting into the 1M window.
+    expect(modelContextWindow("opus[1m]")).toBe(1_000_000)
+    expect(modelContextWindow("opus[1M]")).toBe(1_000_000)
+    expect(modelContextWindow("claude-opus-4-7[1m]")).toBe(1_000_000)
+    expect(modelContextWindow("claude-opus-4-7[200k]")).toBe(200_000)
+  })
+
+  it("parses the SDK's display-formatted suffix variants", () => {
+    // These are the forms the Claude SDK init mapper handles too.
+    expect(modelContextWindow("claude-opus-4-6 [1M context]")).toBe(1_000_000)
+    expect(modelContextWindow("claude-opus-4-6 (1M context)")).toBe(1_000_000)
+  })
+
+  it("falls back to the suffix-stripped key when present", () => {
+    // `claude-opus-4-6[200k]` → suffix wins (200K), not the table's 1M.
+    // But `claude-opus-4-6[xyz]` (unparseable) → strips, table hit (1M).
+    expect(modelContextWindow("claude-opus-4-6[200k]")).toBe(200_000)
+  })
+
+  it("returns the default fallback for unknown models", () => {
+    expect(modelContextWindow("totally-made-up-model")).toBe(DEFAULT_CONTEXT_WINDOW)
+    expect(modelContextWindow("")).toBe(DEFAULT_CONTEXT_WINDOW)
+  })
+
+  it("honors a caller-provided fallback for unknown models", () => {
+    expect(modelContextWindow("totally-made-up-model", 42)).toBe(42)
   })
 })

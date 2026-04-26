@@ -7,7 +7,7 @@
 
 import { getSnapshot, getSubagentManagerBridge } from "./state-bridge"
 import { log } from "../utils/logger"
-import { friendlyModelName, MODEL_CONTEXT_WINDOWS, DEFAULT_CONTEXT_WINDOW } from "../protocol/models"
+import { friendlyModelName, modelContextWindow } from "../protocol/models"
 import type { Block } from "../protocol/types"
 
 interface CallToolResult {
@@ -34,7 +34,7 @@ export function getState(): CallToolResult {
 
   const caps = snap.backend?.capabilities()
   const rawModel = s.currentModel ?? ""
-  const ctxWindow = MODEL_CONTEXT_WINDOWS[rawModel] ?? DEFAULT_CONTEXT_WINDOW
+  const ctxWindow = modelContextWindow(rawModel)
   const ctxFill = s.lastTurnInputTokens
 
   return jsonResult({
@@ -195,7 +195,7 @@ export function getDiagnostics(): CallToolResult {
   const mem = process.memoryUsage()
 
   const rawModel = s?.currentModel ?? ""
-  const ctxWindow = MODEL_CONTEXT_WINDOWS[rawModel] ?? DEFAULT_CONTEXT_WINDOW
+  const ctxWindow = modelContextWindow(rawModel)
   const ctxFill = s?.lastTurnInputTokens ?? 0
 
   const gitBranch = getGitBranch()

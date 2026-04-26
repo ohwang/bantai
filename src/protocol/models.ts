@@ -70,6 +70,54 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
 
+/** Matches Claude Code alias context-window suffixes like `opus[1m]`,
+ *  `claude-opus-4-7[200k]`, or the SDK's display variants `[1M context]` /
+ *  `(1M context)`. Captured: numeric count and `K|M` unit. Kept in lockstep
+ *  with the regex in `src/backends/claude/event-mapper.ts`. */
+const CONTEXT_WINDOW_SUFFIX_RE = /[\[(](\d+)([KkMm])\s*(?:context|tokens?)?[\])]/
+
+/** Resolve a model's context window in tokens.
+ *
+ * Lookup order:
+ *   1. Direct hit in `MODEL_CONTEXT_WINDOWS` for the raw key.
+ *   2. Claude Code alias suffix — `opus[1m]` / `[200k]` / `[1M context]` —
+ *      parsed from the raw string. This matches Claude Code's `settings.json`
+ *      convention and mirrors the parser in the Claude SDK event mapper, so
+ *      the pre-`session_init` startup fallback agrees with the
+ *      post-`session_init` value (no `(200K)` → `(1M)` flash).
+ *   3. Suffix-stripped lookup (e.g. `claude-opus-4-7[1m]` with no `[1m]`
+ *      entry → fall back to `claude-opus-4-7`'s entry).
+ *   4. `fallback` (defaults to `DEFAULT_CONTEXT_WINDOW`).
+ */
+export function modelContextWindow(
+  rawModel: string,
+  fallback: number = DEFAULT_CONTEXT_WINDOW,
+): number {
+  if (!rawModel) return fallback
+
+  const direct = MODEL_CONTEXT_WINDOWS[rawModel]
+  if (typeof direct === "number") return direct
+
+  const suffixMatch = rawModel.match(CONTEXT_WINDOW_SUFFIX_RE)
+  if (suffixMatch) {
+    const num = parseInt(suffixMatch[1]!, 10)
+    const unit = suffixMatch[2]!.toUpperCase()
+    if (Number.isFinite(num) && num > 0) {
+      return unit === "M" ? num * 1_000_000 : num * 1_000
+    }
+  }
+
+  const stripped = rawModel
+    .replace(/\s*[\[(]\d+[KkMm]\s*(?:context|tokens?)?[\])]\s*$/, "")
+    .trim()
+  if (stripped && stripped !== rawModel) {
+    const fromStripped = MODEL_CONTEXT_WINDOWS[stripped]
+    if (typeof fromStripped === "number") return fromStripped
+  }
+
+  return fallback
+}
+
 /** Short aliases used by Claude Code's settings (e.g., "opus", "sonnet", "haiku").
  *
  * Policy: aliases track the latest shipped version, matching Anthropic's API

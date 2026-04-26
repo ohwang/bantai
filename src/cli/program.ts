@@ -58,9 +58,12 @@ export async function runCli(argv: string[]): Promise<void> {
     .argument("<message...>", "Message to send")
   addGlobalOptions(runCmd)
   addTuiOptions(runCmd)
-  runCmd.action(async (messageParts: string[]) => {
+  runCmd.action(async (messageParts: string[], _opts: unknown, cmd: Command) => {
     const message = messageParts.join(" ")
-    const opts = { ...program.opts(), ...runCmd.opts() }
+    // optsWithGlobals merges parent + self correctly; a manual spread of
+    // `{ ...program.opts(), ...runCmd.opts() }` lets defaults on the child
+    // (e.g. --acp-args' `[]`) clobber the actually-parsed parent value.
+    const opts = cmd.optsWithGlobals()
     const flags = resolveFlags(opts)
     await runHeadless(flags, message)
   })
@@ -74,8 +77,8 @@ export async function runCli(argv: string[]): Promise<void> {
     .argument("[id]", "Session ID to resume")
   addGlobalOptions(resumeCmd)
   addTuiOptions(resumeCmd)
-  resumeCmd.action(async (id: string | undefined) => {
-    const opts = { ...program.opts(), ...resumeCmd.opts() }
+  resumeCmd.action(async (id: string | undefined, _opts: unknown, cmd: Command) => {
+    const opts = cmd.optsWithGlobals()
     // Set resume flags as if --resume was used
     if (id) {
       opts.resume = id
@@ -94,8 +97,8 @@ export async function runCli(argv: string[]): Promise<void> {
     .description("Continue most recent session")
   addGlobalOptions(continueCmd)
   addTuiOptions(continueCmd)
-  continueCmd.action(async () => {
-    const opts = { ...program.opts(), ...continueCmd.opts() }
+  continueCmd.action(async (_opts: unknown, cmd: Command) => {
+    const opts = cmd.optsWithGlobals()
     opts.continue = true
     const flags = resolveFlags(opts)
     await launchTui(flags)
@@ -113,8 +116,8 @@ export async function runCli(argv: string[]): Promise<void> {
     .argument("<session-id>", "Session ID to follow")
   addGlobalOptions(followCmd)
   addTuiOptions(followCmd)
-  followCmd.action(async (sessionId: string) => {
-    const opts = { ...program.opts(), ...followCmd.opts() }
+  followCmd.action(async (sessionId: string, _opts: unknown, cmd: Command) => {
+    const opts = cmd.optsWithGlobals()
     const flags = resolveFlags(opts)
     flags.follow = { sessionId }
     await launchTui(flags)
@@ -130,8 +133,8 @@ export async function runCli(argv: string[]): Promise<void> {
       .argument("[prompt]", "Initial prompt")
     addGlobalOptions(cmd)
     addTuiOptions(cmd)
-    cmd.action(async (prompt: string | undefined) => {
-      const opts = { ...program.opts(), ...cmd.opts() }
+    cmd.action(async (prompt: string | undefined, _opts: unknown, c: Command) => {
+      const opts = c.optsWithGlobals()
       const flags = resolveFlags(opts, prompt, backendName)
       await launchTui(flags)
     })
@@ -171,8 +174,8 @@ export async function runCli(argv: string[]): Promise<void> {
       "Run the admin surface in read-only mode (GETs + WS only, POSTs return 403)",
     )
   addGlobalOptions(slackCmd)
-  slackCmd.action(async () => {
-    const opts = { ...program.opts(), ...slackCmd.opts() }
+  slackCmd.action(async (_opts: unknown, cmd: Command) => {
+    const opts = cmd.optsWithGlobals()
     const flags = resolveFlags(opts)
     const adminOverrides = resolveAdminOverrides(opts)
     await launchSlack({

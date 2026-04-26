@@ -243,7 +243,11 @@ export function DiagnosticsPanel(_props: { onClose: () => void }) {
         { key: "Session ID:", value: sessionId },
         { key: "State:", value: session.sessionState, color: stateColor(session.sessionState) },
         { key: "Uptime:", value: () => formatDuration(liveUptime()) },
-        { key: "Permission mode:", value: agent.config.permissionMode ?? "default" },
+        // Read from `agent.permissionMode()` — the reactive signal that
+        // status bar + diagnostics share. Reading `config.permissionMode`
+        // would surface only the launch-time value and go stale the moment
+        // Shift+Tab cycles the mode (backlog: permission-mode-diagnostics-out-of-sync).
+        { key: "Permission mode:", value: agent.permissionMode() },
         { key: "Backend:", value: agent.backend.capabilities().name },
       ],
     })

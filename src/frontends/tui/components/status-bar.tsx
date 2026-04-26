@@ -25,7 +25,6 @@ import type { StyledText, TextRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { useSession } from "../context/session"
 import { useAgent } from "../context/agent"
-import { log } from "../../../utils/logger"
 import { colors } from "../theme/tokens"
 import type { PermissionMode } from "../../../protocol/types"
 import { getStatusLineConfig, buildStatusLineInput, executeStatusLineCommand } from "../../../utils/statusline"
@@ -81,10 +80,9 @@ export function StatusBar(props: { hint?: string | null }) {
   const { state } = useSession()
   const agent = useAgent()
 
-  // -- Permission mode (local signal so it's reactive) --
-  const [permMode, setPermMode] = createSignal<PermissionMode>(
-    agent.config.permissionMode ?? "default",
-  )
+  // -- Permission mode (read from AgentContext — single reactive source of
+  //    truth for status bar + diagnostics + status-line command). --
+  const permMode = agent.permissionMode
 
   // -- External status line command --
   const statusLineConfig = getStatusLineConfig()
@@ -114,11 +112,10 @@ export function StatusBar(props: { hint?: string | null }) {
 
       const nextIdx = (startIdx + 1) % modes.length
       const nextMode = modes[nextIdx] ?? "default"
-      agent.backend.setPermissionMode(nextMode).then(() => {
-        setPermMode(nextMode)
-      }).catch((err) => {
-        log.warn("Failed to set permission mode", { mode: nextMode, error: String(err) })
-      })
+      // setPermissionMode handles both the backend push and signal update,
+      // so the diagnostics panel + status bar swap to `nextMode` in the
+      // same render frame. Errors are logged inside the helper.
+      void agent.setPermissionMode(nextMode)
     }
   })
 

@@ -2,22 +2,14 @@ import { existsSync, readdirSync, readFileSync as _readFileSync } from "node:fs"
 import { join, basename } from "node:path"
 import { homedir } from "node:os"
 import type { AgentDefinition } from "./types"
-import type { EffortLevel } from "../protocol/types"
 import { isKnownPermissionMode } from "../protocol/permission-modes"
+import { isKnownEffortLevel } from "../protocol/effort-levels"
 import { isKnownBackendId, knownBackendIds } from "../protocol/registry"
 import { log } from "../utils/logger"
 
 // ---------------------------------------------------------------------------
 // Frontmatter parser
 // ---------------------------------------------------------------------------
-
-const VALID_EFFORT_LEVELS = new Set<string>([
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-])
 
 interface FrontmatterResult {
   fields: Record<string, string | string[]>
@@ -192,9 +184,9 @@ export function parseDefinition(
   // EffortLevel (validated)
   if (
     typeof fields.effort === "string" &&
-    VALID_EFFORT_LEVELS.has(fields.effort)
+    isKnownEffortLevel(fields.effort)
   ) {
-    def.effort = fields.effort as EffortLevel
+    def.effort = fields.effort
   }
 
   // maxTurns (number)

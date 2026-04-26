@@ -17,8 +17,17 @@ export type ThinkingConfig =
   | { type: "enabled"; budgetTokens?: number }
   | { type: "disabled" }
 
-/** Effort level for controlling reasoning depth */
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
+/**
+ * Effort level for controlling reasoning depth.
+ *
+ * The closed enumeration lives in `protocol/effort-levels.ts`; this is a
+ * re-export so existing `import { EffortLevel } from "../protocol/types"`
+ * call sites keep working. New code should import from
+ * `protocol/effort-levels` directly when it also needs helpers
+ * (`isKnownEffortLevel`, `RUNTIME_EFFORT_LEVELS`, etc.).
+ */
+export type { EffortLevel } from "./effort-levels"
+import type { EffortLevel } from "./effort-levels"
 
 // ---------------------------------------------------------------------------
 // Agent Events — unified stream from all backends

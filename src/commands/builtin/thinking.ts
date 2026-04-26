@@ -8,24 +8,37 @@
  *   /thinking high      — deep reasoning (default)
  */
 
-import type { EffortLevel } from "../../protocol/types"
 import type { SlashCommand } from "../registry"
+import {
+  EFFORT_LEVELS,
+  RUNTIME_EFFORT_LEVELS,
+  isKnownEffortLevel,
+  isRuntimeEffortLevel,
+  listRuntimeEffortLevelsForCli,
+} from "../../protocol/effort-levels"
 
-const VALID_LEVELS: EffortLevel[] = ["low", "medium", "high"]
-const VALID_LEVELS_WITH_MAX: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"]
+// Help text built at call-site from the registry — keeps `/thinking` and
+// `--effort` in sync with the central source of truth (Cluster 5).
+const RUNTIME_HELP_LINES = RUNTIME_EFFORT_LEVELS
+  .map((id) => {
+    const desc = EFFORT_LEVELS.find((l) => l.id === id)?.description ?? ""
+    const padded = id.padEnd(6)
+    return `  ${padded} — ${desc}`
+  })
+  .join("\n")
 
 export const thinkingCommand: SlashCommand = {
   name: "thinking",
   description: "View or change thinking effort level",
   aliases: ["effort"],
-  argumentHint: "<low|medium|high>",
+  argumentHint: `<${RUNTIME_EFFORT_LEVELS.join("|")}>`,
   execute: async (args, ctx) => {
     const current = ctx.getSessionState?.().currentEffort || "high"
 
     if (!args.trim()) {
       ctx.pushEvent({
         type: "system_message",
-        text: `Thinking effort: ${current}\n\nUsage: /thinking <low|medium|high>\n  low    — minimal thinking, fastest responses\n  medium — moderate thinking\n  high   — deep reasoning (default)`,
+        text: `Thinking effort: ${current}\n\nUsage: /thinking <${RUNTIME_EFFORT_LEVELS.join("|")}>\n${RUNTIME_HELP_LINES}`,
         ephemeral: true,
       })
       return
@@ -33,16 +46,16 @@ export const thinkingCommand: SlashCommand = {
 
     const level = args.trim().toLowerCase()
 
-    if (!VALID_LEVELS_WITH_MAX.includes(level as EffortLevel)) {
+    if (!isKnownEffortLevel(level)) {
       ctx.pushEvent({
         type: "system_message",
-        text: `Unknown effort level: ${level}\n\nValid levels: ${VALID_LEVELS.join(", ")}`,
+        text: `Unknown effort level: ${level}\n\nValid runtime levels: ${listRuntimeEffortLevelsForCli()}`,
         ephemeral: true,
       })
       return
     }
 
-    if (level === "max" || level === "xhigh") {
+    if (!isRuntimeEffortLevel(level)) {
       ctx.pushEvent({
         type: "system_message",
         text: `Cannot set effort to '${level}' at runtime. Use --effort ${level} at startup.`,
@@ -63,13 +76,13 @@ export const thinkingCommand: SlashCommand = {
     const caps = ctx.backend.capabilities()
 
     try {
-      await ctx.backend.setEffort(level as EffortLevel)
+      await ctx.backend.setEffort(level)
 
       if (caps.supportsThinking) {
         // Backend supports thinking — emit event and confirm
         ctx.pushEvent({
           type: "effort_changed",
-          effort: level as EffortLevel,
+          effort: level,
         })
         ctx.pushEvent({
           type: "system_message",

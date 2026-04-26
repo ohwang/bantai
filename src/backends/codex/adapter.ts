@@ -85,17 +85,31 @@ import type {
  * Approval policy only controls prompting behavior, not filesystem access.
  * See toCodexSandboxPolicy() for the filesystem enforcement side.
  */
+/**
+ * Map our `PermissionMode` to Codex's approval-policy string.
+ *
+ * Typed as `Record<PermissionMode, string>` (after the `mode ?? "default"`
+ * normalisation) so adding a new permission mode is a compile-time error
+ * here unless we explicitly decide whether Codex prompts for it (Cluster 5
+ * / L6 — `auto` and `plan` used to be silently inconsistent between this
+ * function and `capabilities().supportedPermissionModes`).
+ *
+ * - "never"      — never prompt (auto-approve everything)
+ * - "on-request" — Codex's default: prompt before destructive ops
+ */
+const CODEX_APPROVAL_POLICY: Record<PermissionMode, string> = {
+  default: "on-request",
+  acceptEdits: "on-request",
+  plan: "on-request",
+  // `auto` would let Codex's classifier route requests — Codex doesn't
+  // expose that toggle, so map it to the default prompting behaviour.
+  auto: "on-request",
+  bypassPermissions: "never",
+  dontAsk: "never",
+}
+
 export function toCodexApprovalPolicy(mode?: PermissionMode): string {
-  switch (mode) {
-    case "bypassPermissions":
-    case "dontAsk":
-      return "never"
-    case "plan":
-    case "default":
-    case "acceptEdits":
-    default:
-      return "on-request"
-  }
+  return CODEX_APPROVAL_POLICY[mode ?? "default"]
 }
 
 /**
@@ -250,12 +264,12 @@ export class CodexAdapter extends BaseAdapter {
       supportsStreaming: true,
       supportsSubagents: false,
       supportsCompact: false, // Codex auto-compacts but doesn't support user-initiated /compact
-      supportedPermissionModes: [
-        "default",
-        "acceptEdits",
-        "bypassPermissions",
-        "dontAsk",
-      ],
+      // Derived from the CODEX_APPROVAL_POLICY record so this list cannot
+      // drift from the actual mapping (Cluster 5 / L6 — `auto` and `plan`
+      // were silently missing here even though the policy switch
+      // recognised them). Since every PermissionMode now has an entry in
+      // the policy record, every PermissionMode is supported.
+      supportedPermissionModes: Object.keys(CODEX_APPROVAL_POLICY) as PermissionMode[],
       sandboxInfo,
     }
   }

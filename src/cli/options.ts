@@ -12,6 +12,7 @@ import type { Command } from "commander"
 import type { SessionConfig, PermissionMode } from "../protocol/types"
 import { knownBackendIds } from "../protocol/registry"
 import { listPermissionModesForCli } from "../protocol/permission-modes"
+import { isKnownEffortLevel, listEffortLevelsForCli } from "../protocol/effort-levels"
 import { listThemes } from "../frontends/tui/theme/registry"
 import { listStatusBars } from "../frontends/tui/status-bar/registry"
 
@@ -129,7 +130,7 @@ export function addTuiOptions(cmd: Command): Command {
     .option("--no-session-persistence", "Disable session persistence to disk")
     .option("--thinking <mode>", "Thinking mode (adaptive, enabled, disabled)")
     .option("--max-thinking-tokens <n>", "Fixed thinking token budget (sets thinking to enabled)", parseIntPositive)
-    .option("--effort <level>", "Reasoning effort (low, medium, high, xhigh, max)")
+    .option("--effort <level>", `Reasoning effort (${listEffortLevelsForCli()})`)
     .option("--system-prompt <text>", "System prompt")
     .option(
       "--theme <id>",
@@ -225,16 +226,10 @@ export function resolveFlags(
   // Effort
   if (opts.effort !== undefined) {
     const val = opts.effort as string
-    if (
-      val === "low" ||
-      val === "medium" ||
-      val === "high" ||
-      val === "xhigh" ||
-      val === "max"
-    ) {
+    if (isKnownEffortLevel(val)) {
       config.effort = val
     } else {
-      console.error("Error: --effort must be low, medium, high, xhigh, or max")
+      console.error(`Error: --effort must be one of ${listEffortLevelsForCli()}`)
       process.exit(1)
     }
   }

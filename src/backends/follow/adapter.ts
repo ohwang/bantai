@@ -45,6 +45,7 @@ import type {
   SessionResumeSummary,
   UserMessage,
 } from "../../protocol/types"
+import { DEFAULT_CAPABILITIES } from "../../protocol/capabilities"
 import { EventChannel } from "../../utils/event-channel"
 import { log } from "../../utils/logger"
 import { readSessionHistory } from "../claude/session-reader"
@@ -79,21 +80,22 @@ export class FollowBackend implements AgentBackend {
   }
 
   capabilities(): BackendCapabilities {
+    // Follow is read-only — it tails an existing JSONL, never spawns the
+    // SDK. Most flags are false; permission modes stay locked to "default"
+    // because switching modes during a passive tail is a no-op.
     return {
+      ...DEFAULT_CAPABILITIES,
       name: "follow",
-      supportsThinking: false,
-      supportsToolApproval: false,
       supportsResume: true,
-      supportsContinue: false,
-      supportsFork: false,
-      // No streaming deltas: Claude's JSONL is only written at whole-message
-      // granularity, so the translator emits `text_complete` instead of
-      // `text_delta`. Users will not see typing-in-progress.
+      // No streaming deltas: Claude's JSONL is only written at whole-
+      // message granularity, so the translator emits `text_complete`
+      // instead of `text_delta`. Users will not see typing-in-progress.
       supportsStreaming: false,
-      supportsSubagents: false,
       supportsCompact: true,
+      // Override the registry default — follow can't enforce or change
+      // modes mid-tail, so locking to "default" is honest.
       supportedPermissionModes: ["default"],
-    }
+    } satisfies BackendCapabilities
   }
 
   // ---------------------------------------------------------------------------

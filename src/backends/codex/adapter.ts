@@ -29,6 +29,7 @@ import type {
   SessionInfo,
   UserMessage,
 } from "../../protocol/types"
+import { DEFAULT_CAPABILITIES } from "../../protocol/capabilities"
 import { backendTrace } from "../../utils/backend-trace"
 import { BaseAdapter } from "../shared/base-adapter"
 
@@ -255,15 +256,15 @@ export class CodexAdapter extends BaseAdapter {
     }
 
     return {
+      ...DEFAULT_CAPABILITIES,
       name: "codex",
       supportsThinking: true,
       supportsToolApproval: true,
       supportsResume: true,
       supportsContinue: true,
       supportsFork: true,
-      supportsStreaming: true,
-      supportsSubagents: false,
-      supportsCompact: false, // Codex auto-compacts but doesn't support user-initiated /compact
+      // Codex auto-compacts but doesn't support user-initiated /compact.
+      supportsCompact: false,
       // Derived from the CODEX_APPROVAL_POLICY record so this list cannot
       // drift from the actual mapping (Cluster 5 / L6 — `auto` and `plan`
       // were silently missing here even though the policy switch
@@ -271,7 +272,7 @@ export class CodexAdapter extends BaseAdapter {
       // the policy record, every PermissionMode is supported.
       supportedPermissionModes: Object.keys(CODEX_APPROVAL_POLICY) as PermissionMode[],
       sandboxInfo,
-    }
+    } satisfies BackendCapabilities
   }
 
   sendMessage(message: UserMessage): void {

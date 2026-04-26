@@ -35,6 +35,7 @@ import type {
   SessionInfo,
   UserMessage,
 } from "../../protocol/types"
+import { DEFAULT_CAPABILITIES } from "../../protocol/capabilities"
 import { EventChannel } from "../../utils/event-channel"
 import { AsyncQueue } from "../../utils/async-queue"
 import { backendTrace } from "../../utils/backend-trace"
@@ -338,6 +339,7 @@ export class ClaudeAdapter implements AgentBackend {
     }
 
     return {
+      ...DEFAULT_CAPABILITIES,
       name: "claude",
       sdkVersion: ClaudeAdapter.sdkVersion,
       supportsThinking: true,
@@ -345,19 +347,10 @@ export class ClaudeAdapter implements AgentBackend {
       supportsResume: true,
       supportsContinue: true,
       supportsFork: true,
-      supportsStreaming: true,
       supportsSubagents: true,
       supportsCompact: true,
-      supportedPermissionModes: [
-        "default",
-        "acceptEdits",
-        "bypassPermissions",
-        "plan",
-        "dontAsk",
-        "auto",
-      ],
       sandboxInfo,
-    }
+    } satisfies BackendCapabilities
   }
 
   async *start(config: SessionConfig): AsyncGenerator<AgentEvent> {

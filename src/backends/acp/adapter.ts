@@ -34,6 +34,7 @@ import type {
   SessionInfo,
   UserMessage,
 } from "../../protocol/types"
+import { DEFAULT_CAPABILITIES } from "../../protocol/capabilities"
 import { backendTrace } from "../../utils/backend-trace"
 import { BaseAdapter } from "../shared/base-adapter"
 import { AcpTransport } from "./transport"
@@ -278,18 +279,15 @@ export class AcpAdapter extends BaseAdapter {
     }
 
     return {
+      ...DEFAULT_CAPABILITIES,
       name: this.presetName,
       supportsThinking: hasThinkingOption,
       supportsToolApproval: true,
       supportsResume: !!this.agentCapabilities?.loadSession,
       supportsContinue: !!this.agentCapabilities?.loadSession,
-      supportsFork: false,
-      supportsStreaming: true,
-      supportsSubagents: false,
-      supportsCompact: false,
       supportedPermissionModes: this.deriveSupportedPermissionModes(),
       sandboxInfo,
-    }
+    } satisfies BackendCapabilities
   }
 
   sendMessage(message: UserMessage): void {

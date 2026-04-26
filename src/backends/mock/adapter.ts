@@ -21,6 +21,7 @@ import type {
   SessionInfo,
   UserMessage,
 } from "../../protocol/types"
+import { DEFAULT_CAPABILITIES } from "../../protocol/capabilities"
 import { BaseAdapter } from "../shared/base-adapter"
 
 type PendingResolve = (result: { behavior: "allow" | "deny"; message?: string }) => void
@@ -31,18 +32,20 @@ export class MockAdapter extends BaseAdapter {
   private interrupted = false
 
   capabilities(): BackendCapabilities {
+    // Spread DEFAULT_CAPABILITIES first so the registry's default
+    // permission modes (every known mode — mock enforces nothing, so
+    // every mode is selectable) flow through automatically. Cluster 3
+    // / live-bug fix: mock used to declare `supportedPermissionModes:
+    // ["default"]` only, silently dropping `auto`/`dontAsk` from the
+    // TUI cycler even though the mock has no policy that would reject
+    // them.
     return {
+      ...DEFAULT_CAPABILITIES,
       name: "mock",
       supportsThinking: true,
       supportsToolApproval: true,
-      supportsResume: false,
-      supportsContinue: false,
-      supportsFork: false,
-      supportsStreaming: true,
       supportsSubagents: true,
-      supportsCompact: false,
-      supportedPermissionModes: ["default"],
-    }
+    } satisfies BackendCapabilities
   }
 
   protected async runSession(config: SessionConfig): Promise<void> {

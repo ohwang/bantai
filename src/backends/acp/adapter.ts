@@ -38,6 +38,11 @@ import { DEFAULT_CAPABILITIES } from "../../protocol/capabilities"
 import { backendTrace } from "../../utils/backend-trace"
 import { BaseAdapter } from "../shared/base-adapter"
 import { AcpTransport } from "./transport"
+import {
+  acpIdToBantai,
+  bantaiToAcpId,
+  bantaiToAcpFragment,
+} from "./permission-mode-map"
 import { AcpTerminalManager } from "./terminal-manager"
 import { mapAcpUpdate, deriveToolName } from "./event-mapper"
 import type {
@@ -188,31 +193,20 @@ export class AcpAdapter extends BaseAdapter {
   }
 
   private deriveSupportedPermissionModes(): PermissionMode[] {
-    // Reverse-map ACP mode IDs to our internal PermissionMode names.
-    // Supports both short IDs (Gemini: "default", "yolo") and
-    // URI-based IDs (Copilot: "https://...#agent", "https://...#plan").
-    const reverseMap: Record<string, PermissionMode> = {
-      default: "default",
-      autoEdit: "acceptEdits",
-      yolo: "bypassPermissions",
-      plan: "plan",
-    }
-    // URI fragment mappings for Copilot-style mode IDs
-    const fragmentMap: Record<string, PermissionMode> = {
-      agent: "default",
-      plan: "plan",
-      autopilot: "bypassPermissions",
-    }
-
+    // Reverse-map discovered ACP mode IDs to bantai's PermissionMode via the
+    // central ACP permission-mode table (`./permission-mode-map.ts`). The
+    // table covers both Gemini-style direct IDs (`default`, `autoEdit`,
+    // `yolo`, `plan`) and Copilot-style URI fragments (`#agent`, `#plan`,
+    // `#autopilot`) — Cluster 7 collapsed three asymmetric inline tables
+    // here onto that single source of truth.
     if (this.discoveredModes.length > 0) {
       const modes = this.discoveredModes
         .map(m => {
-          // Try direct ID match first (Gemini)
-          if (reverseMap[m.id]) return reverseMap[m.id]!
-          // Try URI fragment match (Copilot)
-          const fragment = m.id.split("#").pop()
-          if (fragment && fragmentMap[fragment]) return fragmentMap[fragment]!
-          // Try name-based matching as fallback
+          const direct = acpIdToBantai(m.id)
+          if (direct) return direct
+          // Fall through to a name-substring heuristic for agents that
+          // ship modes the registry doesn't enumerate yet — better to
+          // surface SOMETHING than silently drop the mode.
           const name = m.name.toLowerCase()
           if (name.includes("plan")) return "plan" as PermissionMode
           if (name.includes("auto")) return "bypassPermissions" as PermissionMode
@@ -499,13 +493,16 @@ export class AcpAdapter extends BaseAdapter {
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     if (!this.transport?.isAlive || !this.sessionId) return
 
-    // Strategy 1: Try config option (Copilot supports mode as a config option)
+    // Strategy 1: Try the `mode` config option (Copilot supports mode as a
+    // config option whose value is a URI fragment / "agent"|"autopilot"|...).
+    // The fragment lookup goes through the central ACP permission-mode table
+    // so adding a future Copilot-flavoured agent is one registry edit, not a
+    // new inline if-ladder.
     const modeOption = this.discoveredConfigOptions.find(
       o => o.id === "mode" || o.category === "mode",
     )
     if (modeOption) {
-      // Find the matching choice value
-      const targetName = mode === "default" ? "agent" : mode === "bypassPermissions" ? "autopilot" : mode
+      const targetName = bantaiToAcpFragment(mode) ?? mode
       const choice = modeOption.options?.find(c => {
         const cid = (c.id ?? c.value ?? "").toLowerCase()
         const cname = c.name.toLowerCase()
@@ -526,14 +523,11 @@ export class AcpAdapter extends BaseAdapter {
       }
     }
 
-    // Strategy 2: Try session/set_mode with direct ID mapping (Gemini)
-    const modeMap: Record<string, string> = {
-      default: "default",
-      acceptEdits: "autoEdit",
-      bypassPermissions: "yolo",
-      plan: "plan",
-    }
-    const modeId = modeMap[mode]
+    // Strategy 2: session/set_mode with the Gemini-style direct ID. The
+    // mapping comes from the same ACP permission-mode table — modes the
+    // table doesn't have a Gemini-side id for (auto / dontAsk today) return
+    // null and we bail out without sending a doomed RPC.
+    const modeId = bantaiToAcpId(mode)
     if (!modeId) return
 
     try {

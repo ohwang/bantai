@@ -303,7 +303,15 @@ export function mapCodexNotification(
 
     case "error": {
       let code = params?.code ?? "codex_error"
-      let message = params?.message ?? "Unknown Codex error"
+      // Codex 0.124+ packages the user-facing string under `params.error.message`
+      // (e.g. usage-limit or auth errors), while older builds sent a flat
+      // `params.message`. Accept both shapes before falling back; if neither is
+      // present, surface the raw params blob so debugging isn't blind.
+      let message =
+        params?.message ??
+        params?.error?.message ??
+        params?.error ??
+        (params ? `Codex error: ${JSON.stringify(params)}` : "Unknown Codex error")
 
       // Codex sometimes sends error bodies as stringified JSON, e.g.:
       //   {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'opus[1m]' model is not supported..."}}

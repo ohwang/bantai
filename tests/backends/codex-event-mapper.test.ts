@@ -545,6 +545,36 @@ describe("Codex Event Mapper", () => {
         severity: "recoverable",
       })
     })
+
+    it("extracts message from params.error.message (codex 0.124+)", () => {
+      // Codex 0.124+ packages user-facing errors (e.g. "usage limit hit") under
+      // params.error.message instead of params.message. Without that fallback
+      // the user only sees "Unknown Codex error".
+      const events = mapCodexNotification("error", {
+        error: {
+          message:
+            "You've hit your usage limit. Upgrade to Pro or buy more credits.",
+        },
+      })
+
+      expect(events).toHaveLength(1)
+      expect(events[0]!).toMatchObject({
+        type: "error",
+        message:
+          "You've hit your usage limit. Upgrade to Pro or buy more credits.",
+        severity: "fatal",
+      })
+    })
+
+    it("falls back to a stringified params blob when no message field exists", () => {
+      const events = mapCodexNotification("error", { foo: "bar" })
+
+      expect(events).toHaveLength(1)
+      const evt = events[0]! as { type: string; message: string }
+      expect(evt.type).toBe("error")
+      expect(evt.message).toContain("foo")
+      expect(evt.message).toContain("bar")
+    })
   })
 
   describe("passthrough events", () => {

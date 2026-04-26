@@ -81,6 +81,50 @@ describe("Codex Event Mapper", () => {
       expect(cost.cacheReadTokens).toBe(10)
     })
 
+    it("forwards reasoningOutputTokens and modelContextWindow (codex 0.122+)", () => {
+      const events = mapCodexNotification("thread/tokenUsage/updated", {
+        tokenUsage: {
+          last: {
+            inputTokens: 100,
+            outputTokens: 50,
+            cachedInputTokens: 10,
+            reasoningOutputTokens: 30,
+          },
+          total: { inputTokens: 200, outputTokens: 100, cachedInputTokens: 20 },
+          modelContextWindow: 400_000,
+        },
+      })
+
+      expect(events).toHaveLength(1)
+      const cost = events[0]! as any
+      expect(cost.type).toBe("cost_update")
+      // reasoningOutputTokens is a SUBSET of outputTokens — outputTokens stays at 50
+      expect(cost.outputTokens).toBe(50)
+      expect(cost.reasoningTokens).toBe(30)
+      expect(cost.contextWindow).toBe(400_000)
+    })
+
+    it("propagates reasoningOutputTokens through turn/completed.usage", () => {
+      const events = mapCodexNotification("turn/completed", {
+        turn: {
+          id: "turn-1",
+          status: "completed",
+          usage: {
+            inputTokens: 200,
+            outputTokens: 80,
+            cachedInputTokens: 40,
+            reasoningOutputTokens: 25,
+          },
+        },
+      })
+
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.type).toBe("turn_complete")
+      expect(ev.usage.outputTokens).toBe(80)
+      expect(ev.usage.reasoningTokens).toBe(25)
+    })
+
     it("maps thread/compacted to compact", () => {
       const events = mapCodexNotification("thread/compacted", {})
       expect(events).toHaveLength(1)

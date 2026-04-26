@@ -623,19 +623,41 @@ export function reduce(
 
     // ----- Cost tracking -----
 
-    case "cost_update":
+    case "cost_update": {
       // Authoritative cost is handled by turn_complete usage to prevent
       // double-counting. But we track streaming output tokens separately
       // for real-time display in the spinner.
       // Per-API-call context fill from message_start is more accurate than
       // the cumulative turn_complete usage for multi-step agentic turns.
+      //
+      // contextWindow: when the backend reports a live per-model cap (Codex
+      // 0.122+ in thread/tokenUsage/updated.modelContextWindow), patch it
+      // onto the matching session.models entry so downstream consumers
+      // (header bar, status bar, diagnostics) pick up the live value via
+      // their existing `model?.contextWindow ?? MODEL_CONTEXT_WINDOWS[id]`
+      // fallback chain. Only writes when the value actually changes to
+      // avoid spurious re-renders.
+      let session = next.session
+      if (event.contextWindow && event.contextWindow > 0 && session?.models?.length) {
+        const target = next.currentModel
+        const idx = session.models.findIndex(
+          (m) => m.id === target || m.name === target,
+        )
+        if (idx >= 0 && session.models[idx]!.contextWindow !== event.contextWindow) {
+          const models = [...session.models]
+          models[idx] = { ...models[idx]!, contextWindow: event.contextWindow }
+          session = { ...session, models }
+        }
+      }
       return {
         ...next,
+        session,
         streamingOutputTokens: state.streamingOutputTokens + (event.outputTokens ?? 0),
         ...(event.contextTokens !== undefined && event.contextTokens > 0
           ? { lastTurnInputTokens: event.contextTokens, _contextFromStream: true }
           : {}),
       }
+    }
 
     // ----- Tasks / subagents -----
 

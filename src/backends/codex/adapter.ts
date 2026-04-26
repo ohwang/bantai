@@ -149,8 +149,15 @@ export class CodexAdapter extends BaseAdapter {
   // still null, so the completion is silently lost. This flag captures it.
   private turnCompletedEarly = false
 
-  // Cached token usage from thread/tokenUsage/updated (arrives before turn/completed)
-  private lastTokenUsage: { inputTokens: number; outputTokens: number; cacheReadTokens: number } | null = null
+  // Cached token usage from thread/tokenUsage/updated (arrives before turn/completed).
+  // reasoningTokens is a SUBSET of outputTokens (OpenAI billing) — see
+  // codex-types.ts:CodexTokenUsageEntry for subset semantics.
+  private lastTokenUsage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    reasoningTokens?: number
+  } | null = null
 
   // Pending approval requests (server-initiated JSON-RPC requests awaiting our response)
   private pendingApprovals = new Map<
@@ -794,6 +801,7 @@ export class CodexAdapter extends BaseAdapter {
           inputTokens: usage.inputTokens ?? 0,
           outputTokens: usage.outputTokens ?? 0,
           cacheReadTokens: usage.cachedInputTokens ?? 0,
+          reasoningTokens: usage.reasoningOutputTokens ?? undefined,
         }
         log.debug("Cached token usage from tokenUsage/updated", this.lastTokenUsage)
       }

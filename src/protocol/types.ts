@@ -266,7 +266,15 @@ export type CostUpdateEvent = {
   outputTokens: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
+  /** Reasoning tokens used during the turn so far. SUBSET of outputTokens —
+   *  see TokenUsage.reasoningTokens for the same subset semantics. */
+  reasoningTokens?: number
   cost?: number
+  /** Live per-model context-window cap reported by the backend (currently
+   *  Codex 0.122+ via thread/tokenUsage/updated.modelContextWindow). When
+   *  present, surfaces should prefer this over the static MODEL_CONTEXT_WINDOWS
+   *  lookup since the backend may cap below the API-side maximum. */
+  contextWindow?: number
   /** Per-API-call context window fill — the total prompt tokens for the
    *  most recent API call. More accurate than turn_complete.usage which
    *  is cumulative across all API calls in a multi-step agentic turn.
@@ -1112,6 +1120,11 @@ export interface TokenUsage {
   cacheReadTokens?: number
   cacheWriteTokens?: number
   totalCostUsd?: number
+  /** Reasoning tokens used by the model. SUBSET of outputTokens — billing
+   *  already counts them as output, so adding them again would double-count.
+   *  Provided so surfaces can render a thinking/output split when desired
+   *  (gpt-5.5, o-series). */
+  reasoningTokens?: number
 }
 
 export interface ToolInfo {

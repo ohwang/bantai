@@ -104,15 +104,19 @@ export function mapCodexNotification(
       if (usage) {
         // For OpenAI models, inputTokens already INCLUDES cachedInputTokens
         // (it's a subset, not disjoint like Anthropic's cache categories).
+        // Same for reasoningOutputTokens ⊂ outputTokens.
         // Use the "last" API call's inputTokens as contextTokens for accurate
         // context window fill — "total" is cumulative across all API calls.
         const lastUsage = tokenUsage?.last
+        const ctx = tokenUsage?.modelContextWindow
         events.push({
           type: "cost_update",
           inputTokens: usage.inputTokens ?? 0,
           outputTokens: usage.outputTokens ?? 0,
           cacheReadTokens: usage.cachedInputTokens ?? 0,
+          reasoningTokens: usage.reasoningOutputTokens ?? undefined,
           contextTokens: lastUsage?.inputTokens ?? undefined,
+          contextWindow: ctx ?? undefined,
         })
       }
       break
@@ -144,6 +148,7 @@ export function mapCodexNotification(
               inputTokens: usage.inputTokens ?? 0,
               outputTokens: usage.outputTokens ?? 0,
               cacheReadTokens: usage.cachedInputTokens ?? 0,
+              reasoningTokens: usage.reasoningOutputTokens ?? undefined,
             }
           : undefined,
       })

@@ -2163,6 +2163,39 @@ describe("ConversationState reducer", () => {
       expect(state.lastTurnInputTokens).toBe(360000)
     })
 
+    it("cost_update.contextWindow patches matching session.models entry", () => {
+      // Codex 0.122+ reports the live per-model cap in
+      // thread/tokenUsage/updated.modelContextWindow. The reducer should
+      // patch session.models so downstream consumers (header bar, status
+      // bar) pick up the live value via their existing
+      // `model?.contextWindow ?? MODEL_CONTEXT_WINDOWS[id]` chain.
+      const state = applyEvents([
+        {
+          type: "session_init",
+          tools: [],
+          models: [{ id: "gpt-5.5", name: "gpt-5.5", provider: "openai" }],
+        },
+        { type: "turn_start" },
+        { type: "cost_update", inputTokens: 0, outputTokens: 0, contextWindow: 400_000 },
+      ])
+      const m = state.session?.models.find((x) => x.id === "gpt-5.5")
+      expect(m?.contextWindow).toBe(400_000)
+    })
+
+    it("cost_update without contextWindow leaves session.models untouched", () => {
+      const state = applyEvents([
+        {
+          type: "session_init",
+          tools: [],
+          models: [{ id: "gpt-5.5", name: "gpt-5.5", contextWindow: 1_000_000 }],
+        },
+        { type: "turn_start" },
+        { type: "cost_update", inputTokens: 100, outputTokens: 50 },
+      ])
+      const m = state.session?.models.find((x) => x.id === "gpt-5.5")
+      expect(m?.contextWindow).toBe(1_000_000)
+    })
+
     it("turn_complete usage is used as fallback when no contextTokens emitted", () => {
       // Codex/Gemini backends don't emit cost_update.contextTokens
       const state = applyEvents([

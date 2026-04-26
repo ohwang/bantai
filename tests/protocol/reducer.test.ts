@@ -2787,4 +2787,90 @@ describe("ConversationState reducer", () => {
       expect(state.blocks).toHaveLength(0)
     })
   })
+
+  // -----------------------------------------------------------------------
+  // SDK message origin propagation (multi-agent / coordinator sessions)
+  // -----------------------------------------------------------------------
+
+  describe("user_message origin propagation", () => {
+    it("propagates peer origin onto the user block in IDLE", () => {
+      let state = reduce(createInitialState(), { type: "session_init", tools: [], models: [] })
+      state = reduce(state, {
+        type: "user_message",
+        text: "from another agent",
+        origin: { kind: "peer", from: "agent-2", name: "explorer" },
+      })
+      const userBlock = state.blocks.find((b) => b.type === "user") as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      expect(userBlock!.origin).toEqual({ kind: "peer", from: "agent-2", name: "explorer" })
+    })
+
+    it("propagates coordinator origin onto a queued user block during RUNNING", () => {
+      let state = reduce(createInitialState(), { type: "session_init", tools: [], models: [] })
+      state = reduce(state, { type: "turn_start" })
+      state = reduce(state, {
+        type: "user_message",
+        text: "coordinator instruction",
+        origin: { kind: "coordinator" },
+      })
+      const queued = state.blocks.find(
+        (b) => b.type === "user" && (b as Extract<Block, { type: "user" }>).queued,
+      ) as Extract<Block, { type: "user" }> | undefined
+      expect(queued).toBeDefined()
+      expect(queued!.origin).toEqual({ kind: "coordinator" })
+      expect(queued!.queued).toBe(true)
+    })
+
+    it("propagates channel origin through ERROR-recovery", () => {
+      let state = reduce(createInitialState(), { type: "session_init", tools: [], models: [] })
+      state = reduce(state, { type: "error", code: "TEST", message: "boom", severity: "fatal" })
+      expect(state.sessionState).toBe("ERROR")
+      state = reduce(state, {
+        type: "user_message",
+        text: "incoming channel message",
+        origin: { kind: "channel", server: "team-room" },
+      })
+      expect(state.sessionState).toBe("IDLE")
+      const userBlock = state.blocks.find((b) => b.type === "user") as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      expect(userBlock!.origin).toEqual({ kind: "channel", server: "team-room" })
+    })
+
+    it("leaves origin undefined on the block when event has no origin", () => {
+      let state = reduce(createInitialState(), { type: "session_init", tools: [], models: [] })
+      state = reduce(state, { type: "user_message", text: "plain typed message" })
+      const userBlock = state.blocks.find((b) => b.type === "user") as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      expect(userBlock!.origin).toBeUndefined()
+    })
+
+    it("preserves origin alongside images on the same block", () => {
+      const img: ImageContent = { data: "AAAA", mediaType: "image/png" }
+      let state = reduce(createInitialState(), { type: "session_init", tools: [], models: [] })
+      state = reduce(state, {
+        type: "user_message",
+        text: "peer with screenshot",
+        images: [img],
+        origin: { kind: "peer", from: "agent-3" },
+      })
+      const userBlock = state.blocks.find((b) => b.type === "user") as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      expect(userBlock!.images).toEqual([img])
+      expect(userBlock!.origin).toEqual({ kind: "peer", from: "agent-3" })
+    })
+
+    it("propagates human origin verbatim (renderer suppresses badge, reducer doesn't)", () => {
+      let state = reduce(createInitialState(), { type: "session_init", tools: [], models: [] })
+      state = reduce(state, {
+        type: "user_message",
+        text: "typed by me",
+        origin: { kind: "human" },
+      })
+      const userBlock = state.blocks.find((b) => b.type === "user") as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      // Reducer is dumb on purpose — it forwards whatever the event carries.
+      // Whether to render a badge is the renderer's call.
+      expect(userBlock!.origin).toEqual({ kind: "human" })
+    })
+  })
 })

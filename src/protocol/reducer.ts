@@ -291,6 +291,15 @@ export function reduce(
     // ----- User messages -----
 
     case "user_message": {
+      // `origin` only flows through the block when present — undefined means
+      // "synthetic TUI send" or "older SDK transcript that predates the
+      // field", both of which the renderer treats as plain human input.
+      const userBlockBase = {
+        type: "user" as const,
+        text: event.text,
+        images: event.images,
+        ...(event.origin !== undefined ? { origin: event.origin } : {}),
+      }
       // During active turns, show as queued
       if (
         state.sessionState === "RUNNING" ||
@@ -300,7 +309,7 @@ export function reduce(
       ) {
         return {
           ...next,
-          blocks: [...state.blocks, { type: "user", text: event.text, queued: true, images: event.images }],
+          blocks: [...state.blocks, { ...userBlockBase, queued: true }],
         }
       }
       // ERROR state: auto-recover by clearing error and showing message
@@ -309,7 +318,7 @@ export function reduce(
           ...next,
           sessionState: "IDLE",
           lastError: null,
-          blocks: [...state.blocks, { type: "user", text: event.text, images: event.images }],
+          blocks: [...state.blocks, userBlockBase],
         }
       }
       // IDLE: show immediately + transition to RUNNING so the spinner
@@ -320,7 +329,7 @@ export function reduce(
         ...next,
         sessionState: "RUNNING",
         awaitingTurnStart: true,
-        blocks: [...state.blocks, { type: "user", text: event.text, images: event.images }],
+        blocks: [...state.blocks, userBlockBase],
         streamingText: "",
         streamingThinking: "",
         streamingOutputTokens: 0,

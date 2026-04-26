@@ -101,8 +101,39 @@ export type ElicitationResponseEvent = {
   answers: Record<string, string>
 }
 
-/** User message (synthetic, emitted by TUI when user submits) */
-export type UserMessageEvent = { type: "user_message"; text: string; images?: ImageContent[] }
+/**
+ * Provenance of a user-role message — mirrors the SDK's `SDKMessageOrigin`
+ * shape exactly (Claude Agent SDK 0.2.112+).
+ *
+ * In multi-agent / coordinator sessions a "user" turn is not always typed by
+ * the user: it can be a peer agent's message, a coordinator instruction, or
+ * an incoming channel post. Surfacing the origin lets the UI distinguish
+ * "the human typed this" from "another agent sent this", which is otherwise
+ * indistinguishable on resume.
+ *
+ * Mirroring the SDK shape verbatim (rather than collapsing to a subset) is
+ * deliberate: any new `kind` the SDK adds becomes a TypeScript error here
+ * and forces the event-mapper / renderer to handle it explicitly, rather
+ * than silently degrading to "human".
+ */
+export type SDKMessageOrigin =
+  | { kind: "human" }
+  | { kind: "channel"; server: string }
+  | { kind: "peer"; from: string; name?: string }
+  | { kind: "task-notification" }
+  | { kind: "coordinator" }
+
+/** User message (synthetic, emitted by TUI when user submits, or extracted
+ *  from replayed `SDKUserMessage` / `SDKUserMessageReplay` by the Claude
+ *  event-mapper). `origin` is absent for synthetic TUI-side sends (those are
+ *  always human), and absent on older SDK transcripts that predate the field
+ *  — both cases render identically to `{ kind: "human" }`. */
+export type UserMessageEvent = {
+  type: "user_message"
+  text: string
+  images?: ImageContent[]
+  origin?: SDKMessageOrigin
+}
 
 /** Interrupt (synthetic, emitted by TUI when user presses Ctrl+C) */
 export type InterruptEvent = { type: "interrupt" }
@@ -727,7 +758,7 @@ export interface SkillToolUse {
 }
 
 export type Block =
-  | { type: "user"; text: string; queued?: boolean; images?: ImageContent[]; error?: { code: string; message: string } }
+  | { type: "user"; text: string; queued?: boolean; images?: ImageContent[]; error?: { code: string; message: string }; origin?: SDKMessageOrigin }
   | { type: "assistant"; text: string; timestamp?: number; model?: string }
   | { type: "thinking"; text: string }
   | { type: "tool"; id: string; tool: string; input: unknown; status: ToolStatus; output?: string; error?: string; startTime: number; duration?: number; skillActivity?: SkillToolUse[] }

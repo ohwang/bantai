@@ -1253,6 +1253,113 @@ describe("Claude Event Mapper — mapSDKMessage", () => {
 
       expect(events).toHaveLength(0)
     })
+
+    // ---------------------------------------------------------------------
+    // SDK 0.2.112+ message origin propagation
+    // ---------------------------------------------------------------------
+
+    it("forwards a peer origin onto the user_message event", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          origin: { kind: "peer", from: "agent-2", name: "explorer" },
+          message: { content: [{ type: "text", text: "ping" }] },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.type).toBe("user_message")
+      expect(ev.origin).toEqual({ kind: "peer", from: "agent-2", name: "explorer" })
+    })
+
+    it("forwards a coordinator origin", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          origin: { kind: "coordinator" },
+          message: { content: "do this" },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.origin).toEqual({ kind: "coordinator" })
+    })
+
+    it("forwards a channel origin with server", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          origin: { kind: "channel", server: "team-room" },
+          message: { content: [{ type: "text", text: "channel post" }] },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.origin).toEqual({ kind: "channel", server: "team-room" })
+    })
+
+    it("forwards a human origin verbatim (renderer decides whether to badge)", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          origin: { kind: "human" },
+          message: { content: [{ type: "text", text: "typed by me" }] },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.origin).toEqual({ kind: "human" })
+    })
+
+    it("omits origin field when SDK message has no origin", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          message: { content: [{ type: "text", text: "no origin here" }] },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.origin).toBeUndefined()
+      // The downstream block stays clean — no synthetic { kind: "human" }.
+      expect("origin" in ev).toBe(false)
+    })
+
+    it("drops an unrecognised origin kind (logs warn, falls back to no origin)", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          origin: { kind: "future-kind", extra: "data" },
+          message: { content: [{ type: "text", text: "drift test" }] },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.type).toBe("user_message")
+      expect(ev.origin).toBeUndefined()
+    })
+
+    it("normalises peer origin missing required `from` field", () => {
+      const events = mapSDKMessage(
+        {
+          type: "user",
+          origin: { kind: "peer" },
+          message: { content: [{ type: "text", text: "anonymous peer" }] },
+        },
+        freshState(),
+      )
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      // The parser still returns peer with empty `from` so downstream isn't
+      // blocked — the warn signals the upstream protocol gap.
+      expect(ev.origin).toEqual({ kind: "peer", from: "" })
+    })
   })
 
   // ---------------------------------------------------------------------------

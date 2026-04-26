@@ -7,7 +7,7 @@
  */
 
 import { log } from "../../utils/logger"
-import type { AgentEvent, ModelInfo, TodoItem } from "../../protocol/types"
+import type { AgentEvent, ModelInfo, SDKMessageOrigin, TodoItem } from "../../protocol/types"
 
 // ---------------------------------------------------------------------------
 // TodoWrite tool_use -> todos_updated synthesis
@@ -68,6 +68,70 @@ export function synthesizeTodosUpdatedEvent(input: unknown): AgentEvent {
     if (parsed) todos.push(parsed)
   })
   return { type: "todos_updated", todos }
+}
+
+// ---------------------------------------------------------------------------
+// User message origin parsing
+//
+// SDK 0.2.112+ tags user-role messages (`SDKUserMessage` and
+// `SDKUserMessageReplay`) with an optional `origin: SDKMessageOrigin`
+// describing where the message came from — keyboard input, a peer agent, a
+// coordinator, an inbound channel, or a task notification. Today bantai
+// treats every replayed user turn as keyboard input; in multi-agent sessions
+// that's misleading. We surface the origin as a typed event field so the
+// reducer can attach it to the user block and the renderer can show a badge
+// for non-human origins.
+//
+// We narrow the parse here (rather than `msg.origin as SDKMessageOrigin`) so
+// an unrecognised `kind` produces a `log.warn` — the standard signal for
+// upstream protocol drift — instead of leaking unknown shapes into state.
+// ---------------------------------------------------------------------------
+
+function parseMessageOrigin(raw: unknown): SDKMessageOrigin | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== "object") {
+    log.warn("user message origin is not an object", {
+      type: typeof raw,
+      snippet: String(raw).slice(0, 60),
+    })
+    return undefined
+  }
+  const obj = raw as Record<string, unknown>
+  const kind = obj.kind
+  switch (kind) {
+    case "human":
+      return { kind: "human" }
+    case "task-notification":
+      return { kind: "task-notification" }
+    case "coordinator":
+      return { kind: "coordinator" }
+    case "channel": {
+      const server = typeof obj.server === "string" ? obj.server : ""
+      if (!server) {
+        log.warn("user message origin kind=channel missing server", {
+          keys: Object.keys(obj).join(","),
+        })
+      }
+      return { kind: "channel", server }
+    }
+    case "peer": {
+      const from = typeof obj.from === "string" ? obj.from : ""
+      if (!from) {
+        log.warn("user message origin kind=peer missing from", {
+          keys: Object.keys(obj).join(","),
+        })
+      }
+      const peer: SDKMessageOrigin = { kind: "peer", from }
+      if (typeof obj.name === "string") peer.name = obj.name
+      return peer
+    }
+    default:
+      log.warn("Unknown user message origin kind", {
+        kind: typeof kind === "string" ? kind : typeof kind,
+        keys: Object.keys(obj).join(","),
+      })
+      return undefined
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -886,7 +950,15 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
             .join("\n")
         }
         if (text) {
-          events.push({ type: "user_message", text })
+          // SDK 0.2.112+ attaches `origin: SDKMessageOrigin` to both
+          // `SDKUserMessage` and `SDKUserMessageReplay`. Older transcripts
+          // omit the field entirely — treat that as plain human input
+          // (renderer falls back to no badge).
+          const origin = parseMessageOrigin(msg.origin)
+          const userEvent: AgentEvent = origin
+            ? { type: "user_message", text, origin }
+            : { type: "user_message", text }
+          events.push(userEvent)
         }
       }
       break

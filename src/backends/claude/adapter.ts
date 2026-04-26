@@ -371,6 +371,17 @@ export class ClaudeAdapter implements AgentBackend {
         })
       }
 
+      // If a CLI initial prompt was supplied (e.g. `bantai run "<msg>"`), queue
+      // it so the message iterable picks it up immediately. Mock/codex/acp do
+      // the equivalent inside their own start(); without this, headless mode
+      // hangs forever waiting for a user message that never arrives. Queue
+      // before sdkQuery so the message is visible the moment the SDK starts
+      // pulling — and so a query construction error doesn't leave the prompt
+      // un-queued either.
+      if (config.initialPrompt) {
+        this.messageQueue.push({ text: config.initialPrompt })
+      }
+
       // Build SDK options
       const options = this.buildOptions(config)
 

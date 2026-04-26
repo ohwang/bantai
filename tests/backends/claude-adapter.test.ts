@@ -57,6 +57,32 @@ describe("ClaudeAdapter", () => {
 
       adapter.close()
     })
+
+    it("start() queues config.initialPrompt so headless mode can launch a turn", async () => {
+      // Regression: bantai run hung because the Claude adapter ignored
+      // config.initialPrompt and waited forever for a sendMessage that
+      // never came. Mock/codex/acp all queue or send the initial prompt
+      // inside start(); claude must do the same. Spy on the queue so
+      // we record the push regardless of whether the SDK transport later
+      // consumes it (no real claude binary is available in tests).
+      const adapter = new ClaudeAdapter()
+      const queue = (adapter as any).messageQueue as AsyncQueue<{ text: string }>
+      const pushed: { text: string }[] = []
+      const originalPush = queue.push.bind(queue)
+      queue.push = (item: { text: string }) => {
+        pushed.push(item)
+        originalPush(item)
+      }
+
+      const gen = adapter.start({ initialPrompt: "kickoff prompt" })
+      const stepPromise = gen.next() // start the generator body
+      await adapter.whenReady().catch(() => {})
+
+      expect(pushed).toEqual([{ text: "kickoff prompt" }])
+
+      adapter.close()
+      await stepPromise.catch(() => {})
+    })
   })
 
   describe("permission bridge", () => {

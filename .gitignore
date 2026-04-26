@@ -44,3 +44,6 @@ tmp/
 
 # Local config (personal tokens, real channel IDs, cached API responses)
 .bantai/
+
+.qwen/
+

@@ -1,8 +1,10 @@
 /**
  * Claude-compat status bar preset — visually identical to the external Bash
- * statusline (`cringle.ai/config/claude/statusline-command.sh`).
+ * statusline that Claude Code ships (a `statusLine.command` shell snippet
+ * that consumes the SDK's stdin JSON and prints two lines of dir / model /
+ * cost / rate-limit info).
  *
- * The goal is pixel-for-pixel parity with the script so users can drop the
+ * The goal is pixel-for-pixel parity with that script so users can drop the
  * external command (no more jq + subshell per refresh) without any visual
  * regression. All colors resolve to theme tokens — nothing is hardcoded —
  * so the preset inherits the active theme's palette (snazzy by default).

@@ -61,8 +61,8 @@ const groups: ShortcutGroup[] = [
     entries: [
       { key: "Ctrl+Up",   desc: "Scroll up" },
       { key: "Ctrl+Down", desc: "Scroll down" },
-      { key: "Alt+P",     desc: "Previous message" },
-      { key: "Alt+N",     desc: "Next message" },
+      { key: "Ctrl+,",    desc: "Previous message" },
+      { key: "Ctrl+.",    desc: "Next message" },
       { key: "Ctrl+L",    desc: "Scroll to bottom" },
     ],
   },

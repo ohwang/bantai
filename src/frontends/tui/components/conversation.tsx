@@ -60,21 +60,28 @@ function isNearBottom(ref: ScrollBoxRenderable, threshold = 3): boolean {
 /**
  * Map a keyboard event to a message-hop direction.
  *
- * Alt+N → "next" (next user-or-assistant message)
- * Alt+P → "prev" (previous user-or-assistant message)
+ * Ctrl+. → "next" (next user-or-assistant message)
+ * Ctrl+, → "prev" (previous user-or-assistant message)
  *
- * Mirrors the Emacs `M-n` / `M-p` idiom from compilation-mode, magit, gnus,
- * and grep-mode — jumping between meaningful list items, skipping noise
- * (here: tool calls, tool results, thinking blocks).
+ * The `<` / `>` punctuation pair is the conventional "prev / next item"
+ * affordance from `less`, vim, browsers (Cmd+Shift+[ / ]) and YouTube
+ * playback. Picked over Alt+N / Alt+P because macOS Option is a
+ * dead-key compose by default — Alt+letter would force users to flip
+ * "Use Option as Meta" in Terminal.app or "Esc+" mode in iTerm2.
+ *
+ * Disambiguation depends on the Kitty keyboard protocol (we enable it via
+ * `useKittyKeyboard: {}` in app.tsx). Works on Ghostty / iTerm2 / WezTerm
+ * / Kitty; on default Terminal.app the binding silently no-ops because
+ * the terminal drops the Ctrl modifier on punctuation.
  *
  * Pure helper so it's unit-testable without booting OpenTUI.
  */
 export function matchMessageHopKey(
   event: Pick<KeyEvent, "name" | "ctrl" | "option" | "meta" | "super" | "shift">,
 ): "next" | "prev" | null {
-  if (event.shift || event.ctrl || event.meta || event.super) return null
-  if (event.option && event.name === "n") return "next"
-  if (event.option && event.name === "p") return "prev"
+  if (event.shift || event.option || event.meta || event.super) return null
+  if (event.ctrl && event.name === ".") return "next"
+  if (event.ctrl && event.name === ",") return "prev"
   return null
 }
 
@@ -177,7 +184,7 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
   )
 
   // Stage 4 (parallel): indices in `grouped()` that are top-level user or
-  // assistant blocks — the hop targets for Alt+N / Alt+P. Tool groups,
+  // assistant blocks — the hop targets for Ctrl+, / Ctrl+. Tool groups,
   // standalone tool blocks, thinking, system, compact, shell, error, plan,
   // and resume-summary blocks are skipped (they're noise between turns).
   // Streaming partial assistant turns count: the assistant block exists in
@@ -332,8 +339,8 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
   // Ctrl+O toggles collapsed/expanded, Ctrl+Shift+E shows all, Ctrl+Shift+T toggles thinking
   // (Ctrl+E and Ctrl+T freed for Emacs end-of-line and transpose-chars)
   // Ctrl+Up/Down scrolls line-by-line.
-  // Alt+N / Alt+P hop to next / previous user-or-assistant message boundary
-  // (Emacs M-n / M-p idiom — magit, gnus, compilation-mode).
+  // Ctrl+, / Ctrl+. hop to previous / next user-or-assistant message boundary
+  // (`<` / `>` "prev / next item" idiom from less, vim, browsers).
   useKeyboard((event) => {
     if (event.ctrl && event.name === "o") {
       event.preventDefault()
@@ -393,14 +400,14 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
       }
     }
 
-    // Conversation message hop — Alt+N / Alt+P.
+    // Conversation message hop — Ctrl+, / Ctrl+. (the `<` / `>` "prev /
+    // next item" idiom from less, vim, browsers).
     // Jumps to the next / previous user-or-assistant turn boundary, skipping
-    // tool calls, tool results, and thinking blocks. Same Emacs M-n / M-p
-    // idiom as compilation-mode, magit, gnus, grep-mode.
+    // tool calls, tool results, and thinking blocks.
     //
     // Boundary handling:
-    //   - Alt+P past the first message → scroll to the very top.
-    //   - Alt+N past the last message  → scroll to the bottom AND re-engage
+    //   - Ctrl+, past the first message → scroll to the very top.
+    //   - Ctrl+. past the last message  → scroll to the bottom AND re-engage
     //     sticky-bottom (the "I'm caught up, follow streaming" state).
     //   - Empty conversation             → no-op (pickMessageHopTarget → null).
     //
@@ -434,14 +441,13 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
         }
       } else if (target.kind === "anchor") {
         // Top-align the target: shift the viewport by the anchor's offset
-        // relative to the current viewport top. Matches the Emacs M-n / M-p
-        // semantic where the next item lands at (or near) the top of the
-        // visible area.
+        // relative to the current viewport top. Lands the next item at (or
+        // near) the top of the visible area.
         scrollboxRef.scrollBy({ x: 0, y: target.y - scrollboxRef.viewport.y })
         // Sticky-bottom: if top-aligning the anchor still leaves us within
         // the near-bottom threshold (short tail content), re-engage sticky
         // so streaming text continues to follow. Otherwise treat the hop as
-        // a deliberate move-away (mirrors Alt+K's behaviour).
+        // a deliberate move-away (mirrors Ctrl+Up's behaviour).
         if (hopDir === "next" && isNearBottom(scrollboxRef)) {
           setScrolledAway(false)
         } else {
@@ -519,7 +525,7 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
               In collapsed view, consecutive collapsible tools are merged into
               a single CollapsedToolGroup summary line.
 
-              Each item is wrapped in a `<box id={...}>` so Alt+N / Alt+P can
+              Each item is wrapped in a `<box id={...}>` so Ctrl+, / Ctrl+. can
               find user/assistant message boundaries via
               `scrollboxRef.findDescendantById(messageAnchorId(index))`. The id
               is purely a function of position (Index keys positionally) — the

@@ -134,34 +134,30 @@ describe("readClaudeSessionCwd", () => {
       { type: "file-history-snapshot", snapshot: {} },
       {
         type: "user",
-        cwd: "/Users/odin/dev/repos/bantai-slack-monitor",
+        cwd: "/tmp/my-app-monitor",
         message: { role: "user", content: "hi" },
       },
       {
         type: "assistant",
-        cwd: "/Users/odin/dev/repos/bantai-slack-monitor",
+        cwd: "/tmp/my-app-monitor",
         message: { role: "assistant", content: "hello" },
       },
     ])
-    expect(readClaudeSessionCwd(file)).toBe(
-      "/Users/odin/dev/repos/bantai-slack-monitor",
-    )
+    expect(readClaudeSessionCwd(file)).toBe("/tmp/my-app-monitor")
   })
 
   it("recovers hyphenated paths that the project-key decoder mangles", () => {
-    // The project-key encoding `/` → `-` is lossy: decoding gives back
-    // `/Users/odin/dev/repos/bantai/slack/monitor`, which is wrong. The
-    // JSONL-embedded cwd is the source of truth.
+    // The project-key encoding `/` → `-` is lossy: decoding `-tmp-my-app-monitor`
+    // round-trips to `/tmp/my/app/monitor`, which is wrong. The JSONL-embedded
+    // cwd is the source of truth.
     const file = writeJsonl([
       {
         type: "user",
-        cwd: "/Users/odin/dev/repos/bantai-slack-monitor",
+        cwd: "/tmp/my-app-monitor",
         message: { role: "user", content: "hi" },
       },
     ])
-    expect(readClaudeSessionCwd(file)).toBe(
-      "/Users/odin/dev/repos/bantai-slack-monitor",
-    )
+    expect(readClaudeSessionCwd(file)).toBe("/tmp/my-app-monitor")
   })
 
   it("returns null when no entry has a cwd field", () => {

@@ -23,6 +23,11 @@ import {
   resolveProjectForChannel,
   type ProjectConfig,
 } from "./router/resolver"
+import {
+  describeEmojiRoute,
+  parseEmojiRoute,
+  type EmojiRoute,
+} from "./router/emoji-router"
 import type { SessionEntry, SessionRegistry } from "./router/registry"
 import type { InboundSlackEvent } from "./transport/events"
 import type { createDedupCache } from "./inbox/dedup"
@@ -512,7 +517,7 @@ async function dispatchMessageBatch(
     channelId: channel,
     threadTs: anchorTs,
   }
-  const project = mutableProjectFor(ctx, channel)
+  const channelProject = mutableProjectFor(ctx, channel)
   const displayName = await ctx.userCache.displayName(userId)
 
   // Combine batched texts — newline-joined, preserving order. The gate
@@ -540,6 +545,40 @@ async function dispatchMessageBatch(
   // means the bot was just pulled into an existing conversation and
   // needs the prior context to make sense of the current message.
   const hadExistingSession = !!ctx.registry.peek(sessionParts)
+
+  // Emoji-based backend routing. When this is the FIRST message that
+  // will spin up a session for the thread, look for a routing emoji
+  // (`:claude:`, `:codex-loop:`, `:google-gemini:`, …) in the raw text
+  // and override `project.backend` (and optionally `project.model`).
+  //
+  // We DO NOT mutate `channelProject` — that's the channel-scoped
+  // cache and a sibling thread in the same channel must not inherit
+  // this thread's emoji route. Instead, we clone the project and use
+  // the clone from here on.
+  //
+  // Why "first message" only:
+  //   - The backend is locked in at session creation time. Flipping it
+  //     mid-thread would either lose history (resume across backends
+  //     drops state) or require the cross-backend resume path with no
+  //     real signal that the user wanted to switch.
+  //   - Emoji reactions on existing messages also can't reach this code
+  //     path; only the message body's literal `:name:` tokens trigger
+  //     the route.
+  const emojiRoute = !hadExistingSession
+    ? parseEmojiRoute(combinedText)
+    : null
+  const project: ProjectConfig = emojiRoute
+    ? {
+        ...channelProject,
+        backend: emojiRoute.backend,
+        ...(emojiRoute.model !== undefined ? { model: emojiRoute.model } : {}),
+      }
+    : channelProject
+  if (emojiRoute) {
+    log.info(
+      `slack: emoji route ${describeEmojiRoute(emojiRoute)} for ${channel}:${anchorTs} (was backend=${channelProject.backend}, model=${channelProject.model ?? "<default>"})`,
+    )
+  }
 
   // Stale-resume interception. When there's no live in-memory session for
   // this thread, consult the persisted row: a mismatched backend (channel
@@ -590,6 +629,7 @@ async function dispatchMessageBatch(
       "files" in e.event && e.event.files ? e.event.files : [],
     ),
     hadExistingSession,
+    ...(emojiRoute ? { emojiRoute } : {}),
   })
 }
 
@@ -637,6 +677,12 @@ export interface DispatchTurnOpts {
    * dispatch + `fresh` paths.
    */
   replayContext?: import("../../protocol/types").SessionConfig["replayContext"]
+  /**
+   * Emoji-routing decision attached to this dispatch, if any. Plumbed
+   * through so the session banner can show "routed via :claude: → Claude"
+   * on session_init. Absent for routes that fell through to defaults.
+   */
+  emojiRoute?: EmojiRoute
 }
 
 export async function dispatchTurnToRegistry(
@@ -708,7 +754,7 @@ export async function dispatchTurnToRegistry(
     ctx.renderers.set(entry, renderer)
     entry.subscribe(renderer.onEvent)
     if (project.sessionBanner) {
-      attachBannerOnce(ctx, entry, project, turn.channel, turn.parentTs)
+      attachBannerOnce(ctx, entry, project, turn.channel, turn.parentTs, args.emojiRoute)
     }
   }
   // Subsequent turns reuse the same renderer + reaction controller. The
@@ -1147,6 +1193,7 @@ function attachBannerOnce(
   project: ProjectConfig,
   channel: string,
   threadTs: string,
+  emojiRoute?: EmojiRoute,
 ): void {
   if (ctx.bannerPosted.has(entry)) return
   const adapter = ctx.sendAdapter
@@ -1163,6 +1210,7 @@ function attachBannerOnce(
       inputs: {
         project,
         sessionId: event.sessionId,
+        ...(emojiRoute ? { emojiRoute } : {}),
         ...(entry.resumed
           ? {
               resumed: {

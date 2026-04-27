@@ -19,6 +19,7 @@
 import type { KnownBlock } from "@slack/types"
 import type { SendAdapter } from "./outbox"
 import type { ProjectConfig } from "../router/resolver"
+import type { EmojiRoute } from "../router/emoji-router"
 
 export interface BannerInputs {
   project: ProjectConfig
@@ -35,6 +36,13 @@ export interface BannerInputs {
     /** Last-active relative string, e.g. "3 days ago". */
     lastActive?: string
   }
+  /**
+   * If the session was created via an emoji-routing decision, the route
+   * is plumbed through so the banner can show users which emoji routed
+   * them and what backend/model the override picked. Absent for sessions
+   * that fell through to channel defaults.
+   */
+  emojiRoute?: EmojiRoute
 }
 
 export function buildSessionBanner(input: BannerInputs): {
@@ -51,6 +59,15 @@ export function buildSessionBanner(input: BannerInputs): {
     `session ${input.sessionId ?? "<pending>"}`,
     `verbosity ${project.verbosity}`,
   ]
+  if (input.emojiRoute) {
+    // Surface "routed via :claude: → Claude" so users learn the emoji
+    // routing exists and can see which keyword they matched. Lives on its
+    // own line under the backend/model so it reads as metadata about the
+    // routing decision, not as a separate section.
+    const r = input.emojiRoute
+    const modelSuffix = r.model ? ` (${r.model})` : ""
+    lines.push(`routed via ${r.matchedEmoji} → ${r.label}${modelSuffix}`)
+  }
   if (input.resumed) {
     const r = input.resumed
     const parts: string[] = []

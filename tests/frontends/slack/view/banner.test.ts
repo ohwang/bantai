@@ -112,4 +112,49 @@ describe("buildSessionBanner", () => {
     expect(body).toContain("<default>")
     expect(body).toContain("<pending>")
   })
+
+  it("shows the routing emoji + label when the session was emoji-routed", () => {
+    // Mirrors the EmojiRoute the parser produces for `:claude:` — we
+    // construct it by hand here to keep the banner test independent of
+    // the rule table's keyword choice.
+    const { blocks } = buildSessionBanner({
+      project: project(),
+      sessionId: "abc-123",
+      emojiRoute: {
+        backend: "claude",
+        matchedEmoji: ":claude:",
+        matchedKeyword: "claude",
+        label: "Claude",
+      },
+    })
+    const body = (blocks[0] as { elements: Array<{ text: string }> }).elements[0]!.text
+    expect(body).toContain("routed via :claude: → Claude")
+    // Without a model in the route, the banner doesn't append a paren.
+    expect(body).not.toMatch(/routed via :claude: → Claude \(/)
+  })
+
+  it("appends the model in parens when the emoji route carries one", () => {
+    const { blocks } = buildSessionBanner({
+      project: project({ model: "claude-opus-4-7" }),
+      sessionId: "abc-123",
+      emojiRoute: {
+        backend: "claude",
+        model: "claude-opus-4-7",
+        matchedEmoji: ":opus:",
+        matchedKeyword: "opus",
+        label: "Claude Opus 4.7",
+      },
+    })
+    const body = (blocks[0] as { elements: Array<{ text: string }> }).elements[0]!.text
+    expect(body).toContain("routed via :opus: → Claude Opus 4.7 (claude-opus-4-7)")
+  })
+
+  it("omits the routing line when no emoji route is supplied", () => {
+    const { blocks } = buildSessionBanner({
+      project: project(),
+      sessionId: "abc-123",
+    })
+    const body = (blocks[0] as { elements: Array<{ text: string }> }).elements[0]!.text
+    expect(body).not.toContain("routed via")
+  })
 })

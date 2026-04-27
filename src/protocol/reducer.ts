@@ -253,10 +253,11 @@ export function reduce(
         awaitingTurnStart: false,
         session: updatedSession,
         // Context window fill: prefer per-API-call value from cost_update.contextTokens
-        // (set by message_start during streaming) over the cumulative turn usage.
-        // The result.usage sums ALL API calls in a multi-step agentic turn,
-        // overcounting by num_turns×. Fall back to turn usage for backends
-        // (Codex, Gemini) that don't emit per-API-call context tokens.
+        // (set by message_start during streaming) over result.usage. The SDK's
+        // result.usage reflects only the FINAL API call of a multi-step agentic
+        // turn — it would understate the live context fill if the last hop is
+        // a small synthesis. Fall back to turn usage for backends (Codex,
+        // Gemini) that don't emit per-API-call context tokens.
         lastTurnInputTokens: state._contextFromStream
           ? state.lastTurnInputTokens
           : event.usage && (event.usage.inputTokens > 0 || (event.usage.cacheReadTokens ?? 0) > 0)

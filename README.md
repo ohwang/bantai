@@ -25,6 +25,10 @@ bun test                    # run all tests
 bun run lint:opentui        # check OpenTUI prop rules
 ```
 
+## Slack frontend
+
+The Slack frontend lives in a separate repo: [bantai-slack](https://github.com/ohwxyz/bantai-slack). Install it alongside bantai and `bantai slack <cmd>` / `bantai minislack` will forward to its bin via commander's executable-subcommand convention.
+
 ## License
 
 MIT

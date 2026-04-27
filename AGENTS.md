@@ -16,7 +16,7 @@
   | Build Requirements                 | PROSE   | -                                                |
   | Tech Stack                         | PROSE   | `package.json`                                   |
   | Architecture                       | DERIVED | `src/protocol/registry.ts` + the layout on disk  |
-  | Cross-cutting / TUI / Slack rules  | PROSE   | -                                                |
+  | Cross-cutting / TUI rules          | PROSE   | -                                                |
   | The drift-contract recipe          | PROSE   | -                                                |
   | TUI — OpenTUI Prop Rules           | PROSE   | `scripts/lint-opentui.sh` enforces a subset      |
   | Project Structure                  | DERIVED | the actual layout on disk                        |
@@ -27,7 +27,7 @@
 
 # bantai
 
-Multi-surface UI for agentic coding backends. Decoupled from any single coding agent (Claude Code, Codex, ACP, …) from any single surface — today the same agent runs in a local TUI and in a Slack workspace, driven by the same protocol and event stream.
+Multi-surface UI for agentic coding backends. Decoupled from any single coding agent (Claude Code, Codex, ACP, …) and from any single surface — the agent protocol layer here is consumed today by a local TUI and (in a separate companion repo, [bantai-slack](https://github.com/ohwxyz/bantai-slack)) by a Slack frontend, both driven by the same event stream.
 
 ## Quick Start
 
@@ -37,18 +37,9 @@ bun install
 # TUI
 bun run dev                       # default backend (claude)
 bun test                          # run all tests
-
-# Slack
-bun run ./src/index.ts slack init-manifest > slack-manifest.yaml   # create app
-bun run ./src/index.ts slack doctor                                # verify config
-bun run ./src/index.ts slack                                       # start server
-bun run ./src/index.ts slack monitor                               # observability TUI over the admin API
-
-# Dev-only fake Slack (integration tests + local Slack dev)
-bun run ./src/index.ts minislack --fixture basic
 ```
 
-See `docs/slack-setup.md` for the real-workspace walkthrough and `docs/minislack.md` for the fake Slack server.
+The Slack frontend lives in [bantai-slack](https://github.com/ohwxyz/bantai-slack). With both packages installed, `bantai slack <cmd>` and `bantai minislack` forward to that repo's bins via commander's executable-subcommand convention.
 
 ## Build Requirements
 
@@ -60,7 +51,7 @@ See `docs/slack-setup.md` for the real-workspace walkthrough and `docs/minislack
 
 - Bun + TypeScript (strict; `tsc --noEmit` must pass).
 - **TUI frontend:** OpenTUI + SolidJS via `@opentui/solid` (NOT React).
-- **Slack frontend:** `@slack/bolt` (Socket Mode) + `@slack/web-api`.
+- **Slack frontend:** lives in [bantai-slack](https://github.com/ohwxyz/bantai-slack); imports this package's protocol/session/backends layer via a path-dep.
 - **Backends:** `@anthropic-ai/claude-agent-sdk` (track latest), `@openai/codex-sdk`, ACP over JSON-RPC (Gemini, Qwen, GitHub Copilot, generic), and an in-process mock. Authoritative list: `BACKEND_REGISTRY` in `src/protocol/registry.ts`.
 - **Everything else:** `commander` (CLI), `zod` (config schemas), `fuzzysort` (file/session search), `jsonc-parser` (configs with comments).
 
@@ -73,9 +64,8 @@ Three layers, strictly ordered:
    - `bantai <id> [prompt]` → TUI with a specific backend, where `<id>` is any backend with `exposeAsCliSubcommand: true` in `BACKEND_REGISTRY` (today: `claude`, `codex`, `gemini`, `qwen`). `bantai --help` prints the live list.
    - `bantai run <message…>` → headless one-shot
    - `bantai resume [id]` / `bantai continue` → session resume
-   - `bantai slack` / `bantai slack doctor` / `bantai slack init-manifest` / `bantai slack monitor` → Slack server + observability TUI
-   - `bantai minislack` → local fake Slack
-2. **Frontends** (`src/frontends/<name>/`) — each owns its own presentation + transport and exposes a `launch<Name>(flags)` entry point. Today: `tui/` (interactive terminal, default), `slack/` (bot/server), `slack-monitor/` (admin TUI). Nothing in the protocol or backend layer depends on a specific frontend.
+   - `bantai slack <cmd>` / `bantai minislack <flags>` → executable-subcommand stubs that forward to the [bantai-slack](https://github.com/ohwxyz/bantai-slack) bin when it's installed (commander auto-execs `bantai-slack` / `bantai-minislack` from PATH; clean "command not found" error otherwise)
+2. **Frontends** (`src/frontends/<name>/`) — each owns its own presentation + transport and exposes a `launch<Name>(flags)` entry point. In this repo: `tui/` (interactive terminal, default). The Slack frontend (`slack/`, `slack-monitor/`) lives in the [bantai-slack](https://github.com/ohwxyz/bantai-slack) companion repo. Nothing in the protocol or backend layer depends on a specific frontend.
 3. **Agent Protocol Layer** (`src/protocol/`) — unified `AgentBackend` interface, `AgentEvent` stream, `ConversationState`, the `reduce(state, event) -> newState` reducer, plus the descriptor registries for backends, permission modes, effort levels, session states, rate-limit buckets, and capabilities. Backend adapters live under `src/backends/{acp,claude,codex,follow,mock,shared}/`; `follow/` is the read-only adapter that tails an existing session file, `shared/` holds the cross-backend base adapter.
 
 The protocol layer is the load-bearing abstraction: **adding a frontend or backend means implementing the relevant side of this contract — never forking reducer or event semantics.**
@@ -89,9 +79,9 @@ The protocol layer is the load-bearing abstraction: **adding a frontend or backe
 - **Test contracts, not implementations.** Adapter contract tests validate event ordering and lifecycle rules (see §Testing).
 - **One concern per file.** Size is a proxy for cohesion, not a rule. Target ~800 lines, hard cap ~1200; past that, justify in a top-of-file comment or split. Exempt: type/schema specs, vendored code, generated code.
 - **No Effect.js, no metaprogramming, no deep inheritance.** Plain TypeScript; factory functions for service construction; explicit over clever.
-- **Never silently drop data from an external source.** SDK events, session JSONL, MCP payloads, ACP notifications, Slack events, user config — every skip path MUST log; unrecognised shapes use `log.warn`, intentional suppressions use `log.debug` with a named reason. A bare `break` / `continue` / `return []` / `if (!expected) break` on external data is a bug. Deep dive + postmortems: [`docs/external-data-handling.md`](docs/external-data-handling.md).
-- **Prefer framework primitives over custom logic.** Use OpenTUI / SolidJS / SDK / Bolt built-ins before writing manual workarounds. E.g. `stickyScroll={true}` + `stickyStart="bottom"` on `<scrollbox>` replaces 80+ lines of timer-based nudging; Bolt's built-in ack+respond pattern replaces hand-rolled event ordering.
-- **Cleanup must survive deletion.** When removing a variable/timer, grep for ALL references including `onCleanup`, Bolt `app.stop()`, and server shutdown hooks. A dangling reference there prevents `process.exit()` and silently breaks exit.
+- **Never silently drop data from an external source.** SDK events, session JSONL, MCP payloads, ACP notifications, user config — every skip path MUST log; unrecognised shapes use `log.warn`, intentional suppressions use `log.debug` with a named reason. A bare `break` / `continue` / `return []` / `if (!expected) break` on external data is a bug. Deep dive + postmortems: [`docs/external-data-handling.md`](docs/external-data-handling.md).
+- **Prefer framework primitives over custom logic.** Use OpenTUI / SolidJS / SDK built-ins before writing manual workarounds. E.g. `stickyScroll={true}` + `stickyStart="bottom"` on `<scrollbox>` replaces 80+ lines of timer-based nudging.
+- **Cleanup must survive deletion.** When removing a variable/timer, grep for ALL references including `onCleanup` and server shutdown hooks. A dangling reference there prevents `process.exit()` and silently breaks exit.
 
 ### The drift-contract recipe (closed enumerations)
 
@@ -118,7 +108,7 @@ A closed enumeration of values — backends, permission modes, effort levels, se
 | Backend session storage | `BackendDescriptor.sessionFile` (`listFromDisk`, `parseSummary`, `readBlocks`) | Multi-backend picker silently dropped qwen (L1) |
 | User JSONL parsing | `src/backends/claude/jsonl-shapes.ts` (`detectSyntheticReason`, `extractUserMessageText`) | `<command-name>` markers / compaction summaries leaked into live stream (L2) |
 
-**When a closed enumeration is genuinely a subset of a wider registry** (the canonical example is "Slack supports `claude` / `codex` / `gemini` but not `qwen` yet"), the same recipe applies one level out: define an explicit allowlist array, validate it against `isKnownX` at module-load time, and have the subset-aware code consume that allowlist. The Slack scoping work for backends is a tracked follow-up — see the "Slack scoping" note in the anti-drift backlog item.
+**When a closed enumeration is genuinely a subset of a wider registry** (canonical example: a frontend that supports a strict subset of `BACKEND_REGISTRY` — say `claude` / `codex` / `gemini` only), the same recipe applies one level out: define an explicit allowlist array, validate it against `isKnownX` at module-load time, and have the subset-aware code consume that allowlist.
 
 **When you reach for a hand-rolled `Set`, switch, or string literal of enum values, ask first:** is there a registry already? If yes, import the helper. If no, and the enumeration is closed, file it as a registry following this recipe before you write the second copy.
 
@@ -131,14 +121,9 @@ A closed enumeration of values — backends, permission modes, effort levels, se
 - **Runtime-mutable values must be SolidJS signals or stores.** Plain objects / module-level constants are for truly immutable data only (string enums, static config). Theme colors (`colors` in `tokens.ts`) are a store — never snapshot them into a `const`; read inline in JSX or via `() =>` accessor.
 - **Cross-cutting keyboard shortcuts run FIRST in the root handler, not in overlays.** Any `useKeyboard` intercept that does blanket `event.preventDefault()` on non-whitelist keys (the usual "overlay is open — eat everything" pattern) silently swallows global shortcuts like Cmd+C copy. Centralise them as small helpers at the top of the root `useKeyboard` in `src/frontends/tui/app.tsx` (e.g. `tryHandleCopyShortcut`) and invoke them before any overlay branch.
 
-### Slack frontend (`@slack/bolt` + Web API)
+### Slack frontend
 
-- **The pipeline is fixed; add to it, don't bypass it.** Round trip is: `transport/events` → `inbox/{dedup,gate,debouncer,turn-builder}` → `routing.ts` → `router/{resolver,registry}` → `SessionHost.send` → backend `AgentEvent` stream → `view/event-renderer` → Slack Web API. New features slot into one of these stages; don't post to Slack from anywhere else.
-- **Agent reply bodies go through `markdownText`, not `text`.** A single send carries EITHER Slack mrkdwn (`text`) or raw GFM (`markdownText`), never both — Slack rejects the combination with `markdown_text_conflict`. Long agent output → `markdownText` (12k cap, native GFM rendering). Short system copy with `<@U…>` / `<#C…>` / `<!date^…>` affordances → `text` (3k cap, Slack mrkdwn). Deep dive: [`docs/slack-text-vs-markdown.md`](docs/slack-text-vs-markdown.md).
-- **Coalesce rapid Slack API calls.** Reactions, status updates, and debounced input all have existing coalescers (`view/reactions.ts`, `view/thread-status.ts`, `inbox/debouncer.ts`) — reuse them. A naive "one API call per event" loop will hit rate limits and cost real money.
-- **Never call `chat.postMessage` directly from view code.** Go through `view/outbox.ts` or `view/send-adapter.ts` so message tracking, edit-vs-append, and the text-vs-markdown_text choice stay consistent.
-- **Slack config (`slack.json`) is validated by zod (`config/schema.ts`)**; never read fields off the raw JSON. Run `bantai slack doctor` before deploying config changes — it catches missing scopes, bad channels, and broken workspace auth up front.
-- **Persistence is real.** `store/sessions.ts` writes an on-disk registry so the bot survives restarts without losing in-flight threads. Tests cover this (`tests/frontends/slack/integration/persistence.test.ts`) — don't regress it.
+The Slack frontend (Bolt server, pipeline, doctor, admin API, observability TUI, fake-Slack server) lives in the [bantai-slack](https://github.com/ohwxyz/bantai-slack) companion repo. Its rules — pipeline ordering, `markdownText` vs `text`, API-call coalescing, persistence semantics — live there too. When a Slack-shape concern affects the protocol layer in this repo (e.g. an event semantics change), update both repos in lockstep.
 
 ## TUI — OpenTUI cheatsheet
 
@@ -172,19 +157,16 @@ src/
   protocol/           # AgentBackend interface, AgentEvent, reducer, descriptor registries
   backends/           # Adapters: claude, codex, acp, follow, mock, shared (base + glue)
   session/            # SessionHost (the unit consumed by frontends) + cross-backend resume
-  frontends/          # tui/ (default), slack/ (bot), slack-monitor/ (admin TUI over /admin)
+  frontends/          # tui/ (the only in-tree frontend; bantai-slack is a companion repo)
   ab/                 # A/B comparison: spawn two backends, judge + combine outputs
   subagents/          # Sub-agent definitions + orchestration
   commands/           # Slash-command registry + built-ins (/thinking, /backend, …)
   mcp/                # Built-in MCP servers (state-bridge, tools)
-  minislack/          # Dev/test-only fake Slack server + web UI
   storybook/          # Component storybook for the TUI
   config/settings.ts  # User settings persistence
   utils/logger.ts     # File-based session logger (singleton `log`)
 tests/                # Mirrors src/; protocol/ holds the contract tests, written FIRST
 ```
-
-Inside `src/frontends/slack/` the pipeline structure (transport → inbox → router → view → outbox) maps 1:1 to subdirectories — see the Slack frontend rules above for what goes where.
 
 ## State Machine
 
@@ -204,8 +186,6 @@ bun test                          # All tests
 bun test tests/protocol/          # Protocol + contract tests
 bun test tests/backends/          # Adapter tests per backend
 bun test tests/tui/               # TUI component tests
-bun test tests/frontends/slack/   # Slack pipeline + integration tests
-bun test tests/minislack/         # Fake Slack server
 bun test --watch                  # Watch mode
 bun run docs:check                # Grep-asserts high-risk facts in this doc
 ```
@@ -218,7 +198,7 @@ bun run docs:check                # Grep-asserts high-risk facts in this doc
 - `permission_request` must block until approve/deny.
 - No events after `close()`.
 
-**Slack integration tests** run the real launcher against an in-process minislack, so any regression in the end-to-end pipeline (dedup → routing → outbox → mrkdwn) is caught there.
+(Slack pipeline + integration tests live in [bantai-slack](https://github.com/ohwxyz/bantai-slack); they exercise the same protocol contract from the Slack side.)
 
 ## Logging
 

@@ -39,7 +39,7 @@ bun run dev                       # default backend (claude)
 bun test                          # run all tests
 ```
 
-The Slack frontend lives in [bantai-slack](https://github.com/ohwxyz/bantai-slack). With both packages installed, `bantai slack <cmd>` and `bantai minislack` forward to that repo's bins via commander's executable-subcommand convention.
+The Slack frontend lives in [bantai-slack](https://github.com/ohwxyz/bantai-slack) and ships its own `bantai-slack` bin. It is NOT a subcommand of `bantai` — install bantai-slack globally and invoke it directly (`bantai-slack`, `bantai-slack doctor`, `bantai-slack minislack`, …).
 
 ## Build Requirements
 
@@ -64,7 +64,8 @@ Three layers, strictly ordered:
    - `bantai <id> [prompt]` → TUI with a specific backend, where `<id>` is any backend with `exposeAsCliSubcommand: true` in `BACKEND_REGISTRY` (today: `claude`, `codex`, `gemini`, `qwen`). `bantai --help` prints the live list.
    - `bantai run <message…>` → headless one-shot
    - `bantai resume [id]` / `bantai continue` → session resume
-   - `bantai slack <cmd>` / `bantai minislack <flags>` → executable-subcommand stubs that forward to the [bantai-slack](https://github.com/ohwxyz/bantai-slack) bin when it's installed (commander auto-execs `bantai-slack` / `bantai-minislack` from PATH; clean "command not found" error otherwise)
+
+   The Slack frontend ships as a separate bin (`bantai-slack`) in the [bantai-slack](https://github.com/ohwxyz/bantai-slack) companion repo and is NOT exposed under `bantai`. Install bantai-slack globally and invoke it directly.
 2. **Frontends** (`src/frontends/<name>/`) — each owns its own presentation + transport and exposes a `launch<Name>(flags)` entry point. In this repo: `tui/` (interactive terminal, default). The Slack frontend (`slack/`, `slack-monitor/`) lives in the [bantai-slack](https://github.com/ohwxyz/bantai-slack) companion repo. Nothing in the protocol or backend layer depends on a specific frontend.
 3. **Agent Protocol Layer** (`src/protocol/`) — unified `AgentBackend` interface, `AgentEvent` stream, `ConversationState`, the `reduce(state, event) -> newState` reducer, plus the descriptor registries for backends, permission modes, effort levels, session states, rate-limit buckets, and capabilities. Backend adapters live under `src/backends/{acp,claude,codex,follow,mock,shared}/`; `follow/` is the read-only adapter that tails an existing session file, `shared/` holds the cross-backend base adapter.
 

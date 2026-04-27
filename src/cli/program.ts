@@ -9,8 +9,11 @@
  *   bantai claude [prompt]       → TUI with claude backend
  *   bantai codex [prompt]        → TUI with codex backend
  *   bantai gemini [prompt]       → TUI with gemini backend
- *   bantai slack <cmd>           → forwards to bantai-slack bin (companion repo)
- *   bantai minislack <flags>     → forwards to bantai-minislack bin (companion repo)
+ *
+ * The Slack frontend is a separate bin (`bantai-slack`) shipped by the
+ * companion repo at https://github.com/ohwxyz/bantai-slack. It is NOT
+ * exposed as a subcommand of `bantai` — install bantai-slack globally
+ * and invoke it directly.
  */
 
 import { Command } from "commander"
@@ -145,28 +148,6 @@ export async function runCli(argv: string[]): Promise<void> {
     })
     program.addCommand(cmd)
   }
-
-  // -----------------------------------------------------------------------
-  // Frontend bridge: `bantai slack <cmd>` and `bantai minislack <flags>`
-  // both forward to the bantai-slack companion repo's bins via commander's
-  // executable-subcommand convention — declaring `program.command(name,
-  // description)` with no action handler tells commander to exec
-  // `bantai-<name>` from PATH and pass through argv. Both fail gracefully
-  // with "command not found" when bantai-slack isn't installed.
-  //
-  // The full Slack frontend (server, doctor, monitor, init-manifest,
-  // minislack) lives at https://github.com/ohwxyz/bantai-slack — install
-  // that package globally and `bantai slack <cmd>` / `bantai minislack`
-  // start working with no extra wiring.
-  // -----------------------------------------------------------------------
-  program.command(
-    "slack",
-    "Slack frontend (requires bantai-slack — see https://github.com/ohwxyz/bantai-slack)",
-  )
-  program.command(
-    "minislack",
-    "Local fake Slack workspace (requires bantai-slack)",
-  )
 
   // Parse and execute
   await program.parseAsync(argv)

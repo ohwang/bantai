@@ -41,8 +41,10 @@ function formatBakedFor(summary: TurnSummaryInfo): string | null {
 
   if (summary.usage) {
     const u = summary.usage
-    // Total tokens = input + output + cache. Same arithmetic the status bar
-    // uses for "context" so the two numbers agree.
+    // Total tokens = input + output + cache, summed across every API call
+    // in the turn (reducer feeds this from per-call cost_update events).
+    // Lines up with the cumulative costUsd below — single-call result.usage
+    // would not.
     const total =
       (u.inputTokens ?? 0) +
       (u.outputTokens ?? 0) +
@@ -51,6 +53,16 @@ function formatBakedFor(summary: TurnSummaryInfo): string | null {
     if (total > 0) {
       parts.push(`${formatTokens(total)} tokens`)
     }
+  }
+
+  // Surface the multiplier behind a high cost — a $100 turn that did one
+  // model call vs. forty looks identical without these.
+  if (summary.apiTurns != null && summary.apiTurns > 0) {
+    parts.push(`${summary.apiTurns} ${summary.apiTurns === 1 ? "turn" : "turns"}`)
+  }
+
+  if (summary.toolCalls != null && summary.toolCalls > 0) {
+    parts.push(`${summary.toolCalls} ${summary.toolCalls === 1 ? "tool" : "tools"}`)
   }
 
   if (summary.costUsd != null && summary.costUsd > 0) {

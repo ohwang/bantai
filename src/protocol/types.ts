@@ -178,6 +178,11 @@ export type TurnCompleteEvent = {
    *  API call. Backends that don't report it omit the field. Used by the TUI
    *  to render a "Baked for X" summary line when the turn completes. */
   durationMs?: number
+  /** Number of API roundtrips with the LLM in this agentic turn. Sourced from
+   *  the Claude SDK `result.num_turns`. Backends that don't report it omit
+   *  the field — the reducer falls back to its own per-turn cost_update
+   *  counter (one per `message_start`). */
+  numApiTurns?: number
 }
 
 /** Session state */
@@ -888,6 +893,26 @@ export interface ConversationState {
   /** Output tokens accumulated during streaming (reset on turn boundaries, separate from authoritative cost) */
   streamingOutputTokens: number
 
+  /** Internal: cumulative token usage across every API call in the **current**
+   *  agentic turn. Reset on `turn_start`, snapshot into `lastTurnSummary.usage`
+   *  on `turn_complete`. Each backend that emits `cost_update` per API call
+   *  feeds this; backends that only emit a single `turn_complete` with usage
+   *  leave it at zero and the reducer falls back to `event.usage`.
+   *
+   *  Lives on state (not in `lastTurnSummary`) because the summary is exposed
+   *  to UI consumers and shouldn't carry mid-turn scratch. The leading
+   *  underscore mirrors `_contextFromStream` — internal reducer scratch. */
+  _turnUsage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+    /** Number of API calls observed (one per `message_start` cost_update). */
+    apiCalls: number
+    /** Number of tool invocations observed (one per `tool_use_start`). */
+    toolCalls: number
+  }
+
   /** Whether the current turn is backgrounded (UI collapsed, input re-enabled) */
   backgrounded: boolean
 
@@ -1401,18 +1426,33 @@ export interface TurnFileChange {
 /** Per-turn summary info, captured at `turn_complete`. Drives the TUI
  *  "Baked for X" line shown in IDLE. All fields are optional per-backend:
  *
- *  - **Claude**: full data — `durationMs`, `costUsd`, and `usage`.
+ *  - **Claude**: full data — `durationMs`, `costUsd`, `usage`, `apiTurns`,
+ *    `toolCalls`.
  *  - **Codex**: `usage` only (`turn/completed` has no duration).
  *  - **ACP / mock / follow**: usage-only or nothing.
  *
- *  The TUI hides fields it doesn't have rather than synthesising them. */
+ *  The TUI hides fields it doesn't have rather than synthesising them.
+ *
+ *  `usage` here is **cumulative across every API call in the turn**, not just
+ *  the final one — that's the only way it can line up with `costUsd` on a
+ *  multi-step agentic turn. The reducer accumulates from `cost_update`
+ *  events (one per `message_start` + one per `message_delta`); when no
+ *  cost_updates were observed (e.g. ACP backends that emit usage only on
+ *  `turn_complete`) it falls back to `event.usage`. */
 export interface TurnSummaryInfo {
   /** Wall-clock duration of the turn in milliseconds (Claude SDK `duration_ms`). */
   durationMs?: number
   /** Per-turn cost in USD (Claude SDK `total_cost_usd`). */
   costUsd?: number
-  /** Per-turn token usage breakdown. Absent for backends that don't report it. */
+  /** Cumulative token usage across all API calls in the turn. */
   usage?: TokenUsage
+  /** Number of API roundtrips with the LLM in this turn. Prefer the
+   *  backend-reported value (Claude `num_turns`); fall back to the reducer's
+   *  per-turn `cost_update` counter. */
+  apiTurns?: number
+  /** Number of tool invocations the agent issued during the turn (counted by
+   *  the reducer from `tool_use_start` events). */
+  toolCalls?: number
 }
 
 /** Agent-advertised slash command (from ACP backends) */
@@ -1470,6 +1510,14 @@ export function createInitialState(): ConversationState {
     lastTurnTtftMs: null,
     _contextFromStream: false,
     streamingOutputTokens: 0,
+    _turnUsage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      apiCalls: 0,
+      toolCalls: 0,
+    },
     backgrounded: false,
     awaitingTurnStart: false,
     lastTurnFiles: undefined,
@@ -1525,6 +1573,7 @@ export function resetVolatileSessionState(
     lastTurnTtftMs: fresh.lastTurnTtftMs,
     _contextFromStream: fresh._contextFromStream,
     streamingOutputTokens: fresh.streamingOutputTokens,
+    _turnUsage: fresh._turnUsage,
     turnNumber: fresh.turnNumber,
     lastTurnFiles: fresh.lastTurnFiles,
     lastTurnSummary: fresh.lastTurnSummary,

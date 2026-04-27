@@ -167,6 +167,17 @@ export function reduce(
         // SDK's ttft_ms field (when reported). Keeping the previous turn's
         // value around would mislead the status bar during the next turn.
         lastTurnTtftMs: null,
+        // Reset the per-turn usage accumulator. Subsequent cost_update and
+        // tool_use_start events fold into this; turn_complete snapshots it
+        // into lastTurnSummary so the "Baked for X" tokens line up with cost.
+        _turnUsage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          apiCalls: 0,
+          toolCalls: 0,
+        },
         activeTasks: prunedTasks,
       }
     }
@@ -270,19 +281,66 @@ export function reduce(
         lastTurnTtftMs: event.ttftMs != null ? event.ttftMs : state.lastTurnTtftMs,
         _contextFromStream: false,
         lastTurnFiles: turnFiles.length > 0 ? turnFiles : undefined,
-        // Capture a per-turn summary for the TUI "Baked for X" line. Only
-        // recorded when the backend provides enough signal to render something
-        // meaningful — duration, cost, or any token count. The TUI decides
-        // which fields to show; missing fields are hidden, not synthesised.
-        lastTurnSummary:
-          event.durationMs != null ||
-          (event.usage && (event.usage.inputTokens > 0 || event.usage.outputTokens > 0 || (event.usage.totalCostUsd ?? 0) > 0))
+        // Capture a per-turn summary for the TUI "Baked for X" line.
+        //
+        // Tokens: prefer the per-turn accumulator (sum of every API call's
+        // usage, fed by cost_update events) over event.usage. The SDK's
+        // result.usage reflects only the FINAL API call — using it next to
+        // the cumulative total_cost_usd makes the two numbers visibly
+        // disagree on multi-step turns (3M tokens of work shown as 50k).
+        // Backends that don't emit per-call cost_updates leave the
+        // accumulator at zero; we fall back to event.usage so they keep
+        // working unchanged.
+        //
+        // apiTurns: prefer the backend-reported value (Claude `num_turns`),
+        // fall back to the reducer's per-turn cost_update counter.
+        //
+        // Only recorded when the backend provides enough signal to render
+        // something meaningful — duration, cost, any tokens, or any tool/api
+        // counts. The TUI decides which fields to show; missing fields are
+        // hidden, not synthesised.
+        lastTurnSummary: ((): typeof state.lastTurnSummary => {
+          const acc = state._turnUsage
+          const accHasUsage =
+            acc.inputTokens > 0 ||
+            acc.outputTokens > 0 ||
+            acc.cacheReadTokens > 0 ||
+            acc.cacheWriteTokens > 0
+          const eventHasUsage =
+            event.usage &&
+            (event.usage.inputTokens > 0 ||
+              event.usage.outputTokens > 0 ||
+              (event.usage.totalCostUsd ?? 0) > 0)
+          const apiTurns = event.numApiTurns ?? (acc.apiCalls > 0 ? acc.apiCalls : undefined)
+          const toolCalls = acc.toolCalls > 0 ? acc.toolCalls : undefined
+          if (
+            event.durationMs == null &&
+            !accHasUsage &&
+            !eventHasUsage &&
+            apiTurns === undefined &&
+            toolCalls === undefined
+          ) {
+            return null
+          }
+          const usage: typeof event.usage | undefined = accHasUsage
             ? {
-                durationMs: event.durationMs,
-                costUsd: event.usage?.totalCostUsd,
-                usage: event.usage,
+                inputTokens: acc.inputTokens,
+                outputTokens: acc.outputTokens,
+                cacheReadTokens: acc.cacheReadTokens,
+                cacheWriteTokens: acc.cacheWriteTokens,
+                ...(event.usage?.totalCostUsd !== undefined
+                  ? { totalCostUsd: event.usage.totalCostUsd }
+                  : {}),
               }
-            : null,
+            : event.usage
+          return {
+            durationMs: event.durationMs,
+            costUsd: event.usage?.totalCostUsd,
+            usage,
+            apiTurns,
+            toolCalls,
+          }
+        })(),
       }
     }
 
@@ -430,6 +488,10 @@ export function reduce(
       const flushedState = flushBuffers({ ...next })
       return {
         ...flushedState,
+        _turnUsage: {
+          ...flushedState._turnUsage,
+          toolCalls: flushedState._turnUsage.toolCalls + 1,
+        },
         blocks: [...flushedState.blocks, {
           type: "tool" as const,
           id: event.id,
@@ -646,7 +708,8 @@ export function reduce(
       // double-counting. But we track streaming output tokens separately
       // for real-time display in the spinner.
       // Per-API-call context fill from message_start is more accurate than
-      // the cumulative turn_complete usage for multi-step agentic turns.
+      // result.usage (which is the final API call only) for context window
+      // fill on multi-step agentic turns.
       //
       // contextWindow: when the backend reports a live per-model cap (Codex
       // 0.122+ in thread/tokenUsage/updated.modelContextWindow), patch it
@@ -667,10 +730,27 @@ export function reduce(
           session = { ...session, models }
         }
       }
+      // Accumulate per-turn usage. message_start carries input + cache and
+      // sets contextTokens (one event per API call); message_delta carries
+      // output tokens. Counting API calls off `contextTokens > 0` keeps the
+      // signal bound to the start of an API roundtrip rather than every
+      // streaming token-delta.
+      const turnUsage = {
+        ...state._turnUsage,
+        inputTokens: state._turnUsage.inputTokens + (event.inputTokens ?? 0),
+        outputTokens: state._turnUsage.outputTokens + (event.outputTokens ?? 0),
+        cacheReadTokens: state._turnUsage.cacheReadTokens + (event.cacheReadTokens ?? 0),
+        cacheWriteTokens: state._turnUsage.cacheWriteTokens + (event.cacheWriteTokens ?? 0),
+        apiCalls:
+          event.contextTokens !== undefined && event.contextTokens > 0
+            ? state._turnUsage.apiCalls + 1
+            : state._turnUsage.apiCalls,
+      }
       return {
         ...next,
         session,
         streamingOutputTokens: state.streamingOutputTokens + (event.outputTokens ?? 0),
+        _turnUsage: turnUsage,
         ...(event.contextTokens !== undefined && event.contextTokens > 0
           ? { lastTurnInputTokens: event.contextTokens, _contextFromStream: true }
           : {}),

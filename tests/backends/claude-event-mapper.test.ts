@@ -715,6 +715,36 @@ describe("Claude Event Mapper — mapSDKMessage", () => {
       )
       expect((events[0] as any).durationMs).toBeUndefined()
     })
+
+    it("forwards num_turns from the SDK onto turn_complete.numApiTurns", () => {
+      // num_turns is the multiplier behind a high cost — surfaced on the
+      // "Baked for" summary so users can see "$127 across 18 API turns"
+      // rather than just "$127".
+      const events = mapSDKMessage(
+        {
+          type: "result",
+          subtype: "success",
+          duration_ms: 87000,
+          num_turns: 18,
+          total_cost_usd: 127.46,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        freshState(),
+      )
+      expect((events[0] as any).numApiTurns).toBe(18)
+    })
+
+    it("leaves numApiTurns undefined when the SDK omits num_turns", () => {
+      const events = mapSDKMessage(
+        {
+          type: "result",
+          subtype: "success",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        freshState(),
+      )
+      expect((events[0] as any).numApiTurns).toBeUndefined()
+    })
   })
 
   // ---------------------------------------------------------------------------
@@ -2126,7 +2156,10 @@ describe("Claude Event Mapper — mapStreamEvent", () => {
       expect(events.some((e) => e.type === "turn_start")).toBe(true)
     })
 
-    it("emits cost_update from message usage", () => {
+    it("emits cost_update with per-call usage from message_start", () => {
+      // message_start reports the usage for THIS API call. The reducer sums
+      // these across the turn so the displayed total tokens line up with
+      // total_cost_usd; output tokens arrive on message_delta.
       const events = mapStreamEvent(
         {
           type: "message_start",
@@ -2146,7 +2179,9 @@ describe("Claude Event Mapper — mapStreamEvent", () => {
       const cost = events.find((e) => e.type === "cost_update") as any
       expect(cost).toBeTruthy()
       expect(cost.contextTokens).toBe(1700) // 1000 + 500 + 200
-      expect(cost.inputTokens).toBe(0)
+      expect(cost.inputTokens).toBe(1000)
+      expect(cost.cacheReadTokens).toBe(500)
+      expect(cost.cacheWriteTokens).toBe(200)
       expect(cost.outputTokens).toBe(0)
     })
 

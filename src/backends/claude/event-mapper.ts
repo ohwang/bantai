@@ -720,12 +720,17 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
       // Wall-clock duration of the agentic turn (SDK `duration_ms`). Used by
       // the TUI to render a "Baked for X" line on turn completion.
       const durationMs = typeof msg.duration_ms === "number" ? msg.duration_ms : undefined
+      // Number of API roundtrips with the LLM (SDK `num_turns`). Surfaced on
+      // the same "Baked for X" summary line so users can see the multiplier
+      // behind a high cost.
+      const numApiTurns = typeof msg.num_turns === "number" ? msg.num_turns : undefined
       if (msg.subtype === "success" || !msg.is_error) {
         events.push({
           type: "turn_complete",
           sessionId: resultSessionId,
           ttftMs,
           durationMs,
+          numApiTurns,
           usage: {
             inputTokens: msg.usage?.input_tokens ?? 0,
             outputTokens: msg.usage?.output_tokens ?? 0,
@@ -746,6 +751,7 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
           sessionId: resultSessionId,
           ttftMs,
           durationMs,
+          numApiTurns,
           usage: {
             inputTokens: msg.usage?.input_tokens ?? 0,
             outputTokens: msg.usage?.output_tokens ?? 0,
@@ -1247,20 +1253,25 @@ export function mapStreamEvent(
   switch (event.type) {
     case "message_start": {
       events.push({ type: "turn_start" })
-      // Extract per-API-call input tokens for accurate context window fill.
-      // The result message's usage is CUMULATIVE across all API calls in a
-      // multi-step turn, so using it directly overcounts by num_turns×.
+      // Extract per-API-call usage for accurate context window fill AND
+      // for the reducer's per-turn token accumulator. The SDK's `result.usage`
+      // reflects only the FINAL API call of a multi-step turn — using it
+      // directly to display "tokens this turn" makes the number disagree with
+      // total_cost_usd (which IS cumulative). We emit one cost_update per
+      // message_start so the reducer can sum across the whole turn.
       const msgUsage = event.message?.usage
       if (msgUsage) {
-        const contextFill =
-          (msgUsage.input_tokens ?? 0) +
-          (msgUsage.cache_read_input_tokens ?? 0) +
-          (msgUsage.cache_creation_input_tokens ?? 0)
+        const inputTokens = msgUsage.input_tokens ?? 0
+        const cacheReadTokens = msgUsage.cache_read_input_tokens ?? 0
+        const cacheWriteTokens = msgUsage.cache_creation_input_tokens ?? 0
+        const contextFill = inputTokens + cacheReadTokens + cacheWriteTokens
         if (contextFill > 0) {
           events.push({
             type: "cost_update",
-            inputTokens: 0,
+            inputTokens,
             outputTokens: 0,
+            cacheReadTokens,
+            cacheWriteTokens,
             contextTokens: contextFill,
           })
         }

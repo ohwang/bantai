@@ -420,6 +420,134 @@ describe("ConversationState reducer", () => {
       expect(state.lastTurnSummary?.durationMs).toBe(8000)
       expect(state.lastTurnSummary?.usage?.outputTokens).toBe(600)
     })
+
+    it("aggregates token usage across every API call in the turn", () => {
+      // Multi-step agentic turn: three message_start cost_updates for input/cache,
+      // three message_delta cost_updates for output, all before turn_complete.
+      // Without aggregation, lastTurnSummary.usage would be the last API call's
+      // numbers (matching SDK result.usage) and disagree with cumulative cost.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        // API call 1
+        {
+          type: "cost_update",
+          inputTokens: 100,
+          outputTokens: 0,
+          cacheReadTokens: 1000,
+          cacheWriteTokens: 50,
+          contextTokens: 1150,
+        },
+        { type: "cost_update", inputTokens: 0, outputTokens: 200 },
+        // API call 2
+        {
+          type: "cost_update",
+          inputTokens: 80,
+          outputTokens: 0,
+          cacheReadTokens: 1500,
+          cacheWriteTokens: 0,
+          contextTokens: 1580,
+        },
+        { type: "cost_update", inputTokens: 0, outputTokens: 150 },
+        // API call 3 (final synthesis)
+        {
+          type: "cost_update",
+          inputTokens: 60,
+          outputTokens: 0,
+          cacheReadTokens: 2000,
+          cacheWriteTokens: 0,
+          contextTokens: 2060,
+        },
+        { type: "cost_update", inputTokens: 0, outputTokens: 80 },
+        // turn_complete carries result.usage (final-call only) — accumulator wins.
+        {
+          type: "turn_complete",
+          durationMs: 5000,
+          usage: { inputTokens: 60, outputTokens: 80, cacheReadTokens: 2000, totalCostUsd: 0.42 },
+        },
+      ])
+      expect(state.lastTurnSummary?.usage?.inputTokens).toBe(240) // 100+80+60
+      expect(state.lastTurnSummary?.usage?.outputTokens).toBe(430) // 200+150+80
+      expect(state.lastTurnSummary?.usage?.cacheReadTokens).toBe(4500) // 1000+1500+2000
+      expect(state.lastTurnSummary?.usage?.cacheWriteTokens).toBe(50)
+      expect(state.lastTurnSummary?.usage?.totalCostUsd).toBe(0.42)
+      expect(state.lastTurnSummary?.costUsd).toBe(0.42)
+    })
+
+    it("falls back to event.usage when no per-call cost_updates were observed", () => {
+      // ACP-style backend: only emits a single turn_complete with usage, no
+      // per-API-call cost_update events. The accumulator stays at zero so we
+      // surface event.usage unchanged for backwards compatibility.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        {
+          type: "turn_complete",
+          durationMs: 3000,
+          usage: { inputTokens: 1234, outputTokens: 567, cacheReadTokens: 0, totalCostUsd: 0.05 },
+        },
+      ])
+      expect(state.lastTurnSummary?.usage?.inputTokens).toBe(1234)
+      expect(state.lastTurnSummary?.usage?.outputTokens).toBe(567)
+    })
+
+    it("counts API turns from cost_update.contextTokens (one per message_start)", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        // 3 message_start cost_updates (each has contextTokens > 0)
+        { type: "cost_update", inputTokens: 1, outputTokens: 0, contextTokens: 500 },
+        { type: "cost_update", inputTokens: 0, outputTokens: 100 }, // message_delta — no contextTokens
+        { type: "cost_update", inputTokens: 1, outputTokens: 0, contextTokens: 600 },
+        { type: "cost_update", inputTokens: 0, outputTokens: 100 },
+        { type: "cost_update", inputTokens: 1, outputTokens: 0, contextTokens: 700 },
+        { type: "cost_update", inputTokens: 0, outputTokens: 100 },
+        { type: "turn_complete", durationMs: 1000 },
+      ])
+      expect(state.lastTurnSummary?.apiTurns).toBe(3)
+    })
+
+    it("prefers event.numApiTurns over the cost_update counter", () => {
+      // SDK-reported num_turns is authoritative when present.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "cost_update", inputTokens: 1, outputTokens: 0, contextTokens: 500 },
+        { type: "turn_complete", durationMs: 1000, numApiTurns: 18 },
+      ])
+      expect(state.lastTurnSummary?.apiTurns).toBe(18)
+    })
+
+    it("counts tool invocations from tool_use_start events in the turn", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "tool_use_start", id: "t1", tool: "Read", input: {} },
+        { type: "tool_use_start", id: "t2", tool: "Bash", input: {} },
+        { type: "tool_use_start", id: "t3", tool: "Edit", input: {} },
+        { type: "turn_complete", durationMs: 1000 },
+      ])
+      expect(state.lastTurnSummary?.toolCalls).toBe(3)
+    })
+
+    it("resets accumulator on turn_start so counts don't bleed across turns", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        { type: "tool_use_start", id: "t1", tool: "Read", input: {} },
+        { type: "cost_update", inputTokens: 100, outputTokens: 0, contextTokens: 500 },
+        { type: "turn_complete", durationMs: 1000, numApiTurns: 1 },
+        { type: "turn_start" },
+        { type: "tool_use_start", id: "t2", tool: "Bash", input: {} },
+        { type: "cost_update", inputTokens: 50, outputTokens: 0, contextTokens: 200 },
+        { type: "cost_update", inputTokens: 0, outputTokens: 30 },
+        { type: "turn_complete", durationMs: 800 },
+      ])
+      expect(state.lastTurnSummary?.toolCalls).toBe(1)
+      expect(state.lastTurnSummary?.apiTurns).toBe(1)
+      expect(state.lastTurnSummary?.usage?.inputTokens).toBe(50)
+      expect(state.lastTurnSummary?.usage?.outputTokens).toBe(30)
+    })
   })
 
   // -----------------------------------------------------------------------

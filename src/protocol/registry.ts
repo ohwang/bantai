@@ -38,6 +38,7 @@ import { AcpAdapter } from "../backends/acp/adapter"
 import { MockAdapter } from "../backends/mock/adapter"
 import type { AcpPreset } from "../backends/acp/types"
 import type { AgentBackend, Block, SessionInfo, SessionResumeSummary } from "./types"
+import type { PermissionMode } from "./permission-modes"
 import {
   findCodexSessionFile,
   findGeminiSessionFile,
@@ -138,6 +139,31 @@ export interface BackendDescriptor {
    * generic acp, copilot) omit this.
    */
   sessionFile?: SessionFileHandlers
+  /**
+   * Backend-level fallback for `SessionConfig.permissionMode` applied at the
+   * CLI entry points (TUI launcher, headless `run`) when the user has NOT
+   * provided a value via either:
+   *   - the `--permission-mode` flag, or
+   *   - the `permissionMode` setting in any config scope (project / global /
+   *     claude-fallback).
+   *
+   * Precedence (highest first):
+   *   1. CLI `--permission-mode`
+   *   2. Settings file (project → global → claude-fallback)
+   *   3. `BackendDescriptor.defaultPermissionMode`  ← this field
+   *   4. SDK / adapter default (typically "default" — i.e. always prompt)
+   *
+   * Backends that want the SDK's own default (no opinion at the bantai layer)
+   * leave this `undefined`. Today only the Claude backend opts in, defaulting
+   * to "auto" so first-time users get the model-classifier permission flow
+   * without having to discover it themselves.
+   *
+   * NOTE: This default is applied at the user-facing CLI entry points only.
+   * Programmatic callers (subagents, side-chats) construct their own
+   * SessionConfig with an explicit `permissionMode` and bypass this field
+   * entirely.
+   */
+  defaultPermissionMode?: PermissionMode
 }
 
 function binaryOnPath(name: string): boolean {
@@ -161,6 +187,11 @@ export const BACKEND_REGISTRY: BackendDescriptor[] = [
       parseSummary: (id, cwd) => readSessionHistory(id, cwd).summary,
       readBlocks: (id, cwd) => readSessionHistory(id, cwd).blocks,
     },
+    // Default to the model-classifier permission flow so first-time users
+    // (no `~/.bantai/settings.json`, no `--permission-mode`) get auto
+    // approve/deny on routine actions instead of being prompted on every
+    // edit/command. Settings file + CLI flag still override.
+    defaultPermissionMode: "auto",
   },
   {
     id: "codex",

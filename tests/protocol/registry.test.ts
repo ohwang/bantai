@@ -46,6 +46,23 @@ describe("backend registry", () => {
     }
   })
 
+  // The Claude backend opts into "auto" as its CLI-entry-point fallback so
+  // first-time users (no settings.json, no --permission-mode) get the model-
+  // classifier permission flow instead of being prompted on every action.
+  // Other backends leave the field undefined → the SDK's own default applies.
+  describe("defaultPermissionMode", () => {
+    it("claude defaults to auto", () => {
+      expect(getBackendDescriptor("claude")?.defaultPermissionMode).toBe("auto")
+    })
+
+    it("non-claude backends do not opt in (today)", () => {
+      for (const b of BACKEND_REGISTRY) {
+        if (b.id === "claude") continue
+        expect(b.defaultPermissionMode).toBeUndefined()
+      }
+    })
+  })
+
   // L1 regression — multi-backend session picker used to hardcode
   // [claude, codex, gemini] in three places (cross-backend.ts:32 union,
   // launcher.ts Promise.all, session-picker.tsx tabs+counts). Adding qwen

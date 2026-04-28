@@ -14,7 +14,7 @@
 import { existsSync, statSync } from "node:fs"
 import type { CLIFlags } from "../../cli/options"
 import type { AgentBackend, SessionOrigin } from "../../protocol/types"
-import { instantiateBackend } from "../../protocol/registry"
+import { getBackendDescriptor, instantiateBackend } from "../../protocol/registry"
 import { startApp } from "./app"
 import { log } from "../../utils/logger"
 import { backendTrace } from "../../utils/backend-trace"
@@ -63,6 +63,13 @@ export async function launchTui(flags: CLIFlags): Promise<void> {
   }
   if (flags.config.permissionMode === undefined && resolved.values.permissionMode) {
     flags.config.permissionMode = resolved.values.permissionMode
+  }
+  // Backend-level default (currently: claude → "auto"). Applied LAST in the
+  // precedence chain — only kicks in when neither CLI nor any settings scope
+  // supplied a value. See `BackendDescriptor.defaultPermissionMode`.
+  if (flags.config.permissionMode === undefined) {
+    const def = getBackendDescriptor(flags.backend)?.defaultPermissionMode
+    if (def) flags.config.permissionMode = def
   }
   if (!flags.debug && resolved.values.debug) {
     flags.debug = true

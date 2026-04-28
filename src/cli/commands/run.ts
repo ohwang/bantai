@@ -18,7 +18,7 @@
 import type { CLIFlags, OutputFormat } from "../options"
 import { DEFAULT_OUTPUT_FORMAT, isStructuredOutputFormat } from "../options"
 import type { AgentBackend, ConversationEvent } from "../../protocol/types"
-import { instantiateBackend } from "../../protocol/registry"
+import { getBackendDescriptor, instantiateBackend } from "../../protocol/registry"
 import { log } from "../../utils/logger"
 import { backendTrace } from "../../utils/backend-trace"
 
@@ -171,6 +171,16 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
   }
   if (flags.config.permissionMode === undefined && resolved.values.permissionMode) {
     flags.config.permissionMode = resolved.values.permissionMode
+  }
+  // Backend-level default (currently: claude → "auto"). Applied LAST in the
+  // precedence chain — only kicks in when neither CLI nor any settings scope
+  // supplied a value. See `BackendDescriptor.defaultPermissionMode`. In
+  // headless mode the SDK's auto classifier still resolves most permissions
+  // internally; the rare permission_request that does bubble up is denied
+  // by the loop below (auto-deny is the safe default for non-interactive).
+  if (flags.config.permissionMode === undefined) {
+    const def = getBackendDescriptor(flags.backend)?.defaultPermissionMode
+    if (def) flags.config.permissionMode = def
   }
 
   // Create backend

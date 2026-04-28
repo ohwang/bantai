@@ -334,22 +334,15 @@ export function createKeyHandler(
       return
     }
 
-    // Ctrl+K = kill to end of line (Emacs kill-line)
-    if (e.ctrl && e.name === "k") {
-      e.preventDefault()
-      const textareaRef = getTextareaRef()
-      if (textareaRef) {
-        const text = textareaRef.plainText
-        const offset = textareaRef.cursorOffset
-        if (offset < text.length && text[offset] === "\n") {
-          textareaRef.deleteChar()
-        } else {
-          textareaRef.deleteToLineEnd()
-        }
-      }
-      scheduleDeleteUpdate()
-      return
-    }
+    // Ctrl+K (kill-to-end-of-line) was repurposed as a global "scroll
+    // conversation up one line" binding (vim convention: j=down, k=up). The
+    // global handler in conversation.tsx fires first and calls
+    // `preventDefault()`, which both skips this onKeyDown chain AND skips the
+    // textarea's built-in `{ name: "k", ctrl: true, action: "delete-to-line-end" }`
+    // default — so no explicit no-op handler is needed here. Ctrl+J (LF) gets
+    // the same treatment for symmetry. If you need kill-to-end-of-line in the
+    // input area, Ctrl+U (kill-to-start) and Ctrl+W (kill-word-backward) are
+    // still available.
 
     if (e.ctrl && e.name === "u") {
       e.preventDefault()

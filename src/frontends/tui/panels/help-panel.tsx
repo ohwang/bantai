@@ -33,8 +33,10 @@ const navigation: ShortcutEntry[] = [
   { key: "Ctrl+E", label: "Toggle show-all" },
   { key: "Ctrl+T", label: "Toggle thinking" },
   { key: "Ctrl+Shift+P", label: "Cycle model" },
-  { key: "Ctrl+Up/Down", label: "Scroll line" },
+  { key: "Ctrl+J/K", label: "Scroll one line (j down, k up)" },
   { key: "Ctrl+,/.", label: "Prev / next message" },
+  { key: "Ctrl+Shift+J/K", label: "Prev / next message (alias)" },
+  { key: "Ctrl+Shift+Cmd+J/K", label: "Prev / next user msg or turn-end reply" },
   { key: "Ctrl+L", label: "Scroll to bottom" },
 ]
 

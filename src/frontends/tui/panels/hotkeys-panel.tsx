@@ -32,7 +32,6 @@ const groups: ShortcutGroup[] = [
       { key: "Ctrl+D",     desc: "Delete character forward" },
       { key: "Ctrl+H",     desc: "Delete character backward" },
       { key: "Ctrl+T",     desc: "Transpose characters" },
-      { key: "Ctrl+K",     desc: "Kill to end of line" },
       { key: "Ctrl+U",     desc: "Kill to start of line" },
       { key: "Ctrl+W",     desc: "Kill word backward" },
       { key: "Ctrl+Y",     desc: "Yank (paste from clipboard)" },
@@ -59,11 +58,15 @@ const groups: ShortcutGroup[] = [
   {
     title: "Navigation",
     entries: [
-      { key: "Ctrl+Up",   desc: "Scroll up" },
-      { key: "Ctrl+Down", desc: "Scroll down" },
-      { key: "Ctrl+,",    desc: "Previous message" },
-      { key: "Ctrl+.",    desc: "Next message" },
-      { key: "Ctrl+L",    desc: "Scroll to bottom" },
+      { key: "Ctrl+K",           desc: "Scroll up one line" },
+      { key: "Ctrl+J",           desc: "Scroll down one line" },
+      { key: "Ctrl+,",           desc: "Previous message" },
+      { key: "Ctrl+.",           desc: "Next message" },
+      { key: "Ctrl+Shift+K",     desc: "Previous message (alias)" },
+      { key: "Ctrl+Shift+J",     desc: "Next message (alias)" },
+      { key: "Ctrl+Shift+Cmd+K", desc: "Prev user msg / turn-end reply" },
+      { key: "Ctrl+Shift+Cmd+J", desc: "Next user msg / turn-end reply" },
+      { key: "Ctrl+L",           desc: "Scroll to bottom" },
     ],
   },
   {
@@ -87,8 +90,10 @@ const groups: ShortcutGroup[] = [
 ]
 
 // Fixed width for the key column to ensure alignment.
-// Keep narrow enough to fit at 100-col terminals (border+padding = ~12 cols overhead).
-const KEY_COL_WIDTH = 12
+// Keep narrow enough to fit at 100-col terminals (border+padding = ~12 cols
+// overhead). Set to 16 so the widest entry ("Ctrl+Shift+Cmd+K") fits without
+// overflowing into the description column.
+const KEY_COL_WIDTH = 16
 
 function padRight(s: string, width: number): string {
   return s.length >= width ? s : s + " ".repeat(width - s.length)

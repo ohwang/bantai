@@ -58,30 +58,93 @@ function isNearBottom(ref: ScrollBoxRenderable, threshold = 3): boolean {
 }
 
 /**
- * Map a keyboard event to a message-hop direction.
+ * Hop "mode" — which set of blocks counts as a hop target.
  *
- * Ctrl+. → "next" (next user-or-assistant message)
- * Ctrl+, → "prev" (previous user-or-assistant message)
+ *   - "any":            every user / assistant message is an anchor.
+ *                       Default for the punctuation and Ctrl+Shift+J/K
+ *                       bindings — turn-by-turn (every message)
+ *                       navigation.
+ *   - "turn-anchors":   each *turn* contributes up to two anchors —
+ *                       its leading user message AND its trailing
+ *                       assistant message (the last assistant block
+ *                       before the next user message, or before
+ *                       end-of-conversation for the final turn). Hops
+ *                       the pattern user → end-of-turn reply → user →
+ *                       end-of-turn reply → ... Intermediate assistant
+ *                       blocks within a turn (e.g. a paragraph before
+ *                       and after a tool use) are skipped, so a long
+ *                       multi-tool turn collapses into one stop.
+ */
+export type HopMode = "any" | "turn-anchors"
+
+/** A successful hop match: which direction, and which anchor set to use. */
+export type HopMatch = { dir: "next" | "prev"; mode: HopMode }
+
+/**
+ * Map a keyboard event to a message-hop direction + anchor-set mode.
  *
- * The `<` / `>` punctuation pair is the conventional "prev / next item"
- * affordance from `less`, vim, browsers (Cmd+Shift+[ / ]) and YouTube
- * playback. Picked over Alt+N / Alt+P because macOS Option is a
- * dead-key compose by default — Alt+letter would force users to flip
- * "Use Option as Meta" in Terminal.app or "Esc+" mode in iTerm2.
+ * Three accepted shapes:
+ *   1. Ctrl+. / Ctrl+,                       — original "less / vim" punctuation.
+ *                                              mode = "any".
+ *   2. Ctrl+Shift+J / Ctrl+Shift+K           — vim-direction at the message
+ *                                              granularity. mode = "any"
+ *                                              (alias for shape 1).
+ *   3. Ctrl+Shift+Cmd+J / Ctrl+Shift+Cmd+K   — vim-direction with Cmd as a
+ *                                              "skip mid-turn replies" modifier.
+ *                                              mode = "turn-anchors".
+ *
+ * The `<` / `>` punctuation pair (shape 1) is the conventional "prev / next
+ * item" affordance from `less`, vim, browsers (Cmd+Shift+[ / ]) and YouTube
+ * playback. Picked over Alt+N / Alt+P because macOS Option is a dead-key
+ * compose by default — Alt+letter would force users to flip "Use Option as
+ * Meta" in Terminal.app or "Esc+" mode in iTerm2.
+ *
+ * Shape 2 mirrors the per-line scroll bindings (Ctrl+J / Ctrl+K, vim
+ * convention: j=down=next, k=up=prev) at the next granularity up — the same
+ * visual relationship vim uses between j/k (line) and Ctrl+D/U (half-page).
+ *
+ * Shape 3 reuses the same vim-direction keys but layers Cmd on top to mean
+ * "skip past the mid-turn noise" — each turn collapses to its user prompt
+ * and its trailing assistant reply, so a long tool-heavy turn is one stop
+ * instead of many. Cmd was the natural extra modifier given shapes 1/2
+ * already own Ctrl alone and Ctrl+Shift; the choice also leans into the
+ * "Cmd = higher-level / app-wide action" mental model from macOS Cmd+arrow.
  *
  * Disambiguation depends on the Kitty keyboard protocol (we enable it via
  * `useKittyKeyboard: {}` in app.tsx). Works on Ghostty / iTerm2 / WezTerm
- * / Kitty; on default Terminal.app the binding silently no-ops because
- * the terminal drops the Ctrl modifier on punctuation.
+ * / Kitty; on default Terminal.app the bindings silently no-op because
+ * the terminal drops the Ctrl modifier on punctuation and on j/k.
  *
  * Pure helper so it's unit-testable without booting OpenTUI.
  */
 export function matchMessageHopKey(
   event: Pick<KeyEvent, "name" | "ctrl" | "option" | "meta" | "super" | "shift">,
-): "next" | "prev" | null {
-  if (event.shift || event.option || event.meta || event.super) return null
-  if (event.ctrl && event.name === ".") return "next"
-  if (event.ctrl && event.name === ",") return "prev"
+): HopMatch | null {
+  // Shape 1 — Ctrl+. / Ctrl+,. Disallow shift / option / meta / super because
+  // those select different glyphs (`<` / `>`) or are platform compose keys.
+  if (
+    event.ctrl &&
+    !event.shift &&
+    !event.option &&
+    !event.meta &&
+    !event.super
+  ) {
+    if (event.name === ".") return { dir: "next", mode: "any" }
+    if (event.name === ",") return { dir: "prev", mode: "any" }
+  }
+  // Option is rejected for both shapes 2/3 (macOS dead-key compose).
+  if (event.ctrl && event.shift && !event.option) {
+    // Shape 3 — Cmd held → turn-anchor skip mode.
+    // (macOS Cmd → super under Kitty protocol; Linux/Win Cmd-equivalent → meta.)
+    if (event.meta || event.super) {
+      if (event.name === "j") return { dir: "next", mode: "turn-anchors" }
+      if (event.name === "k") return { dir: "prev", mode: "turn-anchors" }
+    } else {
+      // Shape 2 — Ctrl+Shift+J/K (no Cmd) → plain "any" hop.
+      if (event.name === "j") return { dir: "next", mode: "any" }
+      if (event.name === "k") return { dir: "prev", mode: "any" }
+    }
+  }
   return null
 }
 
@@ -129,6 +192,96 @@ const messageAnchorId = (index: number) => `bantai-msg-anchor-${index}`
  *  resume-summary blocks are noise between turns and are skipped. */
 function isMessageBlock(b: Block): boolean {
   return b.type === "user" || b.type === "assistant"
+}
+
+/**
+ * Pick hop anchor indices for "any" mode (Ctrl+,/. and Ctrl+Shift+J/K):
+ * every user-or-assistant block in `grouped()` order. Tool groups, tools,
+ * thinking, system, compact, shell, error, plan, and resume-summary blocks
+ * are skipped (they're noise between turns).
+ *
+ * Pure helper so it's unit-testable without booting OpenTUI / SolidJS.
+ */
+export function pickAllMessageHopIndices(
+  items: ReadonlyArray<Block | ToolGroup | undefined>,
+): number[] {
+  const out: number[] = []
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it === undefined || isToolGroup(it)) continue
+    if (isMessageBlock(it as Block)) out.push(i)
+  }
+  return out
+}
+
+/**
+ * Pick hop anchor indices for "turn-anchors" mode: each *turn* contributes
+ * up to two anchors — its leading user message AND its trailing assistant
+ * message (the last assistant block before the next user message, or before
+ * end-of-conversation for the final turn).
+ *
+ * The traversal pattern this produces:
+ *
+ *     user₁ → asst₁_last → user₂ → asst₂_last → user₃ → asst₃_last → …
+ *
+ * Intermediate assistant blocks within a turn (e.g. if the model emitted
+ * text, then a tool, then more text — the reducer represents that as
+ * multiple consecutive `assistant` blocks) are skipped. Tool groups,
+ * thinking, system, compact, shell, error, plan, and resume-summary blocks
+ * are skipped as well — same as the "any" mode.
+ *
+ * Edge cases:
+ *
+ *   - Leading assistant blocks before any user message (e.g. a synthetic
+ *     "Resumed session" block from the resume flow) are NOT anchored —
+ *     they don't belong to any user-led turn. The first anchor is always
+ *     the first user message.
+ *   - A turn whose assistant response hasn't started yet (just the user
+ *     message, no following assistant) contributes only the user anchor.
+ *   - The very last turn's trailing assistant IS anchored, even though
+ *     there's no following user message — it's the "final answer" of the
+ *     conversation.
+ *
+ * Receives the items in the same shape `grouped()` produces: a mixed array
+ * of `Block` and `ToolGroup`. Returns indices into that array, ascending
+ * (so it can be consumed identically to `pickAllMessageHopIndices`).
+ *
+ * Pure helper so it's unit-testable without booting OpenTUI / SolidJS.
+ */
+export function pickTurnAnchorHopIndices(
+  items: ReadonlyArray<Block | ToolGroup | undefined>,
+): number[] {
+  const out: number[] = []
+  // Index of the most recent assistant block seen *within the current
+  // turn* (i.e. since the last user message). Flushed onto `out` when the
+  // next user message starts a new turn, or at end-of-loop for the final
+  // turn's trailing assistant.
+  let pendingAssistantIdx: number | null = null
+  let seenUser = false
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it === undefined || isToolGroup(it)) continue
+    const block = it as Block
+    if (block.type === "user") {
+      // Close out the previous turn (if any) by flushing its trailing
+      // assistant. The first user message has nothing to flush — it
+      // opens turn 1.
+      if (seenUser && pendingAssistantIdx !== null) {
+        out.push(pendingAssistantIdx)
+      }
+      out.push(i)
+      seenUser = true
+      pendingAssistantIdx = null
+    } else if (block.type === "assistant") {
+      // Only track assistants that follow at least one user message —
+      // pre-user "leading" assistant blocks (e.g. resume-banner synthetic
+      // text) don't belong to any user-led turn.
+      if (seenUser) pendingAssistantIdx = i
+    }
+  }
+  // Flush the final turn's trailing assistant (the "final answer").
+  if (seenUser && pendingAssistantIdx !== null) out.push(pendingAssistantIdx)
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -183,22 +336,16 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
     })
   )
 
-  // Stage 4 (parallel): indices in `grouped()` that are top-level user or
-  // assistant blocks — the hop targets for Ctrl+, / Ctrl+. Tool groups,
-  // standalone tool blocks, thinking, system, compact, shell, error, plan,
-  // and resume-summary blocks are skipped (they're noise between turns).
-  // Streaming partial assistant turns count: the assistant block exists in
-  // committed() the moment text_delta lands, before turn_complete.
-  const messageHopIndices = createMemo(() => {
-    const arr = grouped()
-    const out: number[] = []
-    for (let i = 0; i < arr.length; i++) {
-      const it = arr[i]
-      if (it === undefined) continue
-      if (!isToolGroup(it) && isMessageBlock(it as Block)) out.push(i)
-    }
-    return out
-  })
+  // Hop anchor sets are computed on demand in the keypress handler (see
+  // `pickAllMessageHopIndices` and `pickTurnAnchorHopIndices` above the
+  // component). No memo wrappers: SolidJS's `createMemo` is eager, so a
+  // memo here would recompute on every grouped() invalidation (every
+  // streaming text_delta, turn_start, turn_complete, …) but the result is
+  // only ever read on a Ctrl+,/. or Ctrl+Shift+(Cmd+)J/K keypress —
+  // ~100x more recomputes than reads. Computing in the handler is O(n)
+  // over grouped() per keypress; n is small (50–500 items in long
+  // conversations), so this is microseconds — and we trade the wasted
+  // streaming-time recomputes for a single computation per actual hop.
 
   // Line-buffered streaming text: only show text up to the last newline.
   // Hides the in-progress partial line so text streams line-by-line, not
@@ -386,13 +533,38 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
         queueMicrotask(() => scrollboxRef?.scrollBy(999999))
       }
     }
-    // Conversation scroll — Ctrl+Up/Down (arrows).
-    if (event.ctrl && event.name === "up") {
+    // Conversation scroll — Ctrl+J (down) / Ctrl+K (up), vim convention.
+    //
+    // Plain Ctrl (no shift / option / meta / super); Ctrl+Shift+J/K is
+    // reserved for the message-hop binding below (one granularity up).
+    //
+    // We rely on this handler running BEFORE the focused textarea's
+    // renderable handlers (OpenTUI dispatches global `useKeyboard` listeners
+    // first, then renderable handlers). `event.preventDefault()` here stops
+    // the textarea's built-in Ctrl+K → delete-to-line-end and any
+    // Ctrl+J → newline interpretation in one step. Disambiguation requires
+    // the Kitty keyboard protocol (enabled in app.tsx); on plain Terminal.app
+    // these bindings silently no-op (Ctrl+J arrives as a `linefeed` event).
+    if (
+      event.ctrl &&
+      !event.shift &&
+      !event.option &&
+      !event.meta &&
+      !event.super &&
+      event.name === "k"
+    ) {
       event.preventDefault()
       scrollboxRef?.scrollBy(-3)
       setScrolledAway(true)
     }
-    if (event.ctrl && event.name === "down") {
+    if (
+      event.ctrl &&
+      !event.shift &&
+      !event.option &&
+      !event.meta &&
+      !event.super &&
+      event.name === "j"
+    ) {
       event.preventDefault()
       scrollboxRef?.scrollBy(3)
       if (scrollboxRef && isNearBottom(scrollboxRef)) {
@@ -416,23 +588,31 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
     // message-type wrapper at hop-time, so the math is independent of view
     // level (collapsed / expanded / show_all) — the user-or-assistant block
     // identity is what's invariant, not the rendered noise around it.
-    const hopDir = matchMessageHopKey(event)
-    if (hopDir !== null && scrollboxRef) {
+    const hop = matchMessageHopKey(event)
+    if (hop !== null && scrollboxRef) {
       event.preventDefault()
-      const idxs = messageHopIndices()
+      // Mode picks the anchor set: "any" hops every user/assistant message;
+      // "turn-anchors" hops user msgs + each turn's trailing assistant
+      // (Ctrl+Shift+Cmd+J/K — skip mid-turn replies). Computed on the spot
+      // — see the comment near the top of the component for why these
+      // aren't memos.
+      const items = grouped()
+      const idxs = hop.mode === "turn-anchors"
+        ? pickTurnAnchorHopIndices(items)
+        : pickAllMessageHopIndices(items)
       const anchorYs: number[] = []
       for (const i of idxs) {
         const el = scrollboxRef.findDescendantById(messageAnchorId(i))
         if (el) anchorYs.push(el.y)
       }
-      const target = pickMessageHopTarget(anchorYs, scrollboxRef.viewport.y, hopDir)
+      const target = pickMessageHopTarget(anchorYs, scrollboxRef.viewport.y, hop.dir)
       if (target === null) {
         // Empty conversation — nothing to hop to.
-      } else if (target.kind === "edge" && hopDir === "prev") {
+      } else if (target.kind === "edge" && hop.dir === "prev") {
         // At/above the first message — scroll to the very top.
         scrollboxRef.scrollTo(0)
         setScrolledAway(true)
-      } else if (target.kind === "edge" && hopDir === "next") {
+      } else if (target.kind === "edge" && hop.dir === "next") {
         // At/below the last message — scroll to the bottom and re-engage
         // sticky-bottom if we land within the near-bottom threshold.
         scrollboxRef.scrollBy({ x: 0, y: 999999 })
@@ -448,7 +628,7 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
         // the near-bottom threshold (short tail content), re-engage sticky
         // so streaming text continues to follow. Otherwise treat the hop as
         // a deliberate move-away (mirrors Ctrl+Up's behaviour).
-        if (hopDir === "next" && isNearBottom(scrollboxRef)) {
+        if (hop.dir === "next" && isNearBottom(scrollboxRef)) {
           setScrolledAway(false)
         } else {
           setScrolledAway(true)
@@ -530,7 +710,8 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
               `scrollboxRef.findDescendantById(messageAnchorId(index))`. The id
               is purely a function of position (Index keys positionally) — the
               hop logic only consults wrappers whose underlying block is a
-              user-or-assistant message (see `messageHopIndices`). */}
+              user-or-assistant message (see `pickAllMessageHopIndices` and
+              `pickTurnAnchorHopIndices`). */}
           <box flexDirection="column">
             <Index each={grouped()}>
               {(item, index) => {

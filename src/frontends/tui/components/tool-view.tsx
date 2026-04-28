@@ -7,6 +7,7 @@
 
 import { createSignal, createEffect, createMemo, onCleanup, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { Block } from "../../../protocol/types"
 import { colors } from "../theme/tokens"
 import { formatDuration } from "../../../utils/format"
@@ -18,6 +19,42 @@ import { isMcpTool, parseMcpToolName } from "./mcp-tool-view"
 import { buildUnifiedDiff, looksLikeUnifiedDiff } from "../../../utils/format-diff"
 
 export type ViewLevel = "collapsed" | "expanded" | "show_all"
+
+// ---------------------------------------------------------------------------
+// Truncation budgets — sized off the live terminal width so tool-call lines
+// fill the screen on wide terminals instead of getting cropped at a fixed
+// 60/80/100/120-char point. Kept on a single line in all cases (tool-call
+// details are low-importance — wrapping them would burn vertical space).
+// ---------------------------------------------------------------------------
+
+/** Floor: never go narrower than this. Below this we'd just show ellipses. */
+export const TOOL_MIN_BUDGET = 20
+/** Ceiling: don't expand past this even on ultra-wide terminals — printing
+ *  200+ chars of a shell command isn't useful information. */
+export const TOOL_MAX_BUDGET = 200
+/** Reserved trailing chars for the optional " 1234.5ms" duration suffix. */
+const DURATION_RESERVE = 12
+
+/** Budget for the primary-arg slot inside `<icon>  <Tool>(<arg>) <duration>`. */
+export function computeArgBudget(termWidth: number, toolNameLen: number): number {
+  // 2 (icon column) + toolName + 2 (parens) + DURATION_RESERVE + 2 (safety)
+  const overhead = 2 + toolNameLen + 2 + DURATION_RESERVE + 2
+  return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth - overhead))
+}
+
+/** Budget for the result line `  ⎿  <text>`. */
+export function computeSummaryBudget(termWidth: number): number {
+  // 2 (paddingLeft) + 4 ("⎿  ") + 2 (safety)
+  const overhead = 8
+  return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth - overhead))
+}
+
+/** Budget for the error line `  ⎿  ✗ <text>`. */
+export function computeErrorBudget(termWidth: number): number {
+  // 2 (paddingLeft) + 6 ("⎿  ✗ ") + 2 (safety)
+  const overhead = 10
+  return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth - overhead))
+}
 
 // ---------------------------------------------------------------------------
 // ToolBlockView — renders a single tool block
@@ -149,6 +186,14 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
   // the throttled version updates at most every 100ms.
   const status = createThrottledValue(() => b().status)
 
+  // Live terminal width — drives all per-line truncation budgets so tool
+  // calls expand to fill wide terminals instead of capping at 60/80/100.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+  const argBudget = createMemo(() => computeArgBudget(termWidth(), b().tool.length))
+  const summaryBudget = createMemo(() => computeSummaryBudget(termWidth()))
+  const errorBudget = createMemo(() => computeErrorBudget(termWidth()))
+
   // Elapsed time signal for running tools — updates every second
   const [elapsed, setElapsed] = createSignal(0)
   let elapsedTimer: ReturnType<typeof setInterval> | undefined
@@ -172,29 +217,32 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
     if (elapsedTimer) clearInterval(elapsedTimer)
   })
 
-  /** Primary arg for the tool invocation display: ToolName(arg) */
+  /** Primary arg for the tool invocation display: ToolName(arg).
+   *  Budget scales with the live terminal width so the line uses available
+   *  space on wide terminals instead of capping at a hard 60/80 chars. */
   const primaryArg = createMemo(() => {
     const inp = b().input as Record<string, unknown> | null
     if (!inp) return ""
+    const max = argBudget()
     if (inp.file_path) {
       const raw = String(inp.file_path)
       const cwd = process.cwd()
       const rel = raw.startsWith(cwd + "/") ? raw.slice(cwd.length + 1) : raw
-      return truncatePathMiddle(rel, 60)
+      return truncatePathMiddle(rel, max)
     }
     if (inp.command) {
-      return truncateToWidth(String(inp.command), 80)
+      return truncateToWidth(String(inp.command), max)
     }
     if (inp.pattern) {
       const p = String(inp.pattern)
       const path = inp.path ? ` in ${inp.path}` : ""
-      return truncateToWidth(p + path, 80)
+      return truncateToWidth(p + path, max)
     }
     if (inp.description) {
-      return truncateToWidth(String(inp.description), 80)
+      return truncateToWidth(String(inp.description), max)
     }
     if (inp.query) {
-      return truncateToWidth(String(inp.query), 80)
+      return truncateToWidth(String(inp.query), max)
     }
     return ""
   })
@@ -206,13 +254,14 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
     return colors.status.success
   }
 
-  /** Brief result summary for the ⎿ line */
+  /** Brief result summary for the ⎿ line. Budget tracks terminal width. */
   const resultSummary = createMemo(() => {
     if (status() === "running") return ""
     if (b().error) return ""
     const out = b().output ?? ""
     if (!out) return ""
 
+    const max = summaryBudget()
     // Generate summary based on tool type
     switch (b().tool) {
       case "Read": {
@@ -224,17 +273,19 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
       case "Edit":
         return `Edited ${primaryArg()}`
       case "Bash": {
-        // Show first line of output, truncated
+        // Show first line of output, truncated to fit terminal
         const firstLine = out.split("\n")[0] ?? ""
-        return firstLine.length > 100 ? firstLine.slice(0, 97) + "..." : firstLine
+        return truncateToWidth(firstLine, max)
       }
       case "Glob":
       case "Grep": {
         const lines = out.trim().split("\n").filter(l => l.trim()).length
         return `${lines} result${lines === 1 ? "" : "s"}`
       }
-      default:
-        return out.length > 100 ? out.slice(0, 97) + "..." : out.split("\n")[0] ?? ""
+      default: {
+        const firstLine = out.split("\n")[0] ?? ""
+        return truncateToWidth(firstLine, max)
+      }
     }
   })
 
@@ -324,9 +375,7 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
       <Show when={b().error && !isUserDecline(b().error!)}>
         <box paddingLeft={2}>
           <text fg={colors.status.error}>
-            {"\u23BF  \u2717 " + (b().error!.split("\n")[0]!.length > 100
-              ? b().error!.split("\n")[0]!.slice(0, 97) + "..."
-              : b().error!.split("\n")[0]!)}
+            {"\u23BF  \u2717 " + truncateToWidth(b().error!.split("\n")[0]!, errorBudget())}
           </text>
         </box>
       </Show>
@@ -346,22 +395,24 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
 // Tool summary — collapsed view aggregation (matches Claude Code)
 // ---------------------------------------------------------------------------
 
-/** Extract the primary argument from a tool block's input */
-function extractPrimaryArg(_tool: string, input: unknown): string {
+/** Extract the primary argument from a tool block's input.
+ *  `maxWidth` is the budget (chars). Sized off live terminal width by the
+ *  caller — see `ToolSummaryView` below. */
+function extractPrimaryArg(_tool: string, input: unknown, maxWidth: number): string {
   const inp = input as Record<string, unknown> | null
   if (!inp) return ""
   if (inp.file_path && typeof inp.file_path === "string") {
     const raw = inp.file_path
     const cwd = process.cwd()
     const rel = raw.startsWith(cwd + "/") ? raw.slice(cwd.length + 1) : raw
-    return truncatePathMiddle(rel, 60)
+    return truncatePathMiddle(rel, maxWidth)
   }
   if (inp.command && typeof inp.command === "string") {
-    return truncateToWidth(inp.command, 60)
+    return truncateToWidth(inp.command, maxWidth)
   }
-  if (inp.pattern && typeof inp.pattern === "string") return inp.pattern
-  if (inp.query && typeof inp.query === "string") return truncateToWidth(inp.query, 60)
-  if (inp.description && typeof inp.description === "string") return truncateToWidth(inp.description, 60)
+  if (inp.pattern && typeof inp.pattern === "string") return truncateToWidth(inp.pattern, maxWidth)
+  if (inp.query && typeof inp.query === "string") return truncateToWidth(inp.query, maxWidth)
+  if (inp.description && typeof inp.description === "string") return truncateToWidth(inp.description, maxWidth)
   return ""
 }
 
@@ -437,16 +488,27 @@ export function ToolSummaryView(props: { tools: ToolBlock[] }) {
   })
   onCleanup(() => { if (tickTimer) clearInterval(tickTimer) })
 
+  // Live terminal width — drives the per-line arg budget so summary lines
+  // expand on wide terminals instead of cropping at 60 chars.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+
   /** Build per-tool summary lines with status icon prefix for instant scannability.
    *  Each line: "checkmark ToolName arg -- hint" or "ellipsis ToolName arg... (5s)"
    *  Uses getStatusConfig() from design system primitives for consistent icon/color pairing. */
   const toolLines = createMemo(() => {
     const now = tick() // subscribe to tick for reactivity
+    const w = termWidth()
     return props.tools.map(tool => {
-      const arg = extractPrimaryArg(tool.tool, tool.input)
-      const argSuffix = arg ? ` ${arg}` : ""
-
       const verb = toolVerb(tool.tool, tool.status === "running")
+      // Layout: `<padding-2> <icon-2> <verb> <arg> <suffix>`. Reserve
+      // ~SUFFIX_RESERVE chars for the trailing hint / progress text so the
+      // full line still fits on one row of the terminal.
+      const SUFFIX_RESERVE = 30
+      const overhead = 2 + 2 + verb.length + 1 + SUFFIX_RESERVE
+      const argMax = Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, w - overhead))
+      const arg = extractPrimaryArg(tool.tool, tool.input, argMax)
+      const argSuffix = arg ? ` ${arg}` : ""
 
       if (tool.status === "running") {
         const elapsed = Math.floor((now - tool.startTime) / 1000)

@@ -9,6 +9,7 @@
 
 import { createSignal, createEffect, createMemo, onCleanup, Show, For } from "solid-js"
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { Block, SkillToolUse } from "../../../protocol/types"
 import { colors } from "../theme/tokens"
 import { BlinkingDot } from "./primitives"
@@ -16,6 +17,7 @@ import { truncateToWidth } from "../../../utils/truncate"
 import { formatDuration } from "../../../utils/format"
 import { isUserDecline } from "./tool-view"
 import type { ViewLevel } from "./tool-view"
+import { TOOL_MIN_BUDGET, TOOL_MAX_BUDGET, computeSummaryBudget, computeErrorBudget } from "./tool-view"
 import { createThrottledValue } from "../../../utils/throttled-value"
 
 export type SkillToolBlock = Extract<Block, { type: "tool" }>
@@ -49,6 +51,18 @@ export function SkillToolView(props: {
 }) {
   const b = () => props.block
   const status = createThrottledValue(() => b().status)
+
+  // Live terminal width — drives all per-line truncation budgets.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+  const summaryBudget = createMemo(() => computeSummaryBudget(termWidth()))
+  const errorBudget = createMemo(() => computeErrorBudget(termWidth()))
+  // Header `<dot-2> Skill <name> <args> <duration>`. Reserve room for the
+  // skill name (~20 chars) and duration (~12 chars).
+  const headerArgsBudget = createMemo(() => {
+    const overhead = 2 + 5 + 1 + 20 + 1 + 12 + 2
+    return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth() - overhead))
+  })
 
   // Elapsed time for running skills
   const [elapsed, setElapsed] = createSignal(0)
@@ -98,13 +112,13 @@ export function SkillToolView(props: {
     return getLastNLines(out, 3)
   })
 
-  // Completion summary: first meaningful line of output
+  // Completion summary: first meaningful line of output, sized to terminal.
   const completionSummary = createMemo(() => {
     if (status() === "running") return ""
     const out = b().output ?? ""
     if (!out) return ""
     const firstLine = out.split("\n").find(l => l.trim()) ?? ""
-    return firstLine.length > 120 ? firstLine.slice(0, 117) + "..." : firstLine
+    return truncateToWidth(firstLine, summaryBudget())
   })
 
   return (
@@ -124,7 +138,7 @@ export function SkillToolView(props: {
         </Show>
         <Show when={skillArgs()}>
           <text fg={colors.text.muted}>
-            {" " + truncateToWidth(skillArgs(), 60)}
+            {" " + truncateToWidth(skillArgs(), headerArgsBudget())}
           </text>
         </Show>
         <Show when={status() === "running" && elapsed() > 0}>
@@ -205,9 +219,7 @@ export function SkillToolView(props: {
       <Show when={b().error && !isUserDecline(b().error!)}>
         <box paddingLeft={2}>
           <text fg={colors.status.error}>
-            {"\u23BF  \u2717 " + (b().error!.split("\n")[0]!.length > 100
-              ? b().error!.split("\n")[0]!.slice(0, 97) + "..."
-              : b().error!.split("\n")[0]!)}
+            {"\u23BF  \u2717 " + truncateToWidth(b().error!.split("\n")[0]!, errorBudget())}
           </text>
         </box>
       </Show>
@@ -229,6 +241,16 @@ export function CollapsedSkillLine(props: {
 }) {
   const b = () => props.block
   const status = createThrottledValue(() => b().status)
+
+  // Live terminal width — drives label/hint truncation.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+  const labelBudget = createMemo(() => {
+    // `<dot-2> Skill <name> <hint>`. Reserve ~30 for hint.
+    const overhead = 2 + 6 + 30 + 2
+    return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth() - overhead))
+  })
+  const hintBudget = createMemo(() => Math.max(TOOL_MIN_BUDGET, Math.floor(labelBudget() / 2)))
 
   // Elapsed time
   const [elapsed, setElapsed] = createSignal(0)
@@ -277,7 +299,7 @@ export function CollapsedSkillLine(props: {
     const out = b().output ?? ""
     if (out) {
       const firstLine = out.split("\n").find(l => l.trim()) ?? ""
-      const truncated = firstLine.length > 50 ? firstLine.slice(0, 47) + "..." : firstLine
+      const truncated = truncateToWidth(firstLine, hintBudget())
       return truncated ? ` — ${truncated}` : ""
     }
     return ""
@@ -285,7 +307,7 @@ export function CollapsedSkillLine(props: {
 
   const label = createMemo(() => {
     const name = skillName()
-    return name ? `Skill ${truncateToWidth(name, 60)}` : "Skill"
+    return name ? `Skill ${truncateToWidth(name, labelBudget())}` : "Skill"
   })
 
   return (

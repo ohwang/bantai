@@ -12,6 +12,7 @@
 
 import { createSignal, createEffect, createMemo, onCleanup, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { Block } from "../../../protocol/types"
 import { colors } from "../theme/tokens"
 import { BlinkingDot } from "./primitives"
@@ -20,6 +21,7 @@ import { formatDuration } from "../../../utils/format"
 import { isUserDecline } from "./tool-view"
 import { createThrottledValue } from "../../../utils/throttled-value"
 import type { ViewLevel } from "./tool-view"
+import { TOOL_MIN_BUDGET, TOOL_MAX_BUDGET, computeSummaryBudget, computeErrorBudget } from "./tool-view"
 
 export type McpToolBlock = Extract<Block, { type: "tool" }>
 
@@ -99,6 +101,18 @@ export function McpToolView(props: {
   const b = () => props.block
   const status = createThrottledValue(() => b().status)
 
+  // Live terminal width — drives all per-line truncation budgets.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+  const summaryBudget = createMemo(() => computeSummaryBudget(termWidth()))
+  const errorBudget = createMemo(() => computeErrorBudget(termWidth()))
+  // Header `<dot-2> <server> › <tool>(<arg>) <duration>`. Server + tool +
+  // separator can be ~30 chars, plus ~12 for duration, plus parens/buffer.
+  const argBudget = createMemo(() => {
+    const overhead = 2 + 30 + 4 + 12 + 2
+    return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth() - overhead))
+  })
+
   // Elapsed time for running tools
   const [elapsed, setElapsed] = createSignal(0)
   let elapsedTimer: ReturnType<typeof setInterval> | undefined
@@ -121,21 +135,24 @@ export function McpToolView(props: {
   const parsed = createMemo(() => parseMcpToolName(b().tool))
   const displayTool = createMemo(() => formatToolName(parsed().tool))
 
-  /** Extract a primary argument hint from the MCP tool input */
+  /** Extract a primary argument hint from the MCP tool input.
+   *  Budget tracks the live terminal width. */
   const primaryArg = createMemo(() => {
     const inp = b().input as Record<string, unknown> | null
     if (!inp) return ""
+    const max = argBudget()
     // Common MCP tool input patterns
-    if (inp.query && typeof inp.query === "string") return truncateToWidth(inp.query, 60)
+    if (inp.query && typeof inp.query === "string") return truncateToWidth(inp.query, max)
     if (inp.last_n) return `last ${inp.last_n}`
     if (inp.level && typeof inp.level === "string") return inp.level
-    if (inp.pattern && typeof inp.pattern === "string") return truncateToWidth(inp.pattern, 60)
-    if (inp.url && typeof inp.url === "string") return truncateToWidth(inp.url, 60)
-    if (inp.path && typeof inp.path === "string") return truncateToWidth(inp.path, 60)
-    // Generic: show first string value that's short enough to be informative
+    if (inp.pattern && typeof inp.pattern === "string") return truncateToWidth(inp.pattern, max)
+    if (inp.url && typeof inp.url === "string") return truncateToWidth(inp.url, max)
+    if (inp.path && typeof inp.path === "string") return truncateToWidth(inp.path, max)
+    // Generic: show first string value that's short enough to be informative.
+    // Use the same `max` budget so the line stays on a single row.
     for (const [, v] of Object.entries(inp)) {
-      if (typeof v === "string" && v.length > 0 && v.length <= 60) {
-        return truncateToWidth(v, 60)
+      if (typeof v === "string" && v.length > 0 && v.length <= max) {
+        return truncateToWidth(v, max)
       }
     }
     return ""
@@ -155,13 +172,13 @@ export function McpToolView(props: {
     return getLastNLines(out, 3)
   })
 
-  // Completion summary: first meaningful line of output
+  // Completion summary: first meaningful line of output, sized to terminal.
   const completionSummary = createMemo(() => {
     if (status() === "running") return ""
     const out = b().output ?? ""
     if (!out) return ""
     const firstLine = out.split("\n").find(l => l.trim()) ?? ""
-    return firstLine.length > 120 ? firstLine.slice(0, 117) + "..." : firstLine
+    return truncateToWidth(firstLine, summaryBudget())
   })
 
   return (
@@ -228,9 +245,7 @@ export function McpToolView(props: {
       <Show when={b().error && !isUserDecline(b().error!)}>
         <box paddingLeft={2}>
           <text fg={colors.status.error}>
-            {"\u23BF  \u2717 " + (b().error!.split("\n")[0]!.length > 100
-              ? b().error!.split("\n")[0]!.slice(0, 97) + "..."
-              : b().error!.split("\n")[0]!)}
+            {"\u23BF  \u2717 " + truncateToWidth(b().error!.split("\n")[0]!, errorBudget())}
           </text>
         </box>
       </Show>
@@ -255,6 +270,16 @@ export function CollapsedMcpLine(props: {
 }) {
   const b = () => props.block
   const status = createThrottledValue(() => b().status)
+
+  // Live terminal width — drives hint truncation so the inline output
+  // snippet fills wide terminals instead of capping at 50 chars.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+  const hintBudget = createMemo(() => {
+    // `<dot-2> <server> › <tool> — <hint>`. Server + tool + separator ≈ 30.
+    const overhead = 2 + 30 + 4 + 2
+    return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth() - overhead))
+  })
 
   // Elapsed time
   const [elapsed, setElapsed] = createSignal(0)
@@ -297,7 +322,7 @@ export function CollapsedMcpLine(props: {
     const out = b().output ?? ""
     if (out) {
       const firstLine = out.split("\n").find(l => l.trim()) ?? ""
-      const truncated = firstLine.length > 50 ? firstLine.slice(0, 47) + "..." : firstLine
+      const truncated = truncateToWidth(firstLine, hintBudget())
       return truncated ? ` \u2014 ${truncated}` : ""
     }
     return ""

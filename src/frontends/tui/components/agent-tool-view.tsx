@@ -11,6 +11,7 @@
 
 import { createSignal, createEffect, createMemo, onCleanup, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { Block, TaskInfo } from "../../../protocol/types"
 import { colors } from "../theme/tokens"
 import { BlinkingDot } from "./primitives"
@@ -18,18 +19,19 @@ import { truncateToWidth } from "../../../utils/truncate"
 import { formatDuration } from "../../../utils/format"
 import { useMessages } from "../context/messages"
 import type { ViewLevel } from "./tool-view"
+import { TOOL_MIN_BUDGET, TOOL_MAX_BUDGET, computeSummaryBudget, computeErrorBudget } from "./tool-view"
 import { createThrottledValue } from "../../../utils/throttled-value"
 
 export type AgentToolBlock = Extract<Block, { type: "tool" }>
 
-/** Extract the subagent description from the Agent tool input */
+/** Extract the subagent description from the Agent tool input.
+ *  Returns the raw string — caller is responsible for terminal-aware
+ *  truncation, since width depends on render context. */
 function extractAgentDescription(input: unknown): string {
   const inp = input as Record<string, unknown> | null
   if (!inp) return ""
   if (inp.description && typeof inp.description === "string") return inp.description
-  if (inp.prompt && typeof inp.prompt === "string") {
-    return inp.prompt.length > 80 ? inp.prompt.slice(0, 77) + "..." : inp.prompt
-  }
+  if (inp.prompt && typeof inp.prompt === "string") return inp.prompt
   return ""
 }
 
@@ -68,6 +70,20 @@ export function AgentToolView(props: {
   const status = createThrottledValue(() => b().status)
   const { state } = useMessages()
   const task = createMemo(() => findMatchingTask(state.activeTasks, b()))
+
+  // Live terminal width — drives all per-line truncation budgets so the
+  // header, progress, completion, and error lines fill wide terminals
+  // instead of capping at fixed 70/100/120 chars.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+  const summaryBudget = createMemo(() => computeSummaryBudget(termWidth()))
+  const errorBudget = createMemo(() => computeErrorBudget(termWidth()))
+  // Header is `<dot-2> <typeLabel> <description> <duration>`. typeLabel is
+  // typically short (~10 chars). Reserve room for both label and duration.
+  const headerArgBudget = createMemo(() => {
+    const overhead = 2 + 12 + 1 + 12 + 2
+    return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth() - overhead))
+  })
 
   // Elapsed time for running agents
   const [elapsed, setElapsed] = createSignal(0)
@@ -110,25 +126,27 @@ export function AgentToolView(props: {
     return "Thinking..."
   })
 
-  // Progress summary: AI-generated or last output snippet
+  // Progress summary: AI-generated or last output snippet.
+  // Indented 4 chars under the header, so budget = termWidth - 4 - buffer.
   const progressText = createMemo(() => {
     const t = task()
     if (!t) return ""
-    if (t.summary) return truncateToWidth(t.summary, 100)
+    const max = Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth() - 6))
+    if (t.summary) return truncateToWidth(t.summary, max)
     if (t.output && t.status === "running") {
-      return truncateToWidth(t.output, 100)
+      return truncateToWidth(t.output, max)
     }
     return ""
   })
 
-  // Completion summary for done agents
+  // Completion summary for done agents — single line under `⎿  `.
   const completionSummary = createMemo(() => {
     if (status() === "running") return ""
     const out = b().output ?? ""
     if (!out) return ""
-    // Show first meaningful line, truncated
+    // Show first meaningful line, truncated to fit terminal
     const firstLine = out.split("\n").find(l => l.trim()) ?? ""
-    return firstLine.length > 120 ? firstLine.slice(0, 117) + "..." : firstLine
+    return truncateToWidth(firstLine, summaryBudget())
   })
 
   // Agent type label for display
@@ -151,7 +169,7 @@ export function AgentToolView(props: {
         </text>
         <Show when={description()}>
           <text fg={colors.text.secondary}>
-            {" " + truncateToWidth(description(), 70)}
+            {" " + truncateToWidth(description(), headerArgBudget())}
           </text>
         </Show>
         <Show when={status() === "running" && elapsed() > 0}>
@@ -218,9 +236,7 @@ export function AgentToolView(props: {
       <Show when={b().error}>
         <box paddingLeft={2}>
           <text fg={colors.status.error}>
-            {"\u23BF  \u2717 " + (b().error!.split("\n")[0]!.length > 100
-              ? b().error!.split("\n")[0]!.slice(0, 97) + "..."
-              : b().error!.split("\n")[0]!)}
+            {"\u23BF  \u2717 " + truncateToWidth(b().error!.split("\n")[0]!, errorBudget())}
           </text>
         </box>
       </Show>
@@ -236,6 +252,19 @@ export function CollapsedAgentLine(props: {
   const status = createThrottledValue(() => b().status)
   const { state } = useMessages()
   const task = createMemo(() => findMatchingTask(state.activeTasks, b()))
+
+  // Live terminal width — drives label/hint truncation so the collapsed
+  // line uses available width on wide terminals.
+  const dims = useTerminalDimensions()
+  const termWidth = createMemo(() => dims()?.width ?? 80)
+  // Layout: `<dot-2> <label> <hint>`. Reserve ~30 chars for hint.
+  const labelBudget = createMemo(() => {
+    const overhead = 2 + 30 + 2
+    return Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, termWidth() - overhead))
+  })
+  // Hint truncation is for the inline output snippet `— foo bar baz`. Use
+  // about half the labelBudget so neither side dominates the line.
+  const hintBudget = createMemo(() => Math.max(TOOL_MIN_BUDGET, Math.floor(labelBudget() / 2)))
 
   // Elapsed time
   const [elapsed, setElapsed] = createSignal(0)
@@ -276,7 +305,7 @@ export function CollapsedAgentLine(props: {
     const out = b().output ?? ""
     if (out) {
       const firstLine = out.split("\n").find(l => l.trim()) ?? ""
-      const truncated = firstLine.length > 50 ? firstLine.slice(0, 47) + "..." : firstLine
+      const truncated = truncateToWidth(firstLine, hintBudget())
       return truncated ? ` — ${truncated}` : ""
     }
     return ""
@@ -290,7 +319,7 @@ export function CollapsedAgentLine(props: {
     const t = agentType()
     const prefix = t ? `${t.charAt(0).toUpperCase() + t.slice(1)}` : "Agent"
     const desc = description()
-    return desc ? `${prefix} ${truncateToWidth(desc, 60)}` : prefix
+    return desc ? `${prefix} ${truncateToWidth(desc, labelBudget())}` : prefix
   })
 
   return (

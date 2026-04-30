@@ -45,6 +45,16 @@ interface TokenSample {
 // ---------------------------------------------------------------------------
 
 /**
+ * Debounce window for the async git refresh. Bursts of triggers (e.g. five
+ * Edit tools fired in quick succession) collapse to a single git invocation
+ * ~250ms after the last trigger. Tuned to be longer than the time between
+ * back-to-back tool completions in a typical multi-edit turn (tens of ms)
+ * but shorter than human perception of "stale" (~500ms) — the user sees
+ * the dirty count update right around the natural pause between tool batches.
+ */
+const GIT_REFRESH_DEBOUNCE_MS = 250
+
+/**
  * Git status snapshot. Both the legacy aggregate counts (`modified`,
  * `untracked`, `ahead`, `hasUpstream`) and the richer posh-git-style split
  * (`staged`, `working`, `behind`, `detached`, `conflict`) are populated so
@@ -75,18 +85,34 @@ export interface GitInfo {
  * Snapshot git status in one invocation using `--porcelain=v2 --branch`.
  * Matches the logic of the external statusline script so the native preset
  * can reproduce the `[branch ↑↓ idx wt]` segment bit-for-bit.
+ *
+ * Async by design — `git status` on a large repo can take 100ms-1s, and
+ * the previous `Bun.spawnSync` blocked the TUI's main loop on every
+ * RUNNING→IDLE transition (one freeze per turn). With `Bun.spawn` the
+ * status bar paints "stale" git state for the few hundred ms the spawn
+ * needs to resolve, then updates the signal — render thread stays free.
+ *
+ * Parses the same v2-porcelain format the external bash statusline
+ * consumes, so the native preset's `[branch ↑↓ idx wt]` segment renders
+ * bit-for-bit identical. Tested branches:
+ *   `# branch.head <name>`  — current branch (or `(detached)`)
+ *   `# branch.ab +A -B`     — ahead/behind upstream
+ *   `1 xy …`                — tracked file with index/worktree status xy
+ *   `2 xy …`                — rename/copy with index/worktree status xy
+ *   `u …`                   — unmerged (conflict)
+ *   `? …`                   — untracked
  */
-function getGitInfo(): GitInfo | null {
+async function getGitInfoAsync(): Promise<GitInfo | null> {
   try {
-    const result = Bun.spawnSync([
-      "git",
-      "--no-optional-locks",
-      "status",
-      "--porcelain=v2",
-      "--branch",
+    const proc = Bun.spawn(
+      ["git", "--no-optional-locks", "status", "--porcelain=v2", "--branch"],
+      { stdout: "pipe", stderr: "ignore" },
+    )
+    const [out, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
     ])
-    if (result.exitCode !== 0) return null
-    const out = result.stdout.toString()
+    if (exitCode !== 0) return null
     if (!out) return null
 
     let branch = ""
@@ -134,14 +160,15 @@ function getGitInfo(): GitInfo | null {
 
     if (branch === "(detached)") {
       detached = true
-      const headResult = Bun.spawnSync([
-        "git",
-        "--no-optional-locks",
-        "rev-parse",
-        "--short",
-        "HEAD",
+      const headProc = Bun.spawn(
+        ["git", "--no-optional-locks", "rev-parse", "--short", "HEAD"],
+        { stdout: "pipe", stderr: "ignore" },
+      )
+      const [shaOut, shaExit] = await Promise.all([
+        new Response(headProc.stdout).text(),
+        headProc.exited,
       ])
-      const sha = headResult.stdout.toString().trim()
+      const sha = shaExit === 0 ? shaOut.trim() : ""
       branch = sha ? `(${sha})` : "(detached)"
     }
 
@@ -315,16 +342,90 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
   const dims = useTerminalDimensions()
   const projectName = path.basename(process.cwd())
 
-  // -- Git info (refreshed on RUNNING -> IDLE edge) --
-  const [gitInfo, setGitInfo] = createSignal<GitInfo | null>(getGitInfo())
+  // -- Git info -----------------------------------------------------------
+  //
+  // Refresh triggers (each schedules a debounced async git spawn — the spawn
+  // itself never blocks the TUI render loop, see getGitInfoAsync):
+  //
+  //   1. On mount             — first paint shows real git state shortly
+  //                             after, instead of nothing-then-stale.
+  //   2. RUNNING → IDLE       — turn finished; the agent's writes (if any)
+  //                             are now reflected on disk.
+  //   3. Mid-turn tool finish — when a tool block transitions out of the
+  //                             `running` state, schedule a refresh so the
+  //                             user sees dirty count grow during long
+  //                             multi-edit turns instead of waiting for
+  //                             turn end.
+  //
+  // Coalescing: a `GIT_REFRESH_DEBOUNCE_MS` window collapses bursts of
+  // triggers (e.g. ten Edit tools in a row) into a single git invocation
+  // ~250ms after the last trigger. A monotonic sequence number guards
+  // against an old in-flight result clobbering a newer one (e.g. a slow
+  // git on a huge repo finishing AFTER a faster post-edit refresh).
+  const [gitInfo, setGitInfo] = createSignal<GitInfo | null>(null)
+  let gitDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  let gitRefreshSeq = 0
+  function scheduleGitRefresh(): void {
+    if (gitDebounceTimer) clearTimeout(gitDebounceTimer)
+    gitDebounceTimer = setTimeout(() => {
+      gitDebounceTimer = null
+      const seq = ++gitRefreshSeq
+      void getGitInfoAsync().then((info) => {
+        // Latest-wins: drop the result if a newer refresh has been kicked
+        // off (or settled) since this one started.
+        if (seq !== gitRefreshSeq) return
+        setGitInfo(info)
+      })
+    }, GIT_REFRESH_DEBOUNCE_MS)
+  }
+  onCleanup(() => {
+    if (gitDebounceTimer) clearTimeout(gitDebounceTimer)
+    // Bump the sequence so any in-flight async result resolves into the
+    // void (the equality check above drops it).
+    gitRefreshSeq++
+  })
+
+  // Trigger 1: kick off the initial refresh on mount.
+  scheduleGitRefresh()
+
+  // Trigger 2: RUNNING → IDLE edge.
   let prevStateForGit: string = state.sessionState
   createEffect(() => {
     const current = state.sessionState
     if (current === "IDLE" && prevStateForGit === "RUNNING") {
-      setGitInfo(getGitInfo())
+      scheduleGitRefresh()
     }
     prevStateForGit = current
   })
+
+  // Trigger 3: tool block transitions out of "running". We count tool
+  // blocks whose status is anything other than "running" — every tool
+  // completion (success / error / cancel) bumps the count by one. The
+  // memo recomputes whenever `messagesState.blocks` mutates, but its
+  // value-equality check means the effect only fires on actual transitions
+  // — text_delta and tool_use_progress events that don't change the
+  // count are no-ops. `defer: true` skips the effect's initial firing
+  // so a session resume with N pre-existing done tools doesn't trigger
+  // a redundant git refresh on top of the on-mount refresh above.
+  const completedToolCount = createMemo(() => {
+    let n = 0
+    for (const b of messagesState.blocks) {
+      if (b.type === "tool" && b.status !== "running") n++
+    }
+    return n
+  })
+  createEffect(
+    on(
+      completedToolCount,
+      () => {
+        // Only refresh during RUNNING — at IDLE the RUNNING→IDLE trigger
+        // above already fired (or is about to), and an extra refresh would
+        // just duplicate work.
+        if (state.sessionState === "RUNNING") scheduleGitRefresh()
+      },
+      { defer: true },
+    ),
+  )
 
   // -- Token-rate tracking + terminal progress --
   const [tokPerSec, setTokPerSec] = createSignal(0)

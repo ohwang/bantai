@@ -554,7 +554,7 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
       event.name === "k"
     ) {
       event.preventDefault()
-      scrollboxRef?.scrollBy(-3)
+      scrollboxRef?.scrollBy(-1)
       setScrolledAway(true)
     }
     if (
@@ -566,7 +566,7 @@ export function ConversationView(props: { children?: JSX.Element; footerHint?: s
       event.name === "j"
     ) {
       event.preventDefault()
-      scrollboxRef?.scrollBy(3)
+      scrollboxRef?.scrollBy(1)
       if (scrollboxRef && isNearBottom(scrollboxRef)) {
         setScrolledAway(false)
       }

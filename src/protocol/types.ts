@@ -461,6 +461,31 @@ export type BackendSpecificEvent = {
 }
 
 /**
+ * Authenticated-account snapshot (login email, organization, subscription
+ * tier, OAuth/API-key source). The Claude adapter emits this once per
+ * session — typically a few hundred ms after `session_init`, when the SDK's
+ * out-of-band `accountInfo()` control request resolves. The reducer folds
+ * the payload into `state.session.account`; the TUI banner picks up the
+ * fields it knows about.
+ *
+ * Why a separate event (rather than enriching `session_init`):
+ *   1. `session_init` arrives synchronously from the SDK's first stream
+ *      message — at that point `accountInfo()` hasn't been called yet, and
+ *      blocking the init event on the control round-trip would visibly
+ *      delay the first paint of the conversation.
+ *   2. Other backends (Codex, ACP) might learn account details mid-session
+ *      via their own out-of-band paths; a dedicated event keeps the protocol
+ *      adapter-agnostic.
+ *
+ * Repeat events overwrite the previous snapshot (re-auth, /switch to a
+ * different account). A `null` `account` clears the slot (logout).
+ */
+export type AccountUpdateEvent = {
+  type: "account_update"
+  account: AccountInfo | null
+}
+
+/**
  * Rate-limit / subscription-usage update.
  *
  * Emitted whenever a backend reports a new usage snapshot. Claude's SDK
@@ -601,6 +626,7 @@ export type AgentEvent =
   | ConfigOptionsEvent
   | SkillToolActivityEvent
   | RateLimitUpdateEvent
+  | AccountUpdateEvent
   | WorktreeCreatedEvent
   | WorktreeRemovedEvent
   | CwdChangedEvent
@@ -1267,8 +1293,34 @@ export interface ModelInfo {
   contextWindow?: number
 }
 
+/**
+ * Account information for the authenticated user. Mirrors the Claude Agent
+ * SDK's own `AccountInfo` shape (returned by `query.accountInfo()`) so that
+ * the Claude adapter can forward it verbatim. Other backends populate the
+ * subset they have — most can fill `email` and a tier label.
+ *
+ * Field reference (Claude Agent SDK ≥ 0.2.62):
+ *   - email             — login email (e.g. "alice@example.com")
+ *   - organization      — display name of the org the account belongs to
+ *   - subscriptionType  — "pro" | "max" | "team" | "enterprise" (raw label
+ *                         from the SDK; rendered as "Claude Pro" / "Claude
+ *                         Max" / etc. in the header banner)
+ *   - tokenSource       — where the active OAuth/API key was sourced from
+ *   - apiKeySource      — sub-detail: "user" | "project" | "org" |
+ *                         "temporary" | "oauth"
+ *
+ * `plan` is kept as an alias for backwards compatibility with adapters that
+ * already populate a generic tier label without distinguishing the SDK's
+ * `subscriptionType`. New code should prefer `subscriptionType`.
+ */
 export interface AccountInfo {
   email?: string
+  organization?: string
+  subscriptionType?: string
+  tokenSource?: string
+  apiKeySource?: string
+  /** @deprecated Use `subscriptionType`. Retained so older payloads keep
+   *  rendering until all callers migrate. */
   plan?: string
 }
 

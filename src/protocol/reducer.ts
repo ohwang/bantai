@@ -112,13 +112,25 @@ export function reduce(
       const fallbackModel = event.models?.[0]
       const nextCurrentModel =
         activeModel?.name ?? fallbackModel?.name ?? next.currentModel
+
+      // Account precedence:
+      //   1. `event.account` if the backend included one in session_init
+      //      (some adapters do — e.g. ACP backends that learn account
+      //      details up-front during the initialize handshake).
+      //   2. Otherwise keep whatever `account_update` already populated.
+      //      The Claude adapter fires `accountInfo()` out-of-band; it can
+      //      resolve before OR after session_init depending on warm-start
+      //      timing, and an empty session_init must NOT clobber a fresh
+      //      account snapshot the user is already looking at.
+      const nextAccount = event.account ?? next.session?.account
+
       return {
         ...next,
         sessionState: "IDLE",
         session: {
           tools: event.tools,
           models: event.models,
-          account: event.account,
+          account: nextAccount,
           sessionId: event.sessionId,
         },
         currentModel: nextCurrentModel,
@@ -1144,9 +1156,19 @@ export function reduce(
       //    computed utilization yet.
       //  - `status` gives us a best-effort floor when neither number is set:
       //    rejected ⇒ 100%, allowed_warning ⇒ 80% (conservative estimate).
+      //  - `status === "allowed"` with no other numeric signal means "we know
+      //    this bucket exists and you're nowhere near the threshold" — which
+      //    is *most* of the time. The Claude SDK's `me4()` only computes
+      //    utilization when the threshold detector fires, so under-threshold
+      //    snapshots arrive with status:"allowed" and nothing else. We treat
+      //    that as 0%: not literally accurate (real usage is somewhere between
+      //    0% and the next-higher threshold), but rendering "5h: 0%" is
+      //    strictly better than the previous "drop the event silently",
+      //    which left the status bar slot blank forever.
       //
-      // If we can't derive any usedPercentage, we drop the update — the status
-      // bar has no meaningful way to render "unknown %" alongside real numbers.
+      // If we can't derive any usedPercentage AND don't even know the status
+      // is "allowed", we drop the update — the status bar has no meaningful
+      // way to render "unknown %" alongside real numbers.
       let usedPct: number | undefined
       if (typeof event.utilization === "number") {
         usedPct = event.utilization * 100
@@ -1156,6 +1178,11 @@ export function reduce(
         usedPct = 100
       } else if (event.status === "allowed_warning") {
         usedPct = 80
+      } else if (event.status === "allowed") {
+        // Known bucket, under all thresholds. Populate the slot at 0% so the
+        // status bar can show "5h: 0%" rather than nothing — confirms the
+        // SDK is wired up even when utilization is unreported.
+        usedPct = 0
       }
       if (usedPct === undefined) return next
 
@@ -1179,6 +1206,30 @@ export function reduce(
         if (!rl[strategy.slot]) rl[strategy.slot] = entry
       }
       next.rateLimits = rl
+      return next
+    }
+
+    case "account_update": {
+      // Out-of-band account snapshot from a backend's `accountInfo()` control
+      // request (Claude SDK) or equivalent. Folds into `state.session.account`
+      // so the TUI banner can render email + subscription tier + OAuth source
+      // without waiting for `session_init` (which arrives before the SDK's
+      // accountInfo control round-trip resolves).
+      //
+      // `null` clears the slot (logout / re-auth-without-account).
+      if (next.session) {
+        next.session = { ...next.session, account: event.account ?? undefined }
+      } else {
+        // Account update arrived before `session_init` — stash a minimal
+        // session metadata so we don't lose the data. The next `session_init`
+        // will refill `tools` / `models` / `sessionId` and overwrite this
+        // shell.
+        next.session = {
+          tools: [],
+          models: [],
+          account: event.account ?? undefined,
+        }
+      }
       return next
     }
 

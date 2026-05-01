@@ -92,16 +92,45 @@ export function HeaderBar() {
       ? `${ctxWindow / 1_000_000}M context`
       : `${ctxWindow / 1_000}K context`
 
-    // Build the model info line
-    const parts = [friendly, `(${ctxLabel})`]
-
-    const plan = state.session?.account?.plan
-    if (plan) parts.push(`- ${plan}`)
-
-    return parts.join(" ")
+    return `${friendly} (${ctxLabel})`
   }
 
-  // Text info lines aligned to logo rows (3 rows)
+  // ---------------------------------------------------------------------
+  // Account banner line
+  //
+  // Banner format:
+  //   "Claude Pro · alice@example.com · org: Acme Inc · auth: oauth"
+  //
+  // The banner is a separate line below the working directory so the model
+  // line can stay tight (Claude Code mixes them, which we deliberately
+  // don't — bantai is multi-backend and the auth source is more relevant
+  // here than next to the model name).
+  //
+  // Hidden until at least one field is populated. The Claude adapter's
+  // out-of-band `accountInfo()` call (see ClaudeAdapter.fetchAndEmitAccountInfo)
+  // emits an `account_update` event a few hundred ms after session start;
+  // until then the banner is just absent rather than showing placeholder
+  // text that would later flicker into real values.
+  // ---------------------------------------------------------------------
+  const accountBannerLine = () => {
+    const a = state.session?.account
+    if (!a) return ""
+    const parts: string[] = []
+    // Subscription tier (preferred) → falls back to legacy `plan`.
+    const tier = a.subscriptionType ?? a.plan
+    if (tier) parts.push(formatSubscriptionLabel(tier))
+    if (a.email) parts.push(a.email)
+    if (a.organization) parts.push(`org: ${a.organization}`)
+    // Show OAuth / API-key source so it's obvious whether the user is on
+    // a personal subscription, an org token, or a project-pinned key.
+    const authLabel = a.tokenSource ?? a.apiKeySource
+    if (authLabel) parts.push(`auth: ${authLabel}`)
+    return parts.join("  ·  ")
+  }
+
+  // Text info lines aligned to logo rows (3 rows), plus an optional 4th
+  // account-banner row that pads the logo column with spaces so the cat
+  // doesn't shift when account info arrives.
   return (
     <box flexDirection="column" flexShrink={0}>
       {/* Row 0: head + tail + app name + version */}
@@ -120,6 +149,41 @@ export function HeaderBar() {
         <text fg={colors.accent.logo}>{LOGO_LINES[2]}</text>
         <text fg={colors.text.secondary}>{projectPath() + worktreeLabel()}</text>
       </box>
+      {/* Row 3: account banner — only when populated. The leading spaces
+          align the text under the logo's right edge so the visual rhythm
+          of rows 0–2 carries into row 3. */}
+      {accountBannerLine() && (
+        <box flexDirection="row">
+          <text fg={colors.text.muted}>{"          "}</text>
+          <text fg={colors.text.muted}>{accountBannerLine()}</text>
+        </box>
+      )}
     </box>
   )
+}
+
+/**
+ * Render a friendly subscription label for the header banner. The Claude
+ * SDK reports `pro` / `max` / `team` / `enterprise` as a raw lowercase id;
+ * the banner reads better as "Claude Pro" / "Claude Max" etc.
+ *
+ * Other backends (Codex, ACP) generally don't report a subscription tier,
+ * so the unknown branch returns the raw value capitalised — better than
+ * dropping data we don't recognise.
+ */
+function formatSubscriptionLabel(tier: string): string {
+  const lower = tier.toLowerCase()
+  switch (lower) {
+    case "pro":
+      return "Claude Pro"
+    case "max":
+      return "Claude Max"
+    case "team":
+      return "Claude Team"
+    case "enterprise":
+      return "Claude Enterprise"
+    default:
+      // Capitalise the first letter so e.g. "starter" → "Starter".
+      return lower.charAt(0).toUpperCase() + lower.slice(1)
+  }
 }

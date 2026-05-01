@@ -162,6 +162,26 @@ function computeRatePace(
   }
 }
 
+/**
+ * Debug-mode placeholder rendered in place of a `RateEntry` when the SDK
+ * hasn't emitted a `rate_limit_event` for that bucket yet. Format:
+ *
+ *   5h:—   7d:—
+ *
+ * The em-dash signals "no data" without pretending we have a 0% reading.
+ * Once we trust the SDK is reliably emitting non-zero utilization, the
+ * preset's `showFiveHour` / `showSevenDay` memos can revert to the
+ * data-gated form and this component becomes unreachable.
+ */
+function RatePlaceholder(props: { label: string }): JSX.Element {
+  return (
+    <box flexDirection="row">
+      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{`${props.label}:`}</text>
+      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{"—"}</text>
+    </box>
+  )
+}
+
 function RateEntry(props: {
   label: string
   entry: RateLimitEntry
@@ -204,14 +224,20 @@ function ClaudeCompatStatusBar(props: StatusBarPresetProps) {
 
   const gitAvailable = () => data.gitInfo() !== null
 
-  // Rate-limit visibility (5h hidden when < 50% used, 7d always shown) —
-  // matches the external bash statusline's `render_rate_entry` wiring.
-  const showFiveHour = createMemo(() => {
-    const fh = data.rawRateLimits()?.fiveHour
-    if (!fh) return false
-    return fh.usedPercentage >= 50
-  })
-  const showSevenDay = createMemo(() => !!data.rawRateLimits()?.sevenDay)
+  // Rate-limit visibility:
+  //   - 5h: ALWAYS shown (debug mode) — when no data has arrived yet, render
+  //         a placeholder so it's obvious at a glance whether the SDK has
+  //         emitted any `rate_limit_event` for this session. Once we trust
+  //         the SDK is reliably emitting non-zero utilization, restore the
+  //         original "≥ 50% used" gate (see commit history).
+  //   - 7d: shown whenever the SDK reports it.
+  //
+  // (Original behaviour matched the external bash statusline's
+  // `render_rate_entry` wiring, which hid 5h below 50% to keep the status
+  // line short. Bantai is debugging whether the event arrives at all, so
+  // we want the segment present even at 0% / unknown.)
+  const showFiveHour = createMemo(() => true)
+  const showSevenDay = createMemo(() => true)
 
   return (
     <box flexDirection="column">
@@ -309,25 +335,43 @@ function ClaudeCompatStatusBar(props: StatusBarPresetProps) {
             </Show>
           </Show>
 
-          {/* Rate limits — 5h (when ≥50%) and 7d, with pace coloring */}
+          {/* Rate limits — both 5h and 7d always rendered (debug mode);
+              when no data has arrived yet for a slot we show "—" so it's
+              obvious whether the SDK has emitted any rate_limit_event. */}
           <Show when={showFiveHour() || showSevenDay()}>
             <text fg={colors.text.secondary}>{"  "}</text>
             <Show when={showFiveHour()}>
-              <RateEntry
-                label="5h"
-                entry={data.rawRateLimits()!.fiveHour!}
-                windowMinsOverride={300}
-              />
+              <Show
+                when={data.rawRateLimits()?.fiveHour}
+                keyed
+                fallback={<RatePlaceholder label="5h" />}
+              >
+                {(fh: RateLimitEntry) => (
+                  <RateEntry
+                    label="5h"
+                    entry={fh}
+                    windowMinsOverride={300}
+                  />
+                )}
+              </Show>
             </Show>
             <Show when={showFiveHour() && showSevenDay()}>
               <text fg={colors.text.secondary}>{" "}</text>
             </Show>
             <Show when={showSevenDay()}>
-              <RateEntry
-                label="7d"
-                entry={data.rawRateLimits()!.sevenDay!}
-                windowMinsOverride={10080}
-              />
+              <Show
+                when={data.rawRateLimits()?.sevenDay}
+                keyed
+                fallback={<RatePlaceholder label="7d" />}
+              >
+                {(sd: RateLimitEntry) => (
+                  <RateEntry
+                    label="7d"
+                    entry={sd}
+                    windowMinsOverride={10080}
+                  />
+                )}
+              </Show>
             </Show>
           </Show>
         </box>

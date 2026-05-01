@@ -41,6 +41,14 @@ export function getDiagnosticsSdkMcpConfig(): McpSdkServerConfigWithInstance | n
   _sdkConfig = createSdkMcpServer({
     name: "bantai-diagnostics",
     version: "0.0.1",
+    // Diagnostic tools are introspection primitives — small, read-only, and
+    // most useful when the model can reach for them without a tool-search
+    // round-trip. Opt out of the SDK's default tool-search deferral
+    // (introduced in 0.2.121) so the 5 tools stay always-loaded in the
+    // prompt. Crossagent (`src/subagents/mcp-tools.ts`) intentionally does
+    // NOT set this — its 6 spawn/control tools are advanced delegation
+    // features and benefit from tool-search gating.
+    alwaysLoad: true,
     tools: [
       tool("get_state", "Read your own session state — lifecycle stage, model, token/cost usage, rate limits, and errors. Use this to understand where you are in a conversation.", {}, async () => getState(), { annotations: READONLY_ANNOTATIONS }),
       tool("get_conversation", "Read your own conversation history as the user sees it — messages, tool uses, thinking blocks, and errors. Use this to review what has happened so far.", {

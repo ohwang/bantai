@@ -62,6 +62,13 @@ export interface BantaiConfig {
   showCost?: boolean
   showTokens?: boolean
   debug?: boolean
+  /**
+   * Provider config for the bantai-internal LLM service (summaries, titles,
+   * recaps, compaction). Validated lazily by `src/services/llm/config.ts` —
+   * we keep the type loose here so a malformed/forward-compatible block in
+   * the settings file never crashes startup.
+   */
+  llm?: Record<string, unknown>
   /** Array settings — merged + deduplicated across scopes. */
   permissions?: string[]
   mcpServers?: Record<string, unknown>
@@ -130,6 +137,7 @@ const SCALAR_KEYS = [
   "showCost",
   "showTokens",
   "debug",
+  "llm",
 ] as const
 
 // ---------------------------------------------------------------------------
@@ -349,6 +357,7 @@ export function coerceSettingValue(key: keyof BantaiConfig, raw: string): unknow
       }
       return trimmed
     }
+    case "llm":
     case "statusLine":
     case "permissions":
     case "mcpServers": {

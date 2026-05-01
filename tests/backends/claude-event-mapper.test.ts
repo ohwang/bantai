@@ -1514,10 +1514,28 @@ describe("Claude Event Mapper — mapSDKMessage", () => {
       expect(ev.rateLimitType).toBe("seven_day_opus")
     })
 
-    it("falls back to backend_specific when rateLimitType is missing/unknown", () => {
+    it("drops rate_limit_event silently when rateLimitType is missing", () => {
+      // The SDK emits a status:"allowed" snapshot whenever the user is far
+      // below all thresholds — `me4()` only sets `rateLimitType` when the
+      // threshold detector fires. Dropping these (logged at info, not warn)
+      // is correct: we have no actionable data to fold and the
+      // `backend_specific` fallback would clutter the event log with one
+      // entry per Anthropic API roundtrip.
       const msg = {
         type: "rate_limit_event",
         rate_limit_info: { remaining: 100 },
+      }
+      const events = mapSDKMessage(msg, freshState())
+      expect(events).toHaveLength(0)
+    })
+
+    it("routes truly unknown rateLimitType to backend_specific", () => {
+      // An id we don't recognise (not abbreviated form, not a canonical
+      // bucket id) is genuinely a protocol-shape change — keep the raw
+      // payload on backend_specific so it surfaces in diagnostics.
+      const msg = {
+        type: "rate_limit_event",
+        rate_limit_info: { rateLimitType: "future_window_id", remaining: 100 },
       }
       const events = mapSDKMessage(msg, freshState())
 
@@ -1525,6 +1543,26 @@ describe("Claude Event Mapper — mapSDKMessage", () => {
       expect(events[0]!.type).toBe("backend_specific")
       expect((events[0] as any).backend).toBe("claude")
       expect((events[0] as any).data).toBe(msg)
+    })
+
+    it("normalises abbreviated rateLimitType (5h / 7d) to canonical id", () => {
+      // The SDK's `representative-claim` HTTP header sometimes arrives
+      // abbreviated (`5h` / `7d` / `overage`); the bantai event-mapper
+      // must accept both shapes so it can fold the snapshot into the
+      // reducer rather than dropping it as `backend_specific`.
+      const events = mapSDKMessage(
+        {
+          type: "rate_limit_event",
+          rate_limit_info: { rateLimitType: "5h", utilization: 0.12 },
+        },
+        freshState(),
+      )
+
+      expect(events).toHaveLength(1)
+      const ev = events[0]! as any
+      expect(ev.type).toBe("rate_limit_update")
+      expect(ev.rateLimitType).toBe("five_hour")
+      expect(ev.utilization).toBe(0.12)
     })
   })
 

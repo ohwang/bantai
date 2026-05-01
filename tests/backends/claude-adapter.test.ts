@@ -430,7 +430,13 @@ describe("ClaudeAdapter", () => {
       expect(ev.source).toBe("claude")
     })
 
-    it("maps rate_limit_event without a rateLimitType to backend_specific for diagnostics", () => {
+    it("drops rate_limit_event without a rateLimitType — common low-usage case", () => {
+      // The SDK only sets `rate_limit_info.rateLimitType` when the
+      // threshold detector fires; under-threshold snapshots arrive with
+      // status:"allowed" and nothing else. We log them at info but emit
+      // no event — there's no actionable bucket to fold and routing them
+      // to `backend_specific` would clutter the event log with one entry
+      // per Anthropic API roundtrip.
       const streamState = new ToolStreamState()
       const events = mapSDKMessage({
         type: "rate_limit_event",
@@ -438,6 +444,18 @@ describe("ClaudeAdapter", () => {
         uuid: "test",
         session_id: "test",
       }, streamState)
+      expect(events).toHaveLength(0)
+    })
+
+    it("routes truly unknown rateLimitType (not abbreviated, not canonical) to backend_specific", () => {
+      const streamState = new ToolStreamState()
+      const msg = {
+        type: "rate_limit_event",
+        rate_limit_info: { rateLimitType: "future_bucket_id", retry_after: 5 },
+        uuid: "test",
+        session_id: "test",
+      }
+      const events = mapSDKMessage(msg, streamState)
 
       expect(events).toHaveLength(1)
       const ev = events[0]! as EventOf<"backend_specific">

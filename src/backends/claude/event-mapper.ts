@@ -12,6 +12,41 @@ import { extractUserMessageText } from "./jsonl-shapes"
 import { isKnownRateLimitBucket } from "../../protocol/rate-limits"
 
 // ---------------------------------------------------------------------------
+// Rate-limit bucket normalization (Claude SDK)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Claude SDK's `representative-claim` HTTP header sometimes arrives in
+ * abbreviated form (`5h` / `7d` / `overage`) — the SDK's bundled CLI
+ * (`me4()` in `cli.js`) sets `rateLimitType` to that raw header value when
+ * the threshold-detector path doesn't fire. The threshold path uses
+ * canonical ids (`five_hour` / `seven_day` / `overage`), so two shapes
+ * coexist on the same wire field.
+ *
+ * The `RC9` mapping inside the SDK does this normalization internally, but
+ * it's only consulted in the threshold-detector path. We replicate it here
+ * so the bantai event-mapper accepts both shapes — otherwise abbreviated
+ * snapshots silently route to `backend_specific` and the rate-limit reducer
+ * never sees them.
+ *
+ * Returns the input unchanged when it's:
+ *   - a canonical id we already know (`five_hour`, `seven_day{,_opus,_sonnet}`,
+ *     `overage`, `primary`, `secondary`)
+ *   - an unknown string (caller validates against the registry)
+ *   - undefined / non-string (caller handles the absence)
+ */
+const CLAUDE_BUCKET_ABBREV_TO_ID: Record<string, string> = {
+  "5h": "five_hour",
+  "7d": "seven_day",
+  "7d_opus": "seven_day_opus",
+  "7d_sonnet": "seven_day_sonnet",
+}
+function normalizeClaudeRateLimitBucket(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw
+  return CLAUDE_BUCKET_ABBREV_TO_ID[raw] ?? raw
+}
+
+// ---------------------------------------------------------------------------
 // TodoWrite tool_use -> todos_updated synthesis
 // ---------------------------------------------------------------------------
 //
@@ -1004,8 +1039,25 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
       // error. Forward as a typed rate_limit_update so the reducer can fold
       // it into ConversationState.rateLimits.
       const info = (msg.rate_limit_info ?? {}) as Record<string, unknown>
-      log.debug("Rate limit info", { data: info })
-      const rateLimitType = info.rateLimitType
+      // Bumped to INFO during the rate-limit debugging effort: this fires at
+      // most once per response from Anthropic (the SDK only re-emits when
+      // the snapshot changes), so the volume is bounded — and seeing the raw
+      // shape in the session log lets us correlate "5h:— in the status bar"
+      // with whatever the SDK is actually delivering.
+      log.info("Claude SDK rate_limit_event received", { data: info })
+
+      const rawType = info.rateLimitType
+      // The SDK's `representative-claim` HTTP header sometimes arrives in
+      // abbreviated form (`5h` / `7d` / `overage`) rather than the canonical
+      // wire id (`five_hour` / `seven_day` / `overage`). Both shapes appear
+      // in the SDK's bundled CLI, so normalise here BEFORE the registry
+      // check — otherwise an abbreviated value silently lands in
+      // backend_specific and the reducer never sees it.
+      const rateLimitType = normalizeClaudeRateLimitBucket(rawType)
+      if (rawType !== rateLimitType) {
+        log.info("Normalized abbreviated rateLimitType", { from: rawType, to: rateLimitType })
+      }
+
       // Validate against the central rate-limit bucket registry (Cluster 9).
       // The Claude SDK currently emits five_hour / seven_day{,_opus,_sonnet} /
       // overage; if it ever starts emitting `primary` / `secondary` (or any
@@ -1026,10 +1078,23 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
           overageDisabledReason: typeof info.overageDisabledReason === "string" ? info.overageDisabledReason : undefined,
           source: "claude",
         })
+      } else if (rateLimitType === undefined) {
+        // SDK emitted a `rate_limit_event` with no `rateLimitType` at all.
+        // This is the COMMON CASE when the user is far below all thresholds:
+        // Anthropic's response headers don't include a `representative-claim`
+        // and the SDK's `me4()` only sets `rateLimitType` when the threshold
+        // detector returns truthy. We can't infer which bucket the snapshot
+        // describes, so we drop it (logged at info above) — but we avoid
+        // routing to `backend_specific`, which would clutter the event log
+        // with an event the reducer can't act on.
+        log.info(
+          "rate_limit_event with no rateLimitType — usage below thresholds, no action",
+        )
       } else {
-        // Missing / unknown rateLimitType — keep the raw payload around via
-        // backend_specific so we can diagnose upstream shape changes.
-        log.warn("rate_limit_event without a recognizable rateLimitType", { rateLimitType, info })
+        // Truly unknown id (not abbreviated form, not a known canonical id).
+        // Keep the raw payload around via backend_specific so we can
+        // diagnose upstream shape changes.
+        log.warn("rate_limit_event with unrecognized rateLimitType", { rateLimitType, info })
         events.push({
           type: "backend_specific",
           backend: "claude",

@@ -405,6 +405,17 @@ export class ClaudeAdapter implements AgentBackend {
       // Signal readiness — replay stashed, SDK query kicked off, message
       // iterable listening. /switch awaits this before returning.
       this.markReady()
+
+      // Out-of-band: ask the SDK for the authenticated account snapshot
+      // (email / organization / subscription tier / token source). The
+      // SDK's stream `system/init` message does NOT include `account` —
+      // the data lives in the `accountInfo()` control response and the
+      // `initializationResult()` response. We fire-and-forget so the
+      // request can't block first paint of the conversation.
+      //
+      // Nice-to-have, not load-bearing — failures land in the log at
+      // warn level and the TUI banner falls back to the bare model line.
+      void this.fetchAndEmitAccountInfo()
     } catch (err) {
       this.rejectReady(err)
       throw err
@@ -900,6 +911,76 @@ export class ClaudeAdapter implements AgentBackend {
         payload: { options, warmFallbackReason: message },
       })
       return this.sdk.query({ prompt, options })
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Private: out-of-band account snapshot
+  // -----------------------------------------------------------------------
+
+  /**
+   * Fetch the authenticated account snapshot via the SDK's `accountInfo()`
+   * control request and push it onto the active event channel as an
+   * `account_update` event.
+   *
+   * Why call it explicitly: the SDK's stream `system/init` message does not
+   * include account info — that lives only on the control-response side
+   * (`SDKControlInitializeResponse.account` / `Query.accountInfo()`). Without
+   * this call, `state.session.account` stays `undefined` for the entire
+   * session and the header banner can't render `email · subscription`.
+   *
+   * Race with `iterateQuery`: this method races against the background SDK
+   * loop that creates the channel. If the channel hasn't been instantiated
+   * by the time the response lands, we briefly poll (up to ~2s) before
+   * giving up. Failure is non-fatal — header just falls back to the bare
+   * model line.
+   */
+  private async fetchAndEmitAccountInfo(): Promise<void> {
+    const query = this.activeQuery
+    if (!query) return
+    try {
+      const sdkAccount = await query.accountInfo()
+      if (this.closed || !sdkAccount) return
+
+      // Wait briefly for iterateQuery to instantiate the event channel —
+      // accountInfo() races startup, and emitting before the consumer is
+      // wired up would drop the event silently.
+      const deadline = Date.now() + 2_000
+      while (!this.eventChannel && !this.closed && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      if (this.closed || !this.eventChannel) {
+        log.warn("ClaudeAdapter: account_update dropped — no event channel", {
+          haveAccount: !!sdkAccount,
+        })
+        return
+      }
+
+      log.info("ClaudeAdapter: account info captured", {
+        email: sdkAccount.email,
+        organization: sdkAccount.organization,
+        subscriptionType: sdkAccount.subscriptionType,
+        tokenSource: sdkAccount.tokenSource,
+        apiKeySource: sdkAccount.apiKeySource,
+      })
+      this.eventChannel.push({
+        type: "account_update",
+        account: {
+          email: sdkAccount.email,
+          organization: sdkAccount.organization,
+          subscriptionType: sdkAccount.subscriptionType,
+          tokenSource: sdkAccount.tokenSource,
+          apiKeySource: sdkAccount.apiKeySource,
+          // Backwards-compatibility alias: a few callsites still read
+          // `account.plan`. Mirror `subscriptionType` into it so legacy
+          // code keeps rendering until the migration completes.
+          plan: sdkAccount.subscriptionType,
+        },
+      })
+    } catch (err) {
+      log.warn("ClaudeAdapter: accountInfo() failed", {
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 

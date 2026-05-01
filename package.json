@@ -33,7 +33,7 @@
     "version:major": "bash scripts/bump-version.sh major"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.120",
+    "@anthropic-ai/claude-agent-sdk": "0.2.126",
     "@openai/codex-sdk": "^0.125.0",
     "@opentui/core": "^0.1.100",
     "@opentui/solid": "^0.1.100",

@@ -1167,6 +1167,22 @@ export class ClaudeAdapter implements AgentBackend {
       includePartialMessages: true,
       ...(config.thinking ? { thinking: config.thinking } : {}),
       ...(config.effort ? { effort: config.effort } : {}),
+      // Operator escape hatch for the SDK's broken native-binary resolver.
+      // The SDK ships per-libc native packages and tries `-musl` before
+      // `-x64` via require.resolve(); on a glibc host with bun (which
+      // installs both optional deps because both match `cpu=x64,os=linux`)
+      // the resolve succeeds for -musl and spawn() fails at first query
+      // with "Claude Code native binary not found at .../-x64-musl/claude".
+      // The cringle.ai infra Dockerfile installs a known-good binary at
+      // /usr/local/bin/claude (symlinked to /opt/bantai's SDK-bundled
+      // glibc copy); the launcher.sh exports BANTAI_CLAUDE_CODE_EXECUTABLE
+      // pointing at it so this branch wins over the SDK's resolver.
+      // Honors a caller-set value first (config.pathToClaudeCodeExecutable
+      // would route through here too if we ever surface it on
+      // SessionConfig), env var second, undefined (SDK default) last.
+      ...(process.env.BANTAI_CLAUDE_CODE_EXECUTABLE
+        ? { pathToClaudeCodeExecutable: process.env.BANTAI_CLAUDE_CODE_EXECUTABLE }
+        : {}),
       // Per-session env for per-channel isolation (Slack frontend S7):
       // the SDK merges this on top of process.env, so we only need to
       // forward the delta here.

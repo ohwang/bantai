@@ -9,7 +9,7 @@
  * features (owner column, blocked indicators, activity description).
  * See team/backlog/task-view.md §4 for the rendering spec.
  *
- *  ✔ Completed task      (green check, strikethrough + dim)
+ *  ✔ Completed task      (green check, dim)
  *  ◼ In-progress task    (claude orange, bold)
  *  ◻ Pending task        (default color, normal)
  *   … +1 in progress, 2 pending, 5 completed   (dim hidden-summary)
@@ -358,10 +358,7 @@ function TaskRow(props: { status: TodoItem["status"]; subject: string }): JSX.El
     <box flexDirection="row">
       <Show when={props.status === "completed"}>
         <text fg={colors.status.success}>{ICON_COMPLETED + " "}</text>
-        <text
-          fg={colors.text.secondary}
-          attributes={TextAttributes.STRIKETHROUGH | TextAttributes.DIM}
-        >
+        <text fg={colors.text.secondary} attributes={TextAttributes.DIM}>
           {props.subject}
         </text>
       </Show>

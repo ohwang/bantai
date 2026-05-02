@@ -5,6 +5,18 @@
  * answer from `backend.sideQuery()` into a parallel ephemeral store —
  * NEVER reduces into main `ConversationState`, NEVER persists to JSONL.
  *
+ * Layout (post-feedback, 2026-05):
+ *   - Banner rows merge the title / dismiss-hint with the horizontal rule
+ *     onto a single row each (no more title-on-top / divider-below split,
+ *     no blank padding above the title or below the footer).
+ *   - The answer body is independently scrollable via `<ScrollView>` so
+ *     long answers don't push the dismiss footer off-screen.
+ *   - The view is strictly text-only: tool_use_* and permission_request
+ *     events are dropped with a warn (the Claude adapter already filters
+ *     them upstream, but the component is the second guard); thinking
+ *     content is not accumulated or rendered — the side chat view shows
+ *     the assistant's reply text and nothing else.
+ *
  * MVP scope (per team/backlog/side-chat-overlay.md MVP):
  *   - Single overlay (no tabs); architecture leaves Map<id, …> room for tabs.
  *   - `Esc` cancels the in-flight side turn AND dismisses the overlay in one
@@ -26,11 +38,11 @@ import {
   batch,
   type Accessor,
 } from "solid-js"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { colors } from "../theme/tokens"
 import { getSyntaxStyle } from "../theme/syntax"
-import { Divider } from "./primitives"
+import { ScrollView } from "./scroll-view"
 import type { AgentBackend } from "../../../protocol/types"
 import { log } from "../../../utils/logger"
 
@@ -46,8 +58,6 @@ export interface SideChatTab {
   question: string
   /** Streamed answer chunks accumulated in order. */
   answer: string
-  /** Streamed thinking chunks (collapsed in MVP — kept for future expansion). */
-  thinking: string
   status: "running" | "done" | "error" | "aborted"
   error?: string
 }
@@ -83,7 +93,6 @@ export function openSideChatOverlay(
     id,
     question,
     answer: "",
-    thinking: "",
     status: "running",
   })
 
@@ -109,8 +118,13 @@ export function openSideChatOverlay(
             })
             break
           case "thinking_delta":
-            batch(() => {
-              setActiveTab({ ...tab, thinking: tab.thinking + event.text })
+            // Side chat is strictly text-only — thinking content is never
+            // surfaced to the user. The Claude adapter still emits these
+            // events for parity with the main turn shape; we drop them at
+            // the component as the second guard. Logged at debug so a
+            // future regression is traceable.
+            log.debug("side chat: dropping thinking_delta", {
+              chars: event.text?.length ?? 0,
             })
             break
           case "turn_start":
@@ -129,6 +143,21 @@ export function openSideChatOverlay(
                 error: event.message,
               })
             })
+            break
+          case "permission_request":
+          case "tool_use_start":
+          case "tool_use_progress":
+          case "tool_use_end":
+            // The Claude adapter's sideQuery() runs the fork in dontAsk
+            // mode with an empty allowedTools list — the model cannot
+            // invoke tools and these events should never reach us. If one
+            // does (e.g. a future backend wires sideQuery without the
+            // allowlist), drop it loudly so the leak surfaces in logs
+            // rather than turning into rendered noise the user can see.
+            log.warn(
+              "side chat: tool/permission event leaked into overlay — dropping",
+              { eventType: event.type, sideTabId: id },
+            )
             break
           default:
             log.debug("side chat: ignoring non-side event in overlay", {
@@ -177,8 +206,8 @@ export function closeSideChatOverlay(reason: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Status line shown in the overlay header. `running` reads as a spinner
- * verb to make it obvious the stream hasn't stalled.
+ * Status line shown in the top banner. `running` reads as a spinner verb
+ * to make it obvious the stream hasn't stalled.
  */
 function statusLabel(tab: SideChatTab): string {
   switch (tab.status) {
@@ -193,10 +222,27 @@ function statusLabel(tab: SideChatTab): string {
   }
 }
 
+const DASH = "─"
+
+/** Pre-allocated dash string longer than any realistic terminal width. */
+const DASH_FILL = DASH.repeat(512)
+
 export function SideChatOverlay() {
-  // Local Esc-handler. Runs alongside the global keyboard intercept; the
-  // root handler in app.tsx only takes Esc when no overlay is registered,
-  // so we register ourselves here and own the dismiss path.
+  // Scrollbox ref — populated by the ScrollView's ref callback below.
+  // Used by the keyboard handler to forward pgup / pgdn / ctrl+J/K to the
+  // answer body's scrollbox while the input textarea retains keyboard focus.
+  let scrollRef: ScrollBoxRenderable | undefined
+  // Track whether the user has scrolled away from the bottom. Mirrors the
+  // main conversation pane's behaviour: while at the bottom we keep
+  // sticky-scroll engaged so streaming chunks pull the view down; once the
+  // user pgups, we release sticky-scroll so they can read history without
+  // being yanked back on every text_delta.
+  const [scrolledAway, setScrolledAway] = createSignal(false)
+
+  // Local key handler. Runs alongside the global keyboard intercept; the
+  // root handler in app.tsx doesn't have a side-chat branch, so we register
+  // ourselves here and own dismiss + scroll bindings. Mounted only while
+  // the overlay is visible (the parent gates with <Show when={isSideChatOpen()}>).
   // MVP: single Esc cancels in-flight turn AND dismisses overlay.
   // Spec calls for double-Esc (first cancels, second dismisses); deferred.
   useKeyboard((event) => {
@@ -204,6 +250,41 @@ export function SideChatOverlay() {
     if (event.name === "escape") {
       event.preventDefault()
       closeSideChatOverlay("user-esc")
+      return
+    }
+    // Page-scroll the answer body. We capture pgup/pgdn (mouse-less keyboards)
+    // and Ctrl+J/K (parity with the main conversation pane's line-scroll
+    // bindings) — the textarea would otherwise eat or ignore these keys
+    // since focus stays on the composer while the overlay is open.
+    if (event.name === "pageup") {
+      event.preventDefault()
+      try { scrollRef?.scrollBy({ x: 0, y: -10 }) } catch { /* ref not yet attached */ }
+      setScrolledAway(true)
+      return
+    }
+    if (event.name === "pagedown") {
+      event.preventDefault()
+      try { scrollRef?.scrollBy({ x: 0, y: 10 }) } catch { /* ref not yet attached */ }
+      // If pgdn lands us at/near bottom, re-engage sticky-scroll so streaming
+      // continues to follow. Mirrors conversation.tsx's behaviour.
+      if (scrollRef && scrollRef.scrollTop + scrollRef.viewport.height >= scrollRef.scrollHeight - 3) {
+        setScrolledAway(false)
+      }
+      return
+    }
+    if (event.ctrl && !event.shift && !event.option && !event.meta && !event.super && event.name === "k") {
+      event.preventDefault()
+      try { scrollRef?.scrollBy(-1) } catch { /* ref not yet attached */ }
+      setScrolledAway(true)
+      return
+    }
+    if (event.ctrl && !event.shift && !event.option && !event.meta && !event.super && event.name === "j") {
+      event.preventDefault()
+      try { scrollRef?.scrollBy(1) } catch { /* ref not yet attached */ }
+      if (scrollRef && scrollRef.scrollTop + scrollRef.viewport.height >= scrollRef.scrollHeight - 3) {
+        setScrolledAway(false)
+      }
+      return
     }
   })
 
@@ -225,13 +306,17 @@ export function SideChatOverlay() {
     <Show when={activeTab()}>
       {(getTab: Accessor<SideChatTab>) => {
         const tab = () => getTab()
-        // `body` is what the markdown renderer streams into. Empty answer
-        // when running shows a placeholder so the overlay isn't blank.
+        // `body` is what the markdown renderer streams into. While running
+        // and empty, we render an empty string — the top banner already
+        // says "answering…" so a duplicate placeholder inside the body
+        // would be redundant (and looked enough like a "thinking…" block
+        // to confuse users). The "(no answer)" fallback covers the rare
+        // case where the stream completed without emitting any text.
         const body = () => {
           const t = tab()
           if (t.answer) return t.answer
           if (t.status === "error") return `_${t.error ?? "Side chat failed."}_`
-          if (t.status === "running") return "_thinking…_"
+          if (t.status === "running") return ""
           return "_(no answer)_"
         }
 
@@ -249,29 +334,22 @@ export function SideChatOverlay() {
           <box
             flexDirection="column"
             backgroundColor={colors.bg.primary}
-            paddingLeft={1}
-            paddingRight={1}
-            paddingTop={1}
-            paddingBottom={1}
             flexGrow={1}
           >
-            {/* Header — title + status + dismiss hint.
-                AGENTS.md OpenTUI rule 6: no borderTop/borderBottom on a box
-                that contains a textarea. We don't have a textarea here, so
-                a simple Divider for the visual rule is fine. */}
-            <box flexDirection="row" height={1}>
-              <text fg={colors.border.permission} attributes={TextAttributes.BOLD}>
-                {"\u00AB Side chat \u00BB"}
-              </text>
-              <box flexGrow={1} />
-              <text fg={colors.text.muted} attributes={TextAttributes.DIM}>
-                {statusLabel(tab())}
-              </text>
-            </box>
-            <Divider char={"\u254C"} fg={colors.border.permission} paddingLeft={0} />
+            {/* Top banner — title + dashes + status on a single row.
+                Replaces the old title-on-top / divider-below split so the
+                overlay opens flush against its container with no blank
+                lead-in row. The TextAttributes.BOLD attribute is scoped
+                to the title text only (mixing attributes inside a single
+                <text> element isn't supported), with separate dash
+                elements on either side so the rule reads continuously. */}
+            <TopBanner status={statusLabel(tab())} />
 
-            {/* Question echo — what the user asked, in muted color. */}
-            <box flexDirection="row" paddingTop={0} paddingBottom={1}>
+            {/* Question echo — what the user asked, in muted color.
+                Stays outside the scrollbox so the question is always
+                visible no matter how far the user has scrolled in the
+                answer below. */}
+            <box flexDirection="row" paddingLeft={1} paddingRight={1} paddingTop={0} paddingBottom={0}>
               <box width={2} flexShrink={0}>
                 <text fg={colors.text.muted}>{"?"}</text>
               </box>
@@ -280,36 +358,112 @@ export function SideChatOverlay() {
               </box>
             </box>
 
-            {/* Answer body — markdown so fenced code, lists, tables render. */}
-            <box flexDirection="row" flexGrow={1}>
+            {/* Answer body — markdown so fenced code, lists, tables render.
+                Wrapped in <ScrollView> so long answers (>viewport height)
+                are independently scrollable without pushing the bottom
+                banner off-screen. Sticky-scroll keeps the view pinned to
+                the bottom while the model is streaming, but disengages
+                once the user scrolls up so they can read what's already
+                been written. */}
+            <box flexDirection="row" flexGrow={1} paddingLeft={1} paddingRight={1}>
               <box width={2} flexShrink={0}>
-                <text fg={colors.text.primary}>{"\u23FA"}</text>
+                <text fg={colors.text.primary}>{"⏺"}</text>
               </box>
               <box flexGrow={1}>
-                <markdown
-                  content={body()}
-                  syntaxStyle={getSyntaxStyle()}
-                  fg={colors.text.primary}
-                  bg={colors.bg.primary}
-                />
+                <ScrollView
+                  ref={(el: ScrollBoxRenderable) => { scrollRef = el }}
+                  stickyScroll={!scrolledAway()}
+                  stickyStart="bottom"
+                  flexGrow={1}
+                  backgroundColor={colors.bg.primary}
+                  onScroll={(el) => {
+                    const atBottom = el.scrollTop + el.viewport.height >= el.scrollHeight - 3
+                    if (atBottom) {
+                      if (scrolledAway()) setScrolledAway(false)
+                    } else if (!scrolledAway()) {
+                      // Mouse-wheel scroll up — release sticky.
+                      setScrolledAway(true)
+                    }
+                  }}
+                >
+                  <markdown
+                    content={body()}
+                    syntaxStyle={getSyntaxStyle()}
+                    fg={colors.text.primary}
+                    bg={colors.bg.primary}
+                  />
+                </ScrollView>
               </box>
             </box>
 
-            {/* Footer — dismiss hint + error detail when relevant. */}
-            <Divider char={"\u254C"} fg={colors.border.permission} paddingLeft={0} />
+            {/* Optional error — shown above the bottom banner so the
+                dismiss hint stays visible. Only renders on error status. */}
             <Show when={tab().status === "error" && tab().error}>
-              <box paddingLeft={1}>
+              <box paddingLeft={1} paddingRight={1}>
                 <text fg={colors.status.error}>{tab().error}</text>
               </box>
             </Show>
-            <box height={1} paddingLeft={1}>
-              <text fg={colors.text.muted} attributes={TextAttributes.DIM}>
-                {"Esc to dismiss"}
-              </text>
-            </box>
+
+            {/* Bottom banner — dismiss hint embedded inside the horizontal
+                rule. Same single-row construction as the top banner, with
+                the hint slotted in just-right-of-centre so the dashes
+                bracket it visually. */}
+            <BottomBanner />
           </box>
         )
       }}
     </Show>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Banner rows — single-row construction with inline dashes around the label.
+// The dashes use a flex-grow box around a long pre-allocated string with
+// `wrapMode="none"`; OpenTUI clips horizontal overflow at render time so the
+// visible width always matches the box's allotted space. Same pattern as the
+// Divider primitive but with embedded label text.
+//
+// Layout (matching the example provided by the user):
+//
+//   ─ « Side chat » ───────────────── answering… ─
+//   ─────────────────────────── Esc to dismiss ──
+//
+// Top banner: left-aligned title with a short lead dash, dashes filling
+// to a right-aligned status. Bottom banner: long dashes filling to a
+// right-aligned dismiss hint with a 2-dash tail.
+// ---------------------------------------------------------------------------
+
+function TopBanner(props: { status: string }) {
+  return (
+    <box flexDirection="row" height={1} width="100%" flexShrink={0}>
+      <text fg={colors.border.permission}>{`${DASH} `}</text>
+      <text fg={colors.border.permission} attributes={TextAttributes.BOLD}>
+        {"« Side chat »"}
+      </text>
+      <text fg={colors.border.permission}>{" "}</text>
+      <box flexGrow={1} height={1}>
+        <text wrapMode="none" fg={colors.border.permission}>{DASH_FILL}</text>
+      </box>
+      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>
+        {` ${props.status} `}
+      </text>
+      <text fg={colors.border.permission}>{DASH}</text>
+    </box>
+  )
+}
+
+function BottomBanner() {
+  return (
+    <box flexDirection="row" height={1} width="100%" flexShrink={0}>
+      <box flexGrow={1} height={1}>
+        <text wrapMode="none" fg={colors.border.permission}>{DASH_FILL}</text>
+      </box>
+      <text fg={colors.border.permission}>{" "}</text>
+      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>
+        {"Esc to dismiss"}
+      </text>
+      <text fg={colors.border.permission}>{" "}</text>
+      <text fg={colors.border.permission}>{`${DASH}${DASH}`}</text>
+    </box>
   )
 }

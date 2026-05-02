@@ -1034,6 +1034,33 @@ export interface SessionConfig {
     { command: string; args?: string[]; env?: Record<string, string> }
   >
   /**
+   * Backend-agnostic Streamable-HTTP MCP servers to expose to the agent. Each
+   * entry names a remote MCP endpoint (typically a localhost child process the
+   * frontend supervises); the adapter translates into the runtime's native spec:
+   *
+   *   - Claude: merged into `mcpServers` with `type: "http"` and the bearer
+   *     token (resolved from `bearerTokenEnvVar` at session-build time) packed
+   *     into a literal `Authorization: Bearer …` header.
+   *   - Codex: injected into `CodexOptions.config.mcp_servers.*` as
+   *     `url` + `bearer_token_env_var` + `http_headers` — Codex reads the env
+   *     var itself at spawn time (secret hygiene).
+   *   - ACP / mock: logged and ignored (the transports don't carry MCP).
+   *
+   * Used by the Slack frontend to expose the shared korotovsky-backed Slack
+   * MCP host to every backend in a single child process (vs. one stdio
+   * subprocess per session). `bearerTokenEnvVar` names an env var present in
+   * the bantai-slack process; the value is read from `process.env` at the
+   * appropriate time per backend.
+   */
+  httpMcpServers?: Record<
+    string,
+    {
+      url: string
+      bearerTokenEnvVar?: string
+      httpHeaders?: Record<string, string>
+    }
+  >
+  /**
    * Extra text appended to the backend's system prompt without replacing it.
    *
    * Populated by the Slack frontend with per-session context (channel id,

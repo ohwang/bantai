@@ -1147,6 +1147,37 @@ export class ClaudeAdapter implements AgentBackend {
             }
           }
         }
+        // Translate backend-agnostic httpMcpServers into the Claude SDK's
+        // native http-MCP shape. The SDK takes literal headers (no env-var
+        // indirection), so we resolve `bearerTokenEnvVar` to a literal
+        // Authorization header at session-build time. Missing env vars are
+        // logged + skipped — silently sending an unauthenticated request to a
+        // server that requires auth would surface as a confusing tool-call
+        // error inside the agent (per AGENTS.md "never silently drop"). Same
+        // collision rule as stdioMcpServers: in-process entries already in
+        // `mcpServers` win.
+        if (config.httpMcpServers) {
+          for (const [name, spec] of Object.entries(config.httpMcpServers)) {
+            if (name in servers) continue
+            const headers: Record<string, string> = { ...(spec.httpHeaders ?? {}) }
+            if (spec.bearerTokenEnvVar !== undefined) {
+              const token = process.env[spec.bearerTokenEnvVar]
+              if (token === undefined || token.length === 0) {
+                log.warn(
+                  `Claude: skipping http MCP server "${name}" — env var ` +
+                    `${spec.bearerTokenEnvVar} is unset or empty`,
+                )
+                continue
+              }
+              headers["Authorization"] = `Bearer ${token}`
+            }
+            servers[name] = {
+              type: "http" as const,
+              url: spec.url,
+              ...(Object.keys(headers).length > 0 ? { headers } : {}),
+            }
+          }
+        }
         const diag = getDiagnosticsSdkMcpConfig()
         if (diag) servers["bantai-diagnostics"] = diag
         const crossagent = getCrossagentSdkMcpConfig()

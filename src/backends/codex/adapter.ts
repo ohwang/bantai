@@ -520,15 +520,19 @@ export class CodexAdapter extends BaseAdapter {
 
     try {
       // 1. Spawn transport.
-      //    Build `codex app-server --config …` argv with any stdio MCP
+      //    Build `codex app-server --config …` argv with any stdio + HTTP MCP
       //    servers from SessionConfig. The Codex SDK's Codex class does
       //    this flattening for us when you go through startThread(), but
       //    we spawn app-server directly for the JSON-RPC session protocol,
       //    so we roll it out here.
-      const mcpConfigArgs = buildCodexMcpConfigArgs(config.stdioMcpServers)
+      const mcpConfigArgs = buildCodexMcpConfigArgs(
+        config.stdioMcpServers,
+        config.httpMcpServers,
+      )
       if (mcpConfigArgs.length > 0) {
-        log.info("Codex: injecting stdio MCP servers via --config", {
-          servers: Object.keys(config.stdioMcpServers ?? {}),
+        log.info("Codex: injecting MCP servers via --config", {
+          stdioServers: Object.keys(config.stdioMcpServers ?? {}),
+          httpServers: Object.keys(config.httpMcpServers ?? {}),
           argCount: mcpConfigArgs.length,
         })
       }

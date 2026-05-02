@@ -2235,6 +2235,66 @@ describe("ConversationState reducer", () => {
       expect(state.streamingText).toBe("thinking...")
     })
 
+    it("user_message during in-progress compaction (state IDLE) is queued, not dispatched", () => {
+      // Repro for the bug where /compact (or post-turn auto-compact) leaves
+      // sessionState=IDLE while the backend is busy summarising. A message
+      // typed during the spinner must be marked queued — the backend hasn't
+      // pulled it from messageQueue yet, so the TUI showing it as "sent"
+      // (the IDLE→RUNNING branch) misleads the user.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "compact", summary: "Compacting...", inProgress: true, trigger: "user" },
+        { type: "user_message", text: "follow-up while compacting" },
+      ])
+      // sessionState must NOT be flipped to RUNNING — the backend is busy
+      // with compaction, not with this turn.
+      expect(state.sessionState).toBe("IDLE")
+      const userBlock = state.blocks.find(
+        b => b.type === "user" && b.text === "follow-up while compacting"
+      ) as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      expect(userBlock!.queued).toBe(true)
+    })
+
+    it("compaction completing then a turn_start unqueues the message normally", () => {
+      // Continuation of the previous test: once the backend finishes
+      // compacting and pulls the queued message, it'll fire turn_start →
+      // turn_complete. The message should end up unqueued, exactly like the
+      // standard mid-turn-queue → turn_complete path.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "compact", summary: "Compacting...", inProgress: true, trigger: "user" },
+        { type: "user_message", text: "follow-up" },
+        { type: "compact", summary: "Conversation compacted.", trigger: "user" },
+        { type: "turn_start" },
+        { type: "text_complete", text: "answer" },
+        { type: "turn_complete" },
+      ])
+      expect(state.sessionState).toBe("IDLE")
+      const userBlock = state.blocks.find(
+        b => b.type === "user" && b.text === "follow-up"
+      ) as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      expect(userBlock!.queued).toBeUndefined()
+    })
+
+    it("user_message after compaction completes (no in-progress block) dispatches normally", () => {
+      // Negative case: once the in-progress flag is cleared, the next user
+      // message should follow the standard IDLE→RUNNING branch.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "compact", summary: "Compacting...", inProgress: true, trigger: "user" },
+        { type: "compact", summary: "Conversation compacted.", trigger: "user" },
+        { type: "user_message", text: "next prompt" },
+      ])
+      expect(state.sessionState).toBe("RUNNING")
+      const userBlock = state.blocks.find(
+        b => b.type === "user" && b.text === "next prompt"
+      ) as Extract<Block, { type: "user" }> | undefined
+      expect(userBlock).toBeDefined()
+      expect(userBlock!.queued).toBeUndefined()
+    })
+
     it("back-to-back completion compact events coalesce into one block (Codex dual-event dedup)", () => {
       // Codex emits `thread/compacted` (thread-level) and `item/started` with
       // `contextCompaction` (item-level) for the same auto-compaction. Two

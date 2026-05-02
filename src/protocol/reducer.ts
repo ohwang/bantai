@@ -368,12 +368,29 @@ export function reduce(
         images: event.images,
         ...(event.origin !== undefined ? { origin: event.origin } : {}),
       }
+      // The backend is "busy" — and so any new user_message must be queued —
+      // when either:
+      //   (a) a turn is in flight (RUNNING / WAITING_* / INTERRUPTING), or
+      //   (b) a compaction is in progress.
+      // (b) is independent of sessionState: `/compact` (user-typed) bypasses
+      // the user_message reducer path entirely (the slash command calls
+      // backend.sendMessage directly), and Codex-style auto-compact runs
+      // post-turn_complete — both leave sessionState as IDLE while the
+      // backend is still busy with summarization. Without checking compact
+      // blocks here, a message typed during the compaction spinner falls
+      // through to the IDLE branch below and gets shown as if it were
+      // already dispatched, even though the backend won't pull it from
+      // messageQueue until compaction completes.
+      const compactionInProgress = state.blocks.some(
+        b => b.type === "compact" && b.inProgress
+      )
       // During active turns, show as queued
       if (
         state.sessionState === "RUNNING" ||
         state.sessionState === "WAITING_FOR_PERM" ||
         state.sessionState === "WAITING_FOR_ELIC" ||
-        state.sessionState === "INTERRUPTING"
+        state.sessionState === "INTERRUPTING" ||
+        compactionInProgress
       ) {
         return {
           ...next,

@@ -182,11 +182,51 @@ function RatePlaceholder(props: { label: string }): JSX.Element {
   )
 }
 
+/**
+ * Status-only badge rendered when the SDK confirmed the bucket is healthy
+ * ("allowed") but did NOT supply a real utilization number. Format:
+ *
+ *   5h:OK · 4h57m
+ *
+ * The "OK" reads as "below all warning thresholds" — a real signal from
+ * the SDK, not a fabricated percentage. The reset time, when present,
+ * gives the user the one piece of bucket-specific data the SDK does ship
+ * even at low usage. See `RateLimitEntry.utilizationUnknown` for the wire
+ * shape that triggers this branch.
+ */
+function RateStatusBadge(props: {
+  label: string
+  entry: RateLimitEntry
+}): JSX.Element {
+  const resetStr = createMemo(() => {
+    const r = props.entry.resetsAt
+    if (!r) return ""
+    const now = Math.floor(Date.now() / 1000)
+    const left = Math.max(0, r - now)
+    return left > 0 ? formatDuration(left) : ""
+  })
+  return (
+    <box flexDirection="row">
+      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{`${props.label}:`}</text>
+      <text fg={colors.status.success}>{"OK"}</text>
+      <Show when={!!resetStr()}>
+        <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{` · ${resetStr()}`}</text>
+      </Show>
+    </box>
+  )
+}
+
 function RateEntry(props: {
   label: string
   entry: RateLimitEntry
   windowMinsOverride?: number
 }): JSX.Element {
+  // Status-only entries — SDK confirmed bucket is healthy but didn't
+  // report a number — render an "OK" badge instead of a fabricated
+  // percentage. See `RateLimitEntry.utilizationUnknown`.
+  if (props.entry.utilizationUnknown) {
+    return <RateStatusBadge label={props.label} entry={props.entry} />
+  }
   const pace = createMemo(() => computeRatePace(props.entry, props.windowMinsOverride))
   return (
     <box flexDirection="row">

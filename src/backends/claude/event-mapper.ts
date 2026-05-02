@@ -1038,6 +1038,36 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
       // one bucket (5hr / 7day / 7day_opus / 7day_sonnet / overage). Not an
       // error. Forward as a typed rate_limit_update so the reducer can fold
       // it into ConversationState.rateLimits.
+      //
+      // What the SDK actually gives us (so future-you doesn't redo this
+      // archaeology):
+      //
+      //   1. The SDK fires AT MOST ONE rate_limit_event per Anthropic API
+      //      roundtrip — for the bucket designated by the
+      //      `anthropic-ratelimit-unified-representative-claim` HTTP
+      //      response header. That's normally `5h`; the response header
+      //      switches to `7d` only once the 7-day window becomes the
+      //      most-pressing one (typically deep in a heavy week).
+      //
+      //   2. Per-bucket headers (`anthropic-ratelimit-unified-5h-utilization`,
+      //      `...-7d-utilization`, `...-7d-reset`, etc.) ARE on every
+      //      response — but the SDK's `me4()` strips them and only computes
+      //      `utilization` when `bC9()` detects threshold crossing
+      //      (5h ≥ 90% with timing gate; 7d ≥ 25/50/75% with timing gates).
+      //
+      //   3. Below those thresholds, every event arrives with NO
+      //      `utilization` field — just `{status:"allowed", rateLimitType,
+      //      resetsAt}`. That's why `state.rateLimits.sevenDay` may stay
+      //      empty for an entire session and why the status bar shows
+      //      `7d:—` until the user is genuinely deep into the 7-day window.
+      //      It's not a bantai bug, an Anthropic-side data omission, or a
+      //      reducer problem — the SDK is filtering data that exists on
+      //      the wire.
+      //
+      // Until the SDK exposes per-bucket utilization unconditionally, the
+      // best we can do is render an honest "OK" badge for status-only
+      // entries (see `RateLimitEntry.utilizationUnknown`). The fix needs to
+      // happen upstream in @anthropic-ai/claude-agent-sdk.
       const info = (msg.rate_limit_info ?? {}) as Record<string, unknown>
       // Bumped to INFO during the rate-limit debugging effort: this fires at
       // most once per response from Anthropic (the SDK only re-emits when

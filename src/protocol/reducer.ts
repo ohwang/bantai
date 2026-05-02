@@ -1150,26 +1150,44 @@ export function reduce(
     case "rate_limit_update": {
       // Fold a single window's usage snapshot into ConversationState.rateLimits.
       //
-      //  - `utilization` (0–1) is the preferred signal; we multiply by 100 for
-      //    the status bar's usedPercentage scale.
-      //  - `surpassedThreshold` (0–1) is a fallback hint when the SDK hasn't
-      //    computed utilization yet.
-      //  - `status` gives us a best-effort floor when neither number is set:
-      //    rejected ⇒ 100%, allowed_warning ⇒ 80% (conservative estimate).
-      //  - `status === "allowed"` with no other numeric signal means "we know
-      //    this bucket exists and you're nowhere near the threshold" — which
-      //    is *most* of the time. The Claude SDK's `me4()` only computes
-      //    utilization when the threshold detector fires, so under-threshold
-      //    snapshots arrive with status:"allowed" and nothing else. We treat
-      //    that as 0%: not literally accurate (real usage is somewhere between
-      //    0% and the next-higher threshold), but rendering "5h: 0%" is
-      //    strictly better than the previous "drop the event silently",
-      //    which left the status bar slot blank forever.
+      // Numeric signal precedence:
+      //   - `utilization` (0–1) is the preferred signal; we multiply by 100
+      //     for the status bar's usedPercentage scale.
+      //   - `surpassedThreshold` (0–1) is a fallback hint when the SDK
+      //     hasn't computed utilization yet.
+      //   - `status` gives us a best-effort floor when neither number is
+      //     set: rejected ⇒ 100%, allowed_warning ⇒ 80% (conservative
+      //     estimate — the SDK fires "allowed_warning" once any threshold
+      //     is surpassed, so 80% is a safe lower bound for those buckets).
       //
-      // If we can't derive any usedPercentage AND don't even know the status
-      // is "allowed", we drop the update — the status bar has no meaningful
-      // way to render "unknown %" alongside real numbers.
+      // Honesty over false precision:
+      //   `status === "allowed"` with no utilization is the COMMON case and
+      //   carries NO actionable signal beyond "we're under all warning
+      //   thresholds for this bucket". A previous version of this reducer
+      //   populated the slot at usedPercentage:0 in that case, which made
+      //   the status bar render `5h:~100% remaining` — a fake-precise number
+      //   the SDK never told us. The status bar correctly identified this
+      //   as misleading: the user had no way to tell the difference between
+      //   "SDK confirmed I'm healthy" and "literally at 0% usage".
+      //
+      //   We now drop these events at the reducer (the event-mapper still
+      //   logs them at INFO so debuggers can see they arrived). The status
+      //   bar's placeholder ("5h:—") is the honest signal: "the SDK has not
+      //   given us a real utilization figure yet". When the user crosses
+      //   any threshold, the SDK starts emitting utilization and the slot
+      //   populates with a real number.
+      //
+      // SDK limitation worth knowing about:
+      //   The Claude SDK only emits one rate_limit_event per Anthropic API
+      //   roundtrip, for the bucket designated by the
+      //   `anthropic-ratelimit-unified-representative-claim` HTTP header
+      //   (typically `5h` until you start hitting 7d thresholds). The
+      //   per-bucket headers (`...-7d-utilization` etc.) ARE on the wire
+      //   for every response, but the SDK strips them before reaching
+      //   bantai. That's why `7d:—` may persist even after many turns;
+      //   it's not a bug in our pipeline.
       let usedPct: number | undefined
+      let utilizationUnknown = false
       if (typeof event.utilization === "number") {
         usedPct = event.utilization * 100
       } else if (typeof event.surpassedThreshold === "number") {
@@ -1179,10 +1197,14 @@ export function reduce(
       } else if (event.status === "allowed_warning") {
         usedPct = 80
       } else if (event.status === "allowed") {
-        // Known bucket, under all thresholds. Populate the slot at 0% so the
-        // status bar can show "5h: 0%" rather than nothing — confirms the
-        // SDK is wired up even when utilization is unreported.
+        // Status-only signal — SDK confirmed the bucket is healthy but
+        // didn't report a number. Populate the slot with a sentinel
+        // (usedPercentage:0 + utilizationUnknown:true) so presenters can
+        // render an honest "OK" badge instead of either showing nothing
+        // (looks like the SDK is broken) or showing "0% used" (fabricates
+        // precision the user can't trust).
         usedPct = 0
+        utilizationUnknown = true
       }
       if (usedPct === undefined) return next
 
@@ -1190,6 +1212,7 @@ export function reduce(
         usedPercentage: usedPct,
         resetsAt: event.resetsAt,
         windowDurationMins: event.windowDurationMins,
+        ...(utilizationUnknown ? { utilizationUnknown: true } : {}),
       }
       const rl = next.rateLimits ? { ...next.rateLimits } : {}
       // Route the bucket → slot via the central strategy table (Cluster 9 —

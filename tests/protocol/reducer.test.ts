@@ -1513,7 +1513,11 @@ describe("ConversationState reducer", () => {
       expect(state.rateLimits?.fiveHour?.usedPercentage).toBe(100)
     })
 
-    it("drops updates with no derivable usedPercentage", () => {
+    it("drops updates with no derivable usedPercentage and no status", () => {
+      // Without `status`, we can't even tell if the bucket is healthy —
+      // dropping is the only honest option. (`status:"allowed"` with no
+      // utilization populates the slot with `utilizationUnknown:true`,
+      // covered by the next test.)
       const state = applyEvents([
         { type: "session_init", tools: [], models: [] },
         {
@@ -1524,6 +1528,61 @@ describe("ConversationState reducer", () => {
       ])
 
       expect(state.rateLimits).toBeNull()
+    })
+
+    it("populates slot with utilizationUnknown:true when status:allowed has no utilization", () => {
+      // The Claude SDK only computes `utilization` when crossing warning
+      // thresholds. Below those, it sends `{status:"allowed", rateLimitType,
+      // resetsAt}` with no number. We populate a sentinel entry so the
+      // status bar can render an "OK" badge — distinguishing "SDK confirmed
+      // healthy" from "no event yet" — without fabricating a fake number.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        {
+          type: "rate_limit_update",
+          rateLimitType: "five_hour",
+          status: "allowed",
+          resetsAt: 1775206513,
+          source: "claude",
+        },
+      ])
+
+      expect(state.rateLimits?.fiveHour).toEqual({
+        usedPercentage: 0,
+        resetsAt: 1775206513,
+        windowDurationMins: undefined,
+        utilizationUnknown: true,
+      })
+    })
+
+    it("real utilization overwrites a prior utilizationUnknown entry", () => {
+      // Once the user crosses a threshold and the SDK starts reporting
+      // utilization, the new event must replace the status-only sentinel
+      // so the OK badge gives way to a real percentage.
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        {
+          type: "rate_limit_update",
+          rateLimitType: "five_hour",
+          status: "allowed",
+          resetsAt: 1775206513,
+          source: "claude",
+        },
+        {
+          type: "rate_limit_update",
+          rateLimitType: "five_hour",
+          status: "allowed_warning",
+          utilization: 0.92,
+          resetsAt: 1775206513,
+          source: "claude",
+        },
+      ])
+
+      expect(state.rateLimits?.fiveHour).toEqual({
+        usedPercentage: 92,
+        resetsAt: 1775206513,
+        windowDurationMins: undefined,
+      })
     })
   })
 

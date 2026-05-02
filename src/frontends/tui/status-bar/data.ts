@@ -694,19 +694,31 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
 
   const rawRateLimits = () => state.rateLimits ?? undefined
 
+  // Simple "label + percentage" list consumed by:
+  //   - the detailed preset's inline rate-limit segment, and
+  //   - the outer StatusBar's permission-mode-line segment.
+  // Both render the percentage literally (`5h:N%`), so we skip entries
+  // flagged `utilizationUnknown` — those have no real number to show, and
+  // emitting `5h:0%` here would resurrect exactly the misleading display
+  // we removed from claude-compat. Presets that want to surface the OK
+  // status read `rawRateLimits()` directly and can branch on the flag.
   const rateLimits = createMemo<RateLimitDisplay[]>(() => {
     const rl = state.rateLimits
     if (!rl) return []
     const displays: RateLimitDisplay[] = []
-    if (rl.fiveHour) displays.push({ label: "5h", usedPercentage: rl.fiveHour.usedPercentage })
-    if (rl.sevenDay) displays.push({ label: "7d", usedPercentage: rl.sevenDay.usedPercentage })
-    if (rl.primary) {
+    if (rl.fiveHour && !rl.fiveHour.utilizationUnknown) {
+      displays.push({ label: "5h", usedPercentage: rl.fiveHour.usedPercentage })
+    }
+    if (rl.sevenDay && !rl.sevenDay.utilizationUnknown) {
+      displays.push({ label: "7d", usedPercentage: rl.sevenDay.usedPercentage })
+    }
+    if (rl.primary && !rl.primary.utilizationUnknown) {
       displays.push({
         label: formatRateLimitWindowLabel(rl.primary.windowDurationMins, "primary"),
         usedPercentage: rl.primary.usedPercentage,
       })
     }
-    if (rl.secondary) {
+    if (rl.secondary && !rl.secondary.utilizationUnknown) {
       displays.push({
         label: formatRateLimitWindowLabel(rl.secondary.windowDurationMins, "secondary"),
         usedPercentage: rl.secondary.usedPercentage,

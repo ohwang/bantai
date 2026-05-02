@@ -32,7 +32,8 @@
     "docs:check": "bash scripts/docs-check.sh",
     "version:patch": "bash scripts/bump-version.sh patch",
     "version:minor": "bash scripts/bump-version.sh minor",
-    "version:major": "bash scripts/bump-version.sh major"
+    "version:major": "bash scripts/bump-version.sh major",
+    "postinstall": "bash scripts/prune-claude-native-binary.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.126",

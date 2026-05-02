@@ -15,7 +15,8 @@
   },
   "bin": {
     "bantai": "./bin/bantai",
-    "bantai-storybook": "./bin/bantai-storybook"
+    "bantai-storybook": "./bin/bantai-storybook",
+    "bantai-llm-query": "./bin/bantai-llm-query"
   },
   "scripts": {
     "dev": "bun run --conditions=browser ./src/index.ts",
@@ -23,6 +24,7 @@
     "test": "bun test --timeout 30000",
     "storybook": "bun run --conditions=browser ./src/storybook/index.tsx",
     "dev:storybook": "bun run --conditions=browser --watch ./src/storybook/index.tsx",
+    "llm-query": "bun run ./src/llm-query/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "bun run lint:opentui && tsc --noEmit",
     "lint:opentui": "bash scripts/lint-opentui.sh",

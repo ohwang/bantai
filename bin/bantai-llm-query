@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Adhoc one-shot LLM query CLI for testing the bantai LLM service.
+# Pure node-side code (no opentui), so no --conditions=browser / preload needed.
+
+# Resolve symlinks to find the real script location (needed for global installs)
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  LINK_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$LINK_DIR/$SOURCE"
+done
+DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+
+exec bun run "$DIR/src/llm-query/index.ts" "$@"

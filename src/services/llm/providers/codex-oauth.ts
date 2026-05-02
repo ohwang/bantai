@@ -9,14 +9,21 @@
  *
  * Wire format:
  *   POST .../responses
- *   { model, instructions?, input: [{role, content}, ...],
- *     max_output_tokens?, temperature?, stream: true, store: false }
+ *   { model, instructions, input: [{role, content}, ...],
+ *     stream: true, store: false }
  *
  * Streaming is REQUIRED by the ChatGPT backend (it rejects `stream: false`
  * with `{"detail":"Stream must be set to true"}`). We accept that, consume
  * the SSE stream internally, aggregate the text deltas, and surface the
  * complete response to the caller — the public API stays non-streaming.
  * `store: false` is also REQUIRED by the ChatGPT backend.
+ *
+ * `instructions` is also REQUIRED by the ChatGPT backend (it rejects a
+ * missing/empty value with `{"detail":"Instructions are required"}`). When
+ * the caller doesn't supply a system prompt, we send `DEFAULT_INSTRUCTIONS`
+ * (a short, neutral assistant prompt). The standard OpenAI Responses API
+ * tolerates omitting the field, but we send the same body in both modes to
+ * keep the SSE consumer single-pathed (~5 token cost in ApiKey mode is fine).
  *
  * V1 caveats:
  *   - Caller-facing API is non-streaming. A future surface can expose the
@@ -52,6 +59,14 @@ const OPENAI_API_BASE = "https://api.openai.com/v1"
  * with `auth_mode: "ApiKey"` can pass any model they have access to.
  */
 const DEFAULT_MODEL = "gpt-5.5"
+/**
+ * Sent as `instructions` when the caller didn't supply a system prompt. The
+ * ChatGPT backend rejects a missing/empty value as
+ * `{"detail":"Instructions are required"}`, so we always send something.
+ * Kept short and persona-neutral so it adds ~5 input tokens and doesn't
+ * bias adhoc completions (titles, summaries, recaps).
+ */
+const DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 
 /** Public adapter — see `LlmProviderAdapter` in registry.ts. */
 export async function callCodexOauth(
@@ -165,7 +180,13 @@ function buildAuthHeaders(
 
 interface ResponsesApiRequestBody {
   model: string
-  instructions?: string
+  /**
+   * Codex's ChatGPT-backend REQUIRES `instructions` — it rejects a
+   * missing/empty value with `{"detail":"Instructions are required"}`.
+   * We always send something: the joined system messages from the caller,
+   * or `DEFAULT_INSTRUCTIONS` if the caller didn't supply any.
+   */
+  instructions: string
   input: Array<{ role: "user" | "assistant"; content: string }>
   /**
    * Codex's ChatGPT-backend REQUIRES `stream: true` — it rejects
@@ -189,7 +210,8 @@ function buildRequestBody(
   const flat = flattenMessages(request)
 
   const systemMessages = flat.filter((m) => m.role === "system").map((m) => m.content)
-  const instructions = systemMessages.length > 0 ? systemMessages.join("\n\n") : undefined
+  const instructions =
+    systemMessages.length > 0 ? systemMessages.join("\n\n") : DEFAULT_INSTRUCTIONS
 
   const input = flat
     .filter((m) => m.role !== "system")

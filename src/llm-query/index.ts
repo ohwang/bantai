@@ -81,7 +81,13 @@ async function main(argv: string[]): Promise<void> {
       `Provider override (default: resolved from settings). Choices: ${listLlmProvidersForCli()}`,
     )
     .option("-m, --model <name>", "Model id (provider default if omitted)")
-    .option("-s, --system <text>", "System prompt prepended before the user message")
+    .option(
+      "-s, --system <text>",
+      'System prompt prepended before the user message. Optional; codex-oauth ' +
+        "requires a non-empty value upstream, so it falls back to a short " +
+        'default ("You are a helpful assistant.") when omitted. ' +
+        "openai-compat and gemini omit the system message entirely when not set.",
+    )
     .option("--max-tokens <n>", "Soft cap on output tokens")
     .option("--temperature <n>", "Sampling temperature (0..2)")
     .option(

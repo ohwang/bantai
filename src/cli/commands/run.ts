@@ -235,7 +235,13 @@ export async function runHeadless(flags: CLIFlags, message: string): Promise<voi
           break
         }
         case "permission_request": {
-          if (flags.config.permissionMode === "bypassPermissions" || flags.config.permissionMode === "dontAsk") {
+          // Only `bypassPermissions` is safe to auto-approve in headless mode.
+          // `dontAsk` previously fell into this branch, but its documented
+          // semantic ("Never prompt; deny anything not pre-approved via
+          // allowlist") is the OPPOSITE of auto-approve — bantai has no
+          // headless allowlist surface today, so the only safe behaviour is
+          // to deny. See bantai-team/permission-audit.md §F-16.
+          if (flags.config.permissionMode === "bypassPermissions") {
             backend.approveToolUse(event.id)
           } else {
             backend.denyToolUse(event.id, "Denied: running in non-interactive mode. Use --dangerously-skip-permissions to auto-approve.")

@@ -91,9 +91,15 @@ describe("Codex capabilities reconciliation (L6)", () => {
   it("toCodexApprovalPolicy returns a real policy for every PermissionMode", () => {
     expect(toCodexApprovalPolicy("default")).toBe("on-request")
     expect(toCodexApprovalPolicy("acceptEdits")).toBe("on-request")
-    expect(toCodexApprovalPolicy("plan")).toBe("on-request")
+    // `plan` uses "untrusted" so writes escalate (and then auto-decline in
+    // the adapter's handleServerRequest) — see audit §F-17.
+    expect(toCodexApprovalPolicy("plan")).toBe("untrusted")
     expect(toCodexApprovalPolicy("auto")).toBe("on-request")
     expect(toCodexApprovalPolicy("bypassPermissions")).toBe("never")
-    expect(toCodexApprovalPolicy("dontAsk")).toBe("never")
+    // `dontAsk` MUST NOT be "never" (audit §F-7): "never" + dangerFullAccess
+    // makes it byte-identical to bypassPermissions while the user-facing
+    // label promises "deny anything not pre-approved." `untrusted` uses
+    // codex's server-side trusted-command set as the allowlist.
+    expect(toCodexApprovalPolicy("dontAsk")).toBe("untrusted")
   })
 })

@@ -51,7 +51,7 @@ import type {
 } from "./codex-types"
 
 // ---------------------------------------------------------------------------
-// Permission mode → Codex approval policy mapping
+// Permission mode → Codex approval policy + sandbox mapping
 //
 // IMPORTANT: Codex separates approval policy from sandbox policy.
 // These are two independent controls sent per-turn via turn/start params.
@@ -59,13 +59,20 @@ import type {
 // Approval policy controls WHETHER the user is prompted:
 //   - "on-request" → Codex asks for approval before shell commands & file changes
 //   - "never"      → Codex never asks (all actions auto-approved)
+//   - "untrusted"  → Codex auto-runs commands in its server-side trusted set
+//                    (ls/cat/sed/...) and escalates UNKNOWN commands as a
+//                    permission request. This is the closest native fit for
+//                    bantai's `dontAsk` allowlist semantic.
+//   - "on-failure" → Codex asks only after a tool fails (unused by bantai).
 //
 // Sandbox policy controls WHAT the process can actually do:
-//   - undefined (default) → workspace-write sandbox: repo is writable but
-//     .git directory is READ-ONLY. This means `git commit`, `git push`,
-//     `git checkout`, etc. will fail even if the user approves the command.
-//     This is the key semantic gap vs Claude, where approving a command
-//     grants full access to execute it.
+//   - undefined (default) → "workspaceWrite": repo is writable but .git is
+//     READ-ONLY. `git commit`/`push`/`checkout` fail even if approved. This
+//     is the key semantic gap vs Claude, where approving a command grants
+//     full access to execute it.
+//   - { type: "readOnly" } → No writes anywhere; all write attempts fail in
+//     the sandbox regardless of approval. Used for `plan` so the sandbox
+//     enforces plan semantics even on accidental approval.
 //   - { type: "dangerFullAccess" } → No sandbox restrictions at all.
 //
 // Semantic gaps vs Claude's unified model:
@@ -73,19 +80,19 @@ import type {
 //      is "on-request" (still asks), but the SANDBOX allows edits. The user
 //      experience is different: Codex still prompts for file changes.
 //   2. "default" in Claude blocks commands without approval. In Codex,
-//      "default" uses workspace-write sandbox which blocks .git writes
+//      "default" uses workspaceWrite sandbox which blocks .git writes
 //      REGARDLESS of approval. A user who approves `git commit` in Codex
 //      will see it fail — unlike Claude where approval = execution.
-//   3. "plan" has no native Codex equivalent. We map it to "on-request"
-//      approval (closest approximation) but there's no read-only sandbox.
+//   3. "plan" used to map to "on-request" + workspaceWrite, allowing writes
+//      on accidental approval (audit §F-17). Now maps to "on-request" +
+//      readOnly so the sandbox enforces plan semantics.
+//   4. "dontAsk" used to be byte-identical to bypassPermissions ("never" +
+//      dangerFullAccess — audit §F-7), silently auto-approving every tool
+//      call. Now maps to "untrusted" + workspaceWrite so codex's trusted
+//      command set acts as the allowlist, unknown commands are escalated to
+//      a prompt, and the sandbox still protects .git.
 // ---------------------------------------------------------------------------
 
-/**
- * Map our PermissionMode to Codex's approval policy.
- *
- * Approval policy only controls prompting behavior, not filesystem access.
- * See toCodexSandboxPolicy() for the filesystem enforcement side.
- */
 /**
  * Map our `PermissionMode` to Codex's approval-policy string.
  *
@@ -95,18 +102,30 @@ import type {
  * / L6 — `auto` and `plan` used to be silently inconsistent between this
  * function and `capabilities().supportedPermissionModes`).
  *
- * - "never"      — never prompt (auto-approve everything)
- * - "on-request" — Codex's default: prompt before destructive ops
+ * Approval policy only controls prompting behavior, not filesystem access.
+ * See toCodexSandboxPolicy() for the filesystem enforcement side.
  */
 const CODEX_APPROVAL_POLICY: Record<PermissionMode, string> = {
   default: "on-request",
   acceptEdits: "on-request",
-  plan: "on-request",
+  // `plan` uses `untrusted` so codex auto-runs ONLY its server-side trusted
+  // set (read-only commands like ls/cat/sed) and escalates anything that
+  // could write — bantai's adapter then auto-declines those escalations
+  // (see handleServerRequest below). `on-request` was insufficient because
+  // codex's `unifiedExecStartup` fast-path runs many write commands without
+  // any approval round-trip, and the `readOnly` sandbox is best-effort on
+  // macOS. Audit §F-17.
+  plan: "untrusted",
   // `auto` would let Codex's classifier route requests — Codex doesn't
   // expose that toggle, so map it to the default prompting behaviour.
   auto: "on-request",
   bypassPermissions: "never",
-  dontAsk: "never",
+  // `dontAsk` is bantai's "deny anything not pre-approved" mode. Codex's
+  // built-in `untrusted` approval mode auto-runs only its server-side
+  // trusted set and escalates anything else as a permission request — the
+  // closest native fit. Combined with the workspaceWrite sandbox below it
+  // gives meaningfully different (and safer) behaviour from bypass.
+  dontAsk: "untrusted",
 }
 
 export function toCodexApprovalPolicy(mode?: PermissionMode): string {
@@ -114,26 +133,40 @@ export function toCodexApprovalPolicy(mode?: PermissionMode): string {
 }
 
 /**
- * Map our PermissionMode to Codex's sandbox policy.
+ * Map our `PermissionMode` to Codex's sandbox policy.
  *
- * When undefined is returned, Codex uses its default "workspace-write" sandbox:
+ * Per-mode `Record` (mirroring CODEX_APPROVAL_POLICY) so adding a mode is a
+ * compile-time error here unless we decide its sandbox shape.
+ *
+ * `undefined` falls through to codex's default "workspaceWrite" sandbox:
  *   - Repo files are writable
  *   - .git directory is READ-ONLY (git operations that write will fail)
  *   - Network access may be restricted depending on Codex configuration
  *
- * Only bypassPermissions/dontAsk disables the sandbox entirely via
- * "dangerFullAccess", which removes all filesystem restrictions.
+ * `plan` returns `readOnly` so the sandbox refuses ALL writes. This is
+ * defence-in-depth: even if the user accidentally clicks "Allow" on an
+ * Edit prompt, the underlying tool errors with a sandbox-write rejection.
+ *
+ * Only `bypassPermissions` returns `dangerFullAccess`, removing all
+ * filesystem restrictions. `dontAsk` intentionally STAYS in workspaceWrite
+ * so it has meaningfully safer semantics than bypass — see §F-7.
  */
+const CODEX_SANDBOX_POLICY: Record<PermissionMode, CodexSandboxPolicy | undefined> = {
+  default: undefined,
+  acceptEdits: undefined,
+  auto: undefined,
+  // Defence-in-depth for `plan` — see audit §F-17.
+  plan: { type: "readOnly" },
+  bypassPermissions: { type: "dangerFullAccess" },
+  // `dontAsk` keeps the default workspaceWrite sandbox so its enforcement
+  // differs from bypass — see audit §F-7.
+  dontAsk: undefined,
+}
+
 export function toCodexSandboxPolicy(
   mode?: PermissionMode,
 ): CodexSandboxPolicy | undefined {
-  switch (mode) {
-    case "bypassPermissions":
-    case "dontAsk":
-      return { type: "dangerFullAccess" }
-    default:
-      return undefined
-  }
+  return CODEX_SANDBOX_POLICY[mode ?? "default"]
 }
 
 // ---------------------------------------------------------------------------
@@ -206,23 +239,32 @@ export class CodexAdapter extends BaseAdapter {
    *   - .git directory: READ-ONLY (git commit/push/checkout fail)
    *   - Network: may be restricted by Codex config
    *
-   * "dangerFullAccess" sandbox (bypassPermissions/dontAsk):
-   *   - Everything writable, no restrictions
+   * "readOnly" sandbox (plan):
+   *   - All write attempts fail in the sandbox regardless of approval.
+   *
+   * "dangerFullAccess" sandbox (bypassPermissions only):
+   *   - Everything writable, no restrictions.
    *
    * Key difference from Claude: approving a tool use does NOT override sandbox
    * restrictions. If the sandbox blocks .git writes, approval is irrelevant.
    */
   capabilities(): BackendCapabilities {
     // Cluster 8: build modeDetails from a per-backend default + per-mode
-    // overrides. Two of Codex's four modes ("bypassPermissions" /
-    // "dontAsk") were character-for-character identical except for the
-    // key — that copy/paste is what the sprint's "spread + override"
-    // pattern eliminates. The default sandboxed shape (workspace-write)
-    // applies to "default" and "acceptEdits" verbatim except for the
-    // caveat string.
+    // overrides. The default sandboxed shape (workspaceWrite) applies to
+    // "default", "acceptEdits", "auto", and "dontAsk" verbatim except for
+    // the caveat string. "plan" uses a readOnly variant; "bypassPermissions"
+    // is the only mode that disables the sandbox entirely.
     const SANDBOXED_DEFAULT = {
       writableScope: "repo working tree (excludes .git)",
       protectedPaths: ".git (read-only in workspace-write sandbox)",
+      commandApproval: "always",
+      editApproval: "always",
+      networkAccess: "restricted",
+      separateSandbox: true,
+    } as const
+    const READ_ONLY = {
+      writableScope: "nothing (readOnly sandbox)",
+      protectedPaths: "everything (sandbox refuses writes regardless of approval)",
       commandApproval: "always",
       editApproval: "always",
       networkAccess: "restricted",
@@ -251,8 +293,19 @@ export class CodexAdapter extends BaseAdapter {
           caveats:
             "Codex still prompts for file changes (no native acceptEdits). Sandbox blocks .git writes.",
         },
+        plan: {
+          ...READ_ONLY,
+          caveats:
+            "Plan mode uses Codex's readOnly sandbox — writes fail even on accidental approval.",
+        },
         bypassPermissions: { ...FULL_ACCESS },
-        dontAsk: { ...FULL_ACCESS },
+        dontAsk: {
+          ...SANDBOXED_DEFAULT,
+          commandApproval: "per-tool-rules",
+          editApproval: "always",
+          caveats:
+            "Codex auto-runs trusted commands (ls/cat/sed/...) and escalates unknown commands as a permission request. Sandbox still protects .git.",
+        },
       },
     }
 
@@ -897,6 +950,32 @@ export class CodexAdapter extends BaseAdapter {
       type: "server_request",
       payload: { rpcId, method, params },
     })
+
+    // Audit §F-17 (P0): in `plan` mode, every write path codex can take is
+    // auto-declined at the adapter so the user can't accidentally promote
+    // plan into write-mode by clicking Allow. The threat model is wider
+    // than just apply_patch:
+    //   - `item/fileChange/requestApproval` — apply_patch/edit dialogs.
+    //   - `item/permissions/requestApproval` — broad escalation (e.g. write
+    //     access to a path, network access).
+    //   - `item/commandExecution/requestApproval` — the python3/sed/awk
+    //     fallbacks codex reaches for after a refused apply_patch. With the
+    //     `untrusted` approval policy in plan mode, codex auto-runs ONLY
+    //     its server-side read-only trusted set; anything that escalates
+    //     to this RPC is by definition not in that set and should not run
+    //     in plan. The `readOnly` sandbox is also defence-in-depth here,
+    //     but it is best-effort on macOS and cannot be relied on alone.
+    if (this.config?.permissionMode === "plan") {
+      if (
+        method === "item/fileChange/requestApproval" ||
+        method === "item/permissions/requestApproval" ||
+        method === "item/commandExecution/requestApproval"
+      ) {
+        log.info("Codex approval auto-declined in plan mode", { method, rpcId })
+        this.transport?.respond(rpcId, { decision: "decline" })
+        return
+      }
+    }
 
     switch (method) {
       case "item/commandExecution/requestApproval": {

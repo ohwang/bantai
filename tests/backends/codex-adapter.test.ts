@@ -35,6 +35,43 @@ describe("CodexAdapter", () => {
       expect(toCodexApprovalPolicy("default")).toBe("on-request")
       expect(toCodexSandboxPolicy("default")).toBeUndefined()
     })
+
+    // Audit §F-17 (P0): plan used to map to on-request + workspaceWrite, so
+    // a single accidental Allow would let codex write the file. The fix
+    // tightens this on three axes:
+    //   1. Approval policy → "untrusted" (codex auto-runs only its read-only
+    //      trusted set; anything else escalates to a permission request the
+    //      adapter then auto-declines — see handleServerRequest).
+    //   2. Sandbox → readOnly (defence-in-depth; best-effort on macOS).
+    //   3. Plan-mode auto-decline guard in handleServerRequest (covers the
+    //      python3/sed/awk fallbacks that bypass apply_patch).
+    it("plan maps to untrusted approval + readOnly sandbox (F-17)", () => {
+      expect(toCodexApprovalPolicy("plan")).toBe("untrusted")
+      expect(toCodexSandboxPolicy("plan")).toEqual({ type: "readOnly" })
+    })
+
+    // Audit §F-7 (P0): dontAsk used to be byte-identical to bypassPermissions
+    // (both "never" + dangerFullAccess), silently auto-approving everything
+    // including out-of-cwd reads of /etc/hosts. dontAsk MUST be meaningfully
+    // different from bypassPermissions on BOTH axes.
+    it("dontAsk is not byte-identical to bypassPermissions (F-7)", () => {
+      const dontAskApproval = toCodexApprovalPolicy("dontAsk")
+      const bypassApproval = toCodexApprovalPolicy("bypassPermissions")
+      const dontAskSandbox = toCodexSandboxPolicy("dontAsk")
+      const bypassSandbox = toCodexSandboxPolicy("bypassPermissions")
+      // Approvals must differ.
+      expect(dontAskApproval).not.toBe(bypassApproval)
+      // Sandboxes must differ — and dontAsk must NOT use dangerFullAccess.
+      expect(dontAskSandbox).not.toEqual(bypassSandbox)
+      expect(dontAskSandbox).not.toEqual({ type: "dangerFullAccess" })
+    })
+
+    it("dontAsk uses untrusted approval + workspaceWrite sandbox (F-7)", () => {
+      // untrusted = codex auto-runs trusted set, escalates unknown commands.
+      // workspaceWrite (undefined) = sandbox still protects .git.
+      expect(toCodexApprovalPolicy("dontAsk")).toBe("untrusted")
+      expect(toCodexSandboxPolicy("dontAsk")).toBeUndefined()
+    })
   })
 
   describe("message queuing", () => {

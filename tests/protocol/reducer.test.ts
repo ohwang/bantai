@@ -1515,9 +1515,7 @@ describe("ConversationState reducer", () => {
 
     it("drops updates with no derivable usedPercentage and no status", () => {
       // Without `status`, we can't even tell if the bucket is healthy —
-      // dropping is the only honest option. (`status:"allowed"` with no
-      // utilization populates the slot with `utilizationUnknown:true`,
-      // covered by the next test.)
+      // dropping is the only honest option.
       const state = applyEvents([
         { type: "session_init", tools: [], models: [] },
         {
@@ -1530,12 +1528,14 @@ describe("ConversationState reducer", () => {
       expect(state.rateLimits).toBeNull()
     })
 
-    it("populates slot with utilizationUnknown:true when status:allowed has no utilization", () => {
+    it("drops status:allowed events when no utilization is supplied", () => {
       // The Claude SDK only computes `utilization` when crossing warning
       // thresholds. Below those, it sends `{status:"allowed", rateLimitType,
-      // resetsAt}` with no number. We populate a sentinel entry so the
-      // status bar can render an "OK" badge — distinguishing "SDK confirmed
-      // healthy" from "no event yet" — without fabricating a fake number.
+      // resetsAt}` with no number. There's no honest percentage we can
+      // render for these — drop them entirely so the status bar simply
+      // hides the slot rather than fabricating a fake number or a
+      // never-actionable "OK" badge. If the SDK starts surfacing real
+      // utilization at low usage, we'll re-adjust.
       const state = applyEvents([
         { type: "session_init", tools: [], models: [] },
         {
@@ -1547,18 +1547,13 @@ describe("ConversationState reducer", () => {
         },
       ])
 
-      expect(state.rateLimits?.fiveHour).toEqual({
-        usedPercentage: 0,
-        resetsAt: 1775206513,
-        windowDurationMins: undefined,
-        utilizationUnknown: true,
-      })
+      expect(state.rateLimits).toBeNull()
     })
 
-    it("real utilization overwrites a prior utilizationUnknown entry", () => {
-      // Once the user crosses a threshold and the SDK starts reporting
-      // utilization, the new event must replace the status-only sentinel
-      // so the OK badge gives way to a real percentage.
+    it("real utilization populates the slot after prior status:allowed pings", () => {
+      // The reducer drops the status-only pings; once the user crosses a
+      // threshold and the SDK starts reporting utilization, the next event
+      // populates the slot with a real percentage.
       const state = applyEvents([
         { type: "session_init", tools: [], models: [] },
         {

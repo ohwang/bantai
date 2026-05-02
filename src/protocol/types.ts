@@ -1389,23 +1389,6 @@ export interface RateLimitEntry {
   usedPercentage: number // 0-100
   resetsAt?: number      // Unix epoch seconds
   windowDurationMins?: number // Actual window duration (from Codex)
-  /**
-   * True when the slot was populated from a status-only signal — the SDK
-   * confirmed the bucket exists and is healthy ("allowed"), but did not
-   * report a real `utilization` figure. `usedPercentage` is meaningless in
-   * this case (set to 0 as a placeholder); presenters should render an
-   * "OK" badge or similar rather than a literal number.
-   *
-   * Why this exists: the Claude Agent SDK's `me4()` only computes
-   * utilization when crossing warning thresholds (5h ≥ 90%, 7d ≥ 25/50/75%
-   * with timing gates). Below those thresholds the SDK still emits a
-   * `rate_limit_event` carrying just `{status:"allowed", rateLimitType,
-   * resetsAt}` with no number. Distinguishing "we got an event but no
-   * number" from "no event yet" lets the UI show a useful confirmation
-   * ("5h:OK · resets 4h57m") instead of either silence or a fabricated
-   * "0% used" reading.
-   */
-  utilizationUnknown?: boolean
 }
 
 export interface RateLimits {

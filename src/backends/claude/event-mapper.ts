@@ -1064,10 +1064,12 @@ export function mapSDKMessage(msg: any, streamState: ToolStreamState, options?: 
       //      reducer problem — the SDK is filtering data that exists on
       //      the wire.
       //
-      // Until the SDK exposes per-bucket utilization unconditionally, the
-      // best we can do is render an honest "OK" badge for status-only
-      // entries (see `RateLimitEntry.utilizationUnknown`). The fix needs to
-      // happen upstream in @anthropic-ai/claude-agent-sdk.
+      // Until the SDK exposes per-bucket utilization unconditionally, we
+      // forward whatever it gives us; the reducer drops events that have
+      // no derivable percentage (see protocol/reducer.ts) so status-only
+      // pings without a real number don't show up in the UI as a fake
+      // reading. The fix needs to happen upstream in
+      // @anthropic-ai/claude-agent-sdk.
       const info = (msg.rate_limit_info ?? {}) as Record<string, unknown>
       // Bumped to INFO during the rate-limit debugging effort: this fires at
       // most once per response from Anthropic (the SDK only re-emits when

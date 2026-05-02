@@ -1166,16 +1166,19 @@ export function reduce(
       //   thresholds for this bucket". A previous version of this reducer
       //   populated the slot at usedPercentage:0 in that case, which made
       //   the status bar render `5h:~100% remaining` — a fake-precise number
-      //   the SDK never told us. The status bar correctly identified this
-      //   as misleading: the user had no way to tell the difference between
-      //   "SDK confirmed I'm healthy" and "literally at 0% usage".
+      //   the SDK never told us. We later tried a `utilizationUnknown` flag
+      //   so presenters could render an "OK" badge, but neither approach
+      //   crossed the bar of "actually useful": the user can't act on a
+      //   confirmation that they're below 90% / 25%, and the slot just took
+      //   up screen real estate.
       //
       //   We now drop these events at the reducer (the event-mapper still
       //   logs them at INFO so debuggers can see they arrived). The status
-      //   bar's placeholder ("5h:—") is the honest signal: "the SDK has not
-      //   given us a real utilization figure yet". When the user crosses
-      //   any threshold, the SDK starts emitting utilization and the slot
-      //   populates with a real number.
+      //   bar simply hides the slot; once the user crosses any threshold,
+      //   the SDK starts emitting utilization and the slot populates with a
+      //   real number. If the SDK changes to surface real utilization at
+      //   low usage, this branch will start receiving numeric events and
+      //   nothing else needs to change.
       //
       // SDK limitation worth knowing about:
       //   The Claude SDK only emits one rate_limit_event per Anthropic API
@@ -1184,10 +1187,9 @@ export function reduce(
       //   (typically `5h` until you start hitting 7d thresholds). The
       //   per-bucket headers (`...-7d-utilization` etc.) ARE on the wire
       //   for every response, but the SDK strips them before reaching
-      //   bantai. That's why `7d:—` may persist even after many turns;
-      //   it's not a bug in our pipeline.
+      //   bantai. That's why the 7d slot may stay hidden even after many
+      //   turns; it's not a bug in our pipeline.
       let usedPct: number | undefined
-      let utilizationUnknown = false
       if (typeof event.utilization === "number") {
         usedPct = event.utilization * 100
       } else if (typeof event.surpassedThreshold === "number") {
@@ -1196,23 +1198,15 @@ export function reduce(
         usedPct = 100
       } else if (event.status === "allowed_warning") {
         usedPct = 80
-      } else if (event.status === "allowed") {
-        // Status-only signal — SDK confirmed the bucket is healthy but
-        // didn't report a number. Populate the slot with a sentinel
-        // (usedPercentage:0 + utilizationUnknown:true) so presenters can
-        // render an honest "OK" badge instead of either showing nothing
-        // (looks like the SDK is broken) or showing "0% used" (fabricates
-        // precision the user can't trust).
-        usedPct = 0
-        utilizationUnknown = true
       }
+      // status === "allowed" with no number falls through and the event is
+      // dropped (return next, below). See block comment above.
       if (usedPct === undefined) return next
 
       const entry: import("./types").RateLimitEntry = {
         usedPercentage: usedPct,
         resetsAt: event.resetsAt,
         windowDurationMins: event.windowDurationMins,
-        ...(utilizationUnknown ? { utilizationUnknown: true } : {}),
       }
       const rl = next.rateLimits ? { ...next.rateLimits } : {}
       // Route the bucket → slot via the central strategy table (Cluster 9 —

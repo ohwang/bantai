@@ -162,71 +162,11 @@ function computeRatePace(
   }
 }
 
-/**
- * Debug-mode placeholder rendered in place of a `RateEntry` when the SDK
- * hasn't emitted a `rate_limit_event` for that bucket yet. Format:
- *
- *   5h:—   7d:—
- *
- * The em-dash signals "no data" without pretending we have a 0% reading.
- * Once we trust the SDK is reliably emitting non-zero utilization, the
- * preset's `showFiveHour` / `showSevenDay` memos can revert to the
- * data-gated form and this component becomes unreachable.
- */
-function RatePlaceholder(props: { label: string }): JSX.Element {
-  return (
-    <box flexDirection="row">
-      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{`${props.label}:`}</text>
-      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{"—"}</text>
-    </box>
-  )
-}
-
-/**
- * Status-only badge rendered when the SDK confirmed the bucket is healthy
- * ("allowed") but did NOT supply a real utilization number. Format:
- *
- *   5h:OK · 4h57m
- *
- * The "OK" reads as "below all warning thresholds" — a real signal from
- * the SDK, not a fabricated percentage. The reset time, when present,
- * gives the user the one piece of bucket-specific data the SDK does ship
- * even at low usage. See `RateLimitEntry.utilizationUnknown` for the wire
- * shape that triggers this branch.
- */
-function RateStatusBadge(props: {
-  label: string
-  entry: RateLimitEntry
-}): JSX.Element {
-  const resetStr = createMemo(() => {
-    const r = props.entry.resetsAt
-    if (!r) return ""
-    const now = Math.floor(Date.now() / 1000)
-    const left = Math.max(0, r - now)
-    return left > 0 ? formatDuration(left) : ""
-  })
-  return (
-    <box flexDirection="row">
-      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{`${props.label}:`}</text>
-      <text fg={colors.status.success}>{"OK"}</text>
-      <Show when={!!resetStr()}>
-        <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{` · ${resetStr()}`}</text>
-      </Show>
-    </box>
-  )
-}
-
 function RateEntry(props: {
   label: string
   entry: RateLimitEntry
   windowMinsOverride?: number
 }): JSX.Element {
-  // Status-only entries — SDK confirmed bucket is healthy but didn't
-  // report a number — render an "OK" badge instead of a fabricated
-  // percentage. See `RateLimitEntry.utilizationUnknown`.
-  if (props.entry.utilizationUnknown) {
-    return <RateStatusBadge label={props.label} entry={props.entry} />
-  }
   const pace = createMemo(() => computeRatePace(props.entry, props.windowMinsOverride))
   return (
     <box flexDirection="row">
@@ -264,20 +204,17 @@ function ClaudeCompatStatusBar(props: StatusBarPresetProps) {
 
   const gitAvailable = () => data.gitInfo() !== null
 
-  // Rate-limit visibility:
-  //   - 5h: ALWAYS shown (debug mode) — when no data has arrived yet, render
-  //         a placeholder so it's obvious at a glance whether the SDK has
-  //         emitted any `rate_limit_event` for this session. Once we trust
-  //         the SDK is reliably emitting non-zero utilization, restore the
-  //         original "≥ 50% used" gate (see commit history).
-  //   - 7d: shown whenever the SDK reports it.
-  //
-  // (Original behaviour matched the external bash statusline's
-  // `render_rate_entry` wiring, which hid 5h below 50% to keep the status
-  // line short. Bantai is debugging whether the event arrives at all, so
-  // we want the segment present even at 0% / unknown.)
-  const showFiveHour = createMemo(() => true)
-  const showSevenDay = createMemo(() => true)
+  // Rate-limit visibility: only show a slot when the SDK has given us a
+  // real utilization figure. The Claude Agent SDK strips per-bucket headers
+  // below threshold gates (5h ≥ 90%, 7d ≥ 25/50/75% with timing gates) and
+  // emits `{status:"allowed"}` pings without numbers below those thresholds;
+  // those pings are dropped at the reducer (see protocol/reducer.ts) so
+  // `rawRateLimits()` only contains entries we can render honestly.
+  // Hiding the slot entirely when we have nothing to show is the honest
+  // option — better than rendering "5h:OK" / "5h:0%" / "5h:—" placeholders
+  // that imply more knowledge than the SDK gave us.
+  const showFiveHour = createMemo(() => !!data.rawRateLimits()?.fiveHour)
+  const showSevenDay = createMemo(() => !!data.rawRateLimits()?.sevenDay)
 
   return (
     <box flexDirection="column">
@@ -375,43 +312,32 @@ function ClaudeCompatStatusBar(props: StatusBarPresetProps) {
             </Show>
           </Show>
 
-          {/* Rate limits — both 5h and 7d always rendered (debug mode);
-              when no data has arrived yet for a slot we show "—" so it's
-              obvious whether the SDK has emitted any rate_limit_event. */}
+          {/* Rate limits — only rendered when the SDK has given us a real
+              utilization figure. Both `showFiveHour` and `showSevenDay`
+              already gate on entry presence; the inner `<Show keyed>` is
+              what unwraps the optional into a typed entry for `RateEntry`. */}
           <Show when={showFiveHour() || showSevenDay()}>
             <text fg={colors.text.secondary}>{"  "}</text>
-            <Show when={showFiveHour()}>
-              <Show
-                when={data.rawRateLimits()?.fiveHour}
-                keyed
-                fallback={<RatePlaceholder label="5h" />}
-              >
-                {(fh: RateLimitEntry) => (
-                  <RateEntry
-                    label="5h"
-                    entry={fh}
-                    windowMinsOverride={300}
-                  />
-                )}
-              </Show>
+            <Show when={showFiveHour() && data.rawRateLimits()?.fiveHour} keyed>
+              {(fh: RateLimitEntry) => (
+                <RateEntry
+                  label="5h"
+                  entry={fh}
+                  windowMinsOverride={300}
+                />
+              )}
             </Show>
             <Show when={showFiveHour() && showSevenDay()}>
               <text fg={colors.text.secondary}>{" "}</text>
             </Show>
-            <Show when={showSevenDay()}>
-              <Show
-                when={data.rawRateLimits()?.sevenDay}
-                keyed
-                fallback={<RatePlaceholder label="7d" />}
-              >
-                {(sd: RateLimitEntry) => (
-                  <RateEntry
-                    label="7d"
-                    entry={sd}
-                    windowMinsOverride={10080}
-                  />
-                )}
-              </Show>
+            <Show when={showSevenDay() && data.rawRateLimits()?.sevenDay} keyed>
+              {(sd: RateLimitEntry) => (
+                <RateEntry
+                  label="7d"
+                  entry={sd}
+                  windowMinsOverride={10080}
+                />
+              )}
             </Show>
           </Show>
         </box>

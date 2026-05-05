@@ -8,10 +8,13 @@
  * Replaces the hand-rolled parser in flags.ts.
  */
 
-import type { Command } from "commander"
+import { Option, type Command } from "commander"
 import type { SessionConfig, PermissionMode } from "../protocol/types"
 import { knownBackendIds } from "../protocol/registry"
-import { listPermissionModesForCli } from "../protocol/permission-modes"
+import {
+  knownPermissionModeIds,
+  listPermissionModesForCli,
+} from "../protocol/permission-modes"
 import { isKnownEffortLevel, listEffortLevelsForCli } from "../protocol/effort-levels"
 import { listThemes } from "../frontends/tui/theme/registry"
 import { listStatusBars } from "../frontends/tui/status-bar/registry"
@@ -177,7 +180,12 @@ export function addTuiOptions(cmd: Command): Command {
     .option("-c, --continue", "Continue most recent session")
     .option("-r, --resume [id]", "Resume a session (omit id for interactive picker)")
     .option("-b, --backend <name>", `Backend (${knownBackendIds().join(", ")})`)
-    .option("--permission-mode <mode>", `Permission mode (${listPermissionModesForCli()})`)
+    .addOption(
+      new Option(
+        "--permission-mode <mode>",
+        `Permission mode (${listPermissionModesForCli()})`,
+      ).choices(knownPermissionModeIds()),
+    )
     .option("--dangerously-skip-permissions", "Shorthand for full-access bypass mode")
     .option("--max-turns <n>", "Maximum turns", parseIntPositive)
     .option("--max-budget <usd>", "Maximum budget in USD", parseFloatPositive)

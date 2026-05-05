@@ -41,10 +41,19 @@ const MAX_LINE_LENGTH = 200
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Convert absolute paths to relative (from cwd) for compact display,
- *  then truncate long paths with smart middle-truncation. */
-function relativePath(absPath: string): string {
-  const cwd = process.cwd()
+/** Convert absolute paths to relative (from the agent session's cwd) for
+ *  compact display, then truncate long paths with smart middle-truncation.
+ *
+ *  IMPORTANT: `cwd` MUST be the *session's* cwd (`agent.config.cwd`), not
+ *  `process.cwd()`. The bantai launcher captures the user's launch dir into
+ *  `flags.config.cwd` but never `process.chdir()`s, so the bantai process
+ *  cwd and the agent's cwd diverge whenever the user runs e.g.
+ *  `bantai --cwd <other-project>` or whenever a future server frontend hands
+ *  the backend an arbitrary cwd. Computing paths off `process.cwd()` makes
+ *  the dialog render `../../proj-test/src/hello.ts` instead of
+ *  `src/hello.ts` — see permission-audit.md §F-2.
+ */
+function relativePath(absPath: string, cwd: string): string {
   let rel: string
   if (absPath.startsWith(cwd + "/")) {
     rel = absPath.slice(cwd.length + 1)
@@ -89,17 +98,21 @@ function actionLabel(tool: string, displayName?: string): string {
   }
 }
 
-/** Extract path string from tool input */
-export function extractPath(_tool: string, input: unknown): string {
+/** Extract path string from tool input.
+ *
+ *  `cwd` MUST be the active session's cwd (`agent.config.cwd`), not the
+ *  bantai process cwd. See `relativePath` above for why — same root cause.
+ */
+export function extractPath(_tool: string, input: unknown, cwd: string): string {
   const inp = input as Record<string, unknown> | null
   if (!inp) return ""
-  if (typeof inp.file_path === "string" && inp.file_path) return relativePath(inp.file_path)
+  if (typeof inp.file_path === "string" && inp.file_path) return relativePath(inp.file_path, cwd)
   if (typeof inp.command === "string" && inp.command) return inp.command
   if (inp.pattern) {
-    const dir = inp.path ? relativePath(String(inp.path)) : ""
+    const dir = inp.path ? relativePath(String(inp.path), cwd) : ""
     return `${inp.pattern}${dir ? ` in ${dir}` : ""}`
   }
-  if (inp.path) return relativePath(String(inp.path))
+  if (inp.path) return relativePath(String(inp.path), cwd)
   return ""
 }
 
@@ -222,8 +235,14 @@ function suggestionLabel(toolName: string, ruleContent: string): string | null {
  * Always uses `perm.tool` as the authoritative tool name — suggestions may
  * reference a different tool (e.g. a parent category), which caused Bug #1
  * where the label showed "Always allow Read" for a Bash tool.
+ *
+ * `sessionCwd` is used as the dirname fallback when SDK suggestions don't
+ * carry an `addDirectories` entry. The dirname displayed here MUST match
+ * the dirname the resulting "always allow" rule actually scopes to —
+ * historically this read `process.cwd()` and could mislead the user about
+ * where the rule was being applied (see permission-audit.md §F-2).
  */
-export function option2Text(perm: PermissionRequestEvent): string {
+export function option2Text(perm: PermissionRequestEvent, _sessionCwd?: string): string {
   // 1. Check for .claude/ path edits — specialized label
   const inp = perm.input as Record<string, unknown> | null
   const filePath = typeof inp?.file_path === "string" ? inp.file_path : ""
@@ -552,13 +571,18 @@ export function PermissionDialog() {
           return all
         }
 
+        // Resolve session cwd from the active agent (NOT process.cwd() — see
+        // F-2: bantai never process.chdir()s, so process.cwd() can differ from
+        // the cwd the SDK is actually rooted in).
+        const sessionCwd = () => agent.config.cwd ?? process.cwd()
+
         // Don't show path separately for Bash (command is shown in preview)
         const pathStr = () => {
           if (perm().tool === "Bash" && previewLines()) return ""
-          return extractPath(perm().tool, perm().input)
+          return extractPath(perm().tool, perm().input, sessionCwd())
         }
         const question = () => questionText(perm())
-        const opt2 = () => option2Text(perm())
+        const opt2 = () => option2Text(perm(), sessionCwd())
         const description = () => perm().description
 
         return (

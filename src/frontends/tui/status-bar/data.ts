@@ -340,7 +340,13 @@ export function useStatusBarData(permMode: Accessor<PermissionMode>): StatusBarD
   const agent = useAgent()
 
   const dims = useTerminalDimensions()
-  const projectName = path.basename(process.cwd())
+  // Project name is derived from the active session's cwd (agent.config.cwd),
+  // NOT process.cwd(). The bantai launcher captures the user's launch dir
+  // into flags.config.cwd but never process.chdir()s, so the bantai process
+  // cwd and the agent's cwd diverge whenever the session was launched with
+  // --cwd <somewhere-else> (or, in future, when a server frontend hands the
+  // backend an arbitrary cwd). See permission-audit.md §F-2.
+  const projectName = path.basename(agent.config.cwd ?? process.cwd())
 
   // -- Git info -----------------------------------------------------------
   //

@@ -229,45 +229,66 @@ describe("extractPreviewLines", () => {
 // ---------------------------------------------------------------------------
 
 describe("extractPath", () => {
+  // The third argument (`cwd`) is the active session cwd, NOT the test
+  // runner's cwd — see F-2 in permission-audit.md. We pass an explicit cwd
+  // here so the dialog tests don't accidentally couple to the bantai
+  // process cwd, which is what the bug was in the first place.
+  const SESSION_CWD = "/tmp/playground"
+
   it("returns relative path for file_path string", () => {
-    // extractPath calls relativePath, which uses process.cwd()
-    const cwd = process.cwd()
-    const result = extractPath("Write", { file_path: `${cwd}/src/test.ts` })
+    const result = extractPath("Write", { file_path: `${SESSION_CWD}/src/test.ts` }, SESSION_CWD)
     expect(result).toBe("src/test.ts")
   })
 
   it("returns command string for Bash tool", () => {
-    const result = extractPath("Bash", { command: "echo hello" })
+    const result = extractPath("Bash", { command: "echo hello" }, SESSION_CWD)
     expect(result).toBe("echo hello")
   })
 
   it("returns empty string for non-string file_path", () => {
-    expect(extractPath("Write", { file_path: 42 })).toBe("")
-    expect(extractPath("Write", { file_path: null })).toBe("")
-    expect(extractPath("Write", { file_path: undefined })).toBe("")
+    expect(extractPath("Write", { file_path: 42 }, SESSION_CWD)).toBe("")
+    expect(extractPath("Write", { file_path: null }, SESSION_CWD)).toBe("")
+    expect(extractPath("Write", { file_path: undefined }, SESSION_CWD)).toBe("")
   })
 
   it("returns empty string when both file_path and command are missing", () => {
-    expect(extractPath("Write", {})).toBe("")
-    expect(extractPath("Write", { other: "value" })).toBe("")
+    expect(extractPath("Write", {}, SESSION_CWD)).toBe("")
+    expect(extractPath("Write", { other: "value" }, SESSION_CWD)).toBe("")
   })
 
   it("returns empty string for null input", () => {
-    expect(extractPath("Write", null)).toBe("")
+    expect(extractPath("Write", null, SESSION_CWD)).toBe("")
   })
 
   it("returns pattern for Glob/Grep tools", () => {
-    const result = extractPath("Glob", { pattern: "**/*.ts" })
+    const result = extractPath("Glob", { pattern: "**/*.ts" }, SESSION_CWD)
     expect(result).toBe("**/*.ts")
   })
 
   it("returns pattern with directory for Glob tool", () => {
-    const cwd = process.cwd()
     const result = extractPath("Glob", {
       pattern: "**/*.ts",
-      path: `${cwd}/src`,
-    })
+      path: `${SESSION_CWD}/src`,
+    }, SESSION_CWD)
     expect(result).toBe("**/*.ts in src")
+  })
+
+  // F-2 regression: extractPath must compute paths against the SESSION cwd
+  // (passed by the caller from agent.config.cwd), not the test runner's
+  // process.cwd(). Drive a fake session cwd of /tmp/playground; assert the
+  // result is rooted there even though the test process is somewhere else.
+  it("(F-2) computes path relative to session cwd, not process.cwd()", () => {
+    const sessionCwd = "/tmp/playground"
+    const result = extractPath(
+      "Write",
+      { file_path: `${sessionCwd}/src/hello.ts` },
+      sessionCwd,
+    )
+    // Under the bug, this would render as "../../../tmp/playground/src/hello.ts"
+    // (or similar) because process.cwd() != sessionCwd.
+    expect(result).toBe("src/hello.ts")
+    expect(result).not.toContain("..")
+    expect(result).not.toContain(process.cwd())
   })
 })
 

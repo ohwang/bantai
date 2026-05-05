@@ -3,6 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import { colors } from "../theme/tokens"
 import { truncatePathMiddle } from "../../../utils/truncate"
 import { formatDuration, formatTokens } from "../../../utils/format"
+import { useAgent } from "../context/agent"
 import type { TurnFileChange, TurnSummaryInfo } from "../../../protocol/types"
 
 const ACTION_ICONS: Record<string, string> = {
@@ -77,6 +78,14 @@ export function TurnSummary(props: {
   files?: TurnFileChange[]
   summary?: TurnSummaryInfo | null
 }) {
+  // Path display is rooted at the active session's cwd (agent.config.cwd),
+  // not process.cwd(). The bantai launcher captures launch dir without ever
+  // process.chdir()ing, so the two diverge whenever --cwd points elsewhere
+  // (or a future server frontend hands the backend an arbitrary cwd).
+  // See permission-audit.md §F-2.
+  const agent = useAgent()
+  const sessionCwd = () => agent.config.cwd ?? process.cwd()
+
   // Deduplicate by path (keep most significant action: create > edit > read)
   const deduped = () => {
     const files = props.files
@@ -111,8 +120,9 @@ export function TurnSummary(props: {
             {(file) => {
               const icon = ACTION_ICONS[file.action] ?? " "
               const color = actionColor(file.action)
-              const rel = file.path.startsWith(process.cwd() + "/")
-                ? file.path.slice(process.cwd().length + 1)
+              const cwd = sessionCwd()
+              const rel = file.path.startsWith(cwd + "/")
+                ? file.path.slice(cwd.length + 1)
                 : file.path
               return (
                 <text fg={color} attributes={TextAttributes.DIM}>

@@ -6,6 +6,7 @@
  */
 
 import { Show, createSignal, createEffect, onCleanup, type Accessor } from "solid-js"
+import { useAgent } from "../context/agent"
 import { PlanBlock } from "./plan-block"
 import { ThinkingBlock } from "./thinking-block"
 import { ToolBlockView, isUserDecline } from "./tool-view"
@@ -138,6 +139,13 @@ export function BlockView(props: { block: Block; viewLevel: ViewLevel; prevType?
 function CollapsedToolLine(props: { block: Extract<Block, { type: "tool" }> }) {
   const b = () => props.block
 
+  // Path display roots at the active session's cwd, NOT process.cwd(). The
+  // bantai launcher captures launch dir into flags.config.cwd but never
+  // process.chdir()s, so the two diverge whenever --cwd points elsewhere.
+  // See permission-audit.md §F-2.
+  const agent = useAgent()
+  const sessionCwd = () => agent.config.cwd ?? process.cwd()
+
   // --- Minimum display time: keep showing "running" for at least 700ms after completion ---
   const MIN_DISPLAY_MS = 700
   const [displayRunning, setDisplayRunning] = createSignal(b().status === "running")
@@ -178,7 +186,7 @@ function CollapsedToolLine(props: { block: Extract<Block, { type: "tool" }> }) {
     if (!inp) return ""
     if (inp.file_path) {
       const raw = String(inp.file_path)
-      const cwd = process.cwd()
+      const cwd = sessionCwd()
       const rel = raw.startsWith(cwd + "/") ? raw.slice(cwd.length + 1) : raw
       return ` ${truncatePathMiddle(rel, 60)}`
     }

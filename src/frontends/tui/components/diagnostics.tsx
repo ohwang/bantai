@@ -391,7 +391,10 @@ export function DiagnosticsPanel(_props: { onClose: () => void }) {
     result.push({
       title: "CONFIG",
       entries: [
-        { key: "CWD:", value: process.cwd() },
+        // Diagnostics shows the active SESSION's cwd (agent.config.cwd), not
+        // the bantai process cwd. The two can diverge whenever bantai is
+        // launched with --cwd <somewhere-else>; see permission-audit.md §F-2.
+        { key: "CWD:", value: agent.config.cwd ?? process.cwd() },
         { key: "Effort:", value: session.currentEffort || "high (default)" },
         { key: "Thinking:", value: agent.config.thinking ? agent.config.thinking.type + (agent.config.thinking.type === "enabled" && agent.config.thinking.budgetTokens ? ` (${agent.config.thinking.budgetTokens} tokens)` : "") : "adaptive (default)" },
         { key: "Log file:", value: log.getLogFile() },

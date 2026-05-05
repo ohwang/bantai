@@ -17,6 +17,7 @@ import { truncatePathMiddle, truncateToWidth } from "../../../utils/truncate"
 import { createThrottledValue } from "../../../utils/throttled-value"
 import { isMcpTool, parseMcpToolName } from "./mcp-tool-view"
 import { buildUnifiedDiff, looksLikeUnifiedDiff } from "../../../utils/format-diff"
+import { useAgent } from "../context/agent"
 
 export type ViewLevel = "collapsed" | "expanded" | "show_all"
 
@@ -181,6 +182,13 @@ const BASH_MAX_LINES = 10
 export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; viewLevel: ViewLevel }) {
   const b = () => props.block
 
+  // Path display roots at the active session's cwd, NOT process.cwd(). The
+  // bantai launcher captures the user's launch dir into flags.config.cwd
+  // but never process.chdir()s, so the two diverge any time the session
+  // was launched with --cwd <somewhere-else>. See permission-audit.md §F-2.
+  const agent = useAgent()
+  const sessionCwd = () => agent.config.cwd ?? process.cwd()
+
   // Throttled status: prevents intermediate states that flash for <100ms
   // from being painted. The raw b().status updates at 16ms batch rate;
   // the throttled version updates at most every 100ms.
@@ -226,7 +234,7 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
     const max = argBudget()
     if (inp.file_path) {
       const raw = String(inp.file_path)
-      const cwd = process.cwd()
+      const cwd = sessionCwd()
       const rel = raw.startsWith(cwd + "/") ? raw.slice(cwd.length + 1) : raw
       return truncatePathMiddle(rel, max)
     }
@@ -397,13 +405,16 @@ export function ToolBlockView(props: { block: Extract<Block, { type: "tool" }>; 
 
 /** Extract the primary argument from a tool block's input.
  *  `maxWidth` is the budget (chars). Sized off live terminal width by the
- *  caller — see `ToolSummaryView` below. */
-function extractPrimaryArg(_tool: string, input: unknown, maxWidth: number): string {
+ *  caller — see `ToolSummaryView` below.
+ *
+ *  `cwd` is the active session's cwd (`agent.config.cwd`); used to render
+ *  file paths relative to the session root rather than the bantai process
+ *  cwd (see permission-audit.md §F-2). */
+function extractPrimaryArg(_tool: string, input: unknown, maxWidth: number, cwd: string): string {
   const inp = input as Record<string, unknown> | null
   if (!inp) return ""
   if (inp.file_path && typeof inp.file_path === "string") {
     const raw = inp.file_path
-    const cwd = process.cwd()
     const rel = raw.startsWith(cwd + "/") ? raw.slice(cwd.length + 1) : raw
     return truncatePathMiddle(rel, maxWidth)
   }
@@ -469,6 +480,11 @@ function formatElapsed(seconds: number): string {
 
 /** Collapsed tool summary view — shows each tool with its primary arg */
 export function ToolSummaryView(props: { tools: ToolBlock[] }) {
+  // Same F-2 fix as ToolBlockView above — root path display at the active
+  // session's cwd, not the bantai process cwd.
+  const agent = useAgent()
+  const sessionCwd = () => agent.config.cwd ?? process.cwd()
+
   // Tick signal for running tool elapsed time — updates every second
   const [tick, setTick] = createSignal(Date.now())
   const hasRunning = createMemo(() => props.tools.some(t => t.status === "running"))
@@ -507,7 +523,7 @@ export function ToolSummaryView(props: { tools: ToolBlock[] }) {
       const SUFFIX_RESERVE = 30
       const overhead = 2 + 2 + verb.length + 1 + SUFFIX_RESERVE
       const argMax = Math.max(TOOL_MIN_BUDGET, Math.min(TOOL_MAX_BUDGET, w - overhead))
-      const arg = extractPrimaryArg(tool.tool, tool.input, argMax)
+      const arg = extractPrimaryArg(tool.tool, tool.input, argMax, sessionCwd())
       const argSuffix = arg ? ` ${arg}` : ""
 
       if (tool.status === "running") {

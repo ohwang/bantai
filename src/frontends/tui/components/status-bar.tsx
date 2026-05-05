@@ -33,6 +33,7 @@ import { ansiToStyledText } from "../../../utils/ansi-to-styled"
 import { useStatusBarData, rateLimitColor } from "../status-bar/data"
 import { resolveStatusBar } from "../status-bar/registry"
 import { activeStatusBarId } from "../status-bar/active"
+import { createPermissionModeCycler } from "../status-bar/permission-mode-cycler"
 import type { StatusBarPreset } from "../status-bar/types"
 
 // ---------------------------------------------------------------------------
@@ -105,26 +106,21 @@ export function StatusBar(props: { hint?: string | null }) {
     return PERM_MODE_CYCLE.filter(m => supported.includes(m))
   })
 
+  // -- Cycler controller: handles Shift-Tab, including the WAITING_FOR_PERM
+  //    queue (F-15). During a permission dialog we accumulate the next mode
+  //    in `pendingPermissionMode` and apply it once state leaves
+  //    WAITING_FOR_PERM, so the keypress is no longer silently eaten. --
+  const cycler = createPermissionModeCycler({
+    sessionState: () => state.sessionState,
+    currentMode: permMode,
+    availableModes,
+    applyMode: (mode) => agent.setPermissionMode(mode),
+  })
+  const pendingPermissionMode = cycler.pendingPermissionMode
+
   useKeyboard((event) => {
     if (event.shift && event.name === "tab") {
-      if (
-        state.sessionState === "WAITING_FOR_PERM" ||
-        state.sessionState === "WAITING_FOR_ELIC"
-      ) {
-        return
-      }
-      const modes = availableModes()
-      if (modes.length <= 1) return
-
-      const prevMode = permMode()
-      const startIdx = modes.indexOf(prevMode)
-
-      const nextIdx = (startIdx + 1) % modes.length
-      const nextMode = modes[nextIdx] ?? "default"
-      // setPermissionMode handles both the backend push and signal update,
-      // so the diagnostics panel + status bar swap to `nextMode` in the
-      // same render frame. Errors are logged inside the helper.
-      void agent.setPermissionMode(nextMode)
+      cycler.handleShiftTab()
     }
   })
 
@@ -254,6 +250,18 @@ export function StatusBar(props: { hint?: string | null }) {
         {data.sandboxHint() && (
           <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{` (${data.sandboxHint()})`}</text>
         )}
+        {/* F-15: when a Shift-Tab press during WAITING_FOR_PERM has queued
+            a mode change, surface it inline so the user sees their input
+            was registered (even though the dialog is still blocking the
+            apply). The hint clears the moment the dialog resolves and the
+            queued mode takes effect. */}
+        <Show when={pendingPermissionMode()}>
+          {(pending: () => PermissionMode) => (
+            <text fg={colors.accent.highlight} attributes={TextAttributes.DIM}>
+              {` → ${permissionModeLabel(pending())} (after this dialog)`}
+            </text>
+          )}
+        </Show>
         <text fg={colors.text.muted}>{" (shift+tab to cycle)"}</text>
 
         <box flexGrow={1} />

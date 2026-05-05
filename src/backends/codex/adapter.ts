@@ -76,9 +76,17 @@ import type {
 //   - { type: "dangerFullAccess" } → No sandbox restrictions at all.
 //
 // Semantic gaps vs Claude's unified model:
-//   1. "acceptEdits" in Claude auto-approves edits. In Codex, approval policy
-//      is "on-request" (still asks), but the SANDBOX allows edits. The user
-//      experience is different: Codex still prompts for file changes.
+//   1. "acceptEdits" — Codex has no native acceptEdits semantic: approval
+//      policy "on-request" still prompts on every edit, and there's no
+//      sandbox shape that means "auto-approve edits but ask for commands."
+//      Mapping it to anything else would be lying labels (audit §F-24). The
+//      mode is omitted from the per-mode `Record`s below (see the
+//      `Exclude<PermissionMode, "acceptEdits">` type), and the `to…Policy`
+//      helpers fall back to the `default` value when callers ask for it.
+//      `capabilities().supportedPermissionModes` derives from
+//      `Object.keys(CODEX_APPROVAL_POLICY)` so `acceptEdits` is intentionally
+//      absent — the Shift-Tab cycler skips it instead of cycling through a
+//      mode that lies about what it does.
 //   2. "default" in Claude blocks commands without approval. In Codex,
 //      "default" uses workspaceWrite sandbox which blocks .git writes
 //      REGARDLESS of approval. A user who approves `git commit` in Codex
@@ -94,20 +102,34 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
+ * Permission modes that have a real, distinct mapping for Codex.
+ *
+ * `acceptEdits` is intentionally excluded here (audit §F-24): on the wire
+ * it would be byte-identical to `default` (no sandbox shape means
+ * "auto-approve edits but ask for commands"), so exposing it would be a
+ * lying label in the cycler. Adding a NEW PermissionMode is still a
+ * compile-time error inside the records below — TS will complain that the
+ * key is missing — but `acceptEdits` is the one mode that's deliberately
+ * omitted, and the `to…Policy` helpers fall back to the `default` mapping
+ * when callers ask for it.
+ */
+type CodexSupportedMode = Exclude<PermissionMode, "acceptEdits">
+
+/**
  * Map our `PermissionMode` to Codex's approval-policy string.
  *
- * Typed as `Record<PermissionMode, string>` (after the `mode ?? "default"`
- * normalisation) so adding a new permission mode is a compile-time error
- * here unless we explicitly decide whether Codex prompts for it (Cluster 5
- * / L6 — `auto` and `plan` used to be silently inconsistent between this
+ * Typed as `Record<CodexSupportedMode, string>` — every supported mode MUST
+ * have an entry, but `acceptEdits` is intentionally absent (see the type
+ * doc above and audit §F-24). Adding a new mode is a compile-time error
+ * unless we explicitly decide whether Codex prompts for it (Cluster 5 / L6
+ * — `auto` and `plan` used to be silently inconsistent between this
  * function and `capabilities().supportedPermissionModes`).
  *
  * Approval policy only controls prompting behavior, not filesystem access.
  * See toCodexSandboxPolicy() for the filesystem enforcement side.
  */
-const CODEX_APPROVAL_POLICY: Record<PermissionMode, string> = {
+const CODEX_APPROVAL_POLICY: Record<CodexSupportedMode, string> = {
   default: "on-request",
-  acceptEdits: "on-request",
   // `plan` uses `untrusted` so codex auto-runs ONLY its server-side trusted
   // set (read-only commands like ls/cat/sed) and escalates anything that
   // could write — bantai's adapter then auto-declines those escalations
@@ -129,14 +151,21 @@ const CODEX_APPROVAL_POLICY: Record<PermissionMode, string> = {
 }
 
 export function toCodexApprovalPolicy(mode?: PermissionMode): string {
-  return CODEX_APPROVAL_POLICY[mode ?? "default"]
+  // F-24: `acceptEdits` is omitted from CODEX_APPROVAL_POLICY because codex
+  // has no on-the-wire equivalent — it would be byte-identical to `default`.
+  // Programmatic callers that still pass `acceptEdits` (e.g. legacy session
+  // configs) get the `default` mapping rather than a TS-uncovered crash.
+  const key: CodexSupportedMode =
+    mode === "acceptEdits" || mode === undefined ? "default" : mode
+  return CODEX_APPROVAL_POLICY[key]
 }
 
 /**
  * Map our `PermissionMode` to Codex's sandbox policy.
  *
  * Per-mode `Record` (mirroring CODEX_APPROVAL_POLICY) so adding a mode is a
- * compile-time error here unless we decide its sandbox shape.
+ * compile-time error here unless we decide its sandbox shape. `acceptEdits`
+ * is intentionally absent (audit §F-24).
  *
  * `undefined` falls through to codex's default "workspaceWrite" sandbox:
  *   - Repo files are writable
@@ -151,9 +180,8 @@ export function toCodexApprovalPolicy(mode?: PermissionMode): string {
  * filesystem restrictions. `dontAsk` intentionally STAYS in workspaceWrite
  * so it has meaningfully safer semantics than bypass — see §F-7.
  */
-const CODEX_SANDBOX_POLICY: Record<PermissionMode, CodexSandboxPolicy | undefined> = {
+const CODEX_SANDBOX_POLICY: Record<CodexSupportedMode, CodexSandboxPolicy | undefined> = {
   default: undefined,
-  acceptEdits: undefined,
   auto: undefined,
   // Defence-in-depth for `plan` — see audit §F-17.
   plan: { type: "readOnly" },
@@ -166,7 +194,45 @@ const CODEX_SANDBOX_POLICY: Record<PermissionMode, CodexSandboxPolicy | undefine
 export function toCodexSandboxPolicy(
   mode?: PermissionMode,
 ): CodexSandboxPolicy | undefined {
-  return CODEX_SANDBOX_POLICY[mode ?? "default"]
+  // F-24: see toCodexApprovalPolicy() — `acceptEdits` falls back to default.
+  const key: CodexSupportedMode =
+    mode === "acceptEdits" || mode === undefined ? "default" : mode
+  return CODEX_SANDBOX_POLICY[key]
+}
+
+// ---------------------------------------------------------------------------
+// F-11 session-deny key derivation
+//
+// Maps an incoming approval RPC (method + params) to a stable string key.
+// The key is what gets stored in `sessionDeniedTools`, and what the next
+// approval request is matched against. Returns `null` for methods that have
+// no sensible coarse grain — those are simply not session-denyable, and the
+// dialog is shown again.
+//
+// Stability matters: codex retries with slightly different params (e.g.
+// `python3 -c '...'` vs `python3 -c '...other'`) when escalating after a
+// refused apply_patch, so we key on coarse fingerprints (head token,
+// fixed string) rather than full param hashes.
+// ---------------------------------------------------------------------------
+export function sessionDenyKey(method: string, params: unknown): string | null {
+  const p = (params ?? {}) as { command?: unknown }
+  switch (method) {
+    case "item/commandExecution/requestApproval": {
+      const cmd = p.command
+      const head = typeof cmd === "string"
+        ? cmd.trim().split(/\s+/)[0]
+        : Array.isArray(cmd) && typeof cmd[0] === "string"
+          ? (cmd[0] as string)
+          : null
+      return head ? `cmd:${head}` : null
+    }
+    case "item/fileChange/requestApproval":
+      return "fileChange"
+    case "item/permissions/requestApproval":
+      return "permissions"
+    default:
+      return null
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +278,25 @@ export class CodexAdapter extends BaseAdapter {
     string,
     { rpcId: number | string; method: string; params: any }
   >()
+
+  // F-11: tools the user denied with `denyForSession`. Subsequent matching
+  // approval requests are auto-declined here in the adapter without opening
+  // a permission dialog. Mirrors the claude adapter (see
+  // src/backends/claude/adapter.ts:260 — `private sessionDeniedTools`).
+  //
+  // The key is derived from the approval RPC method + params, picked to be
+  // stable across re-asks of the "same" tool:
+  //   - item/commandExecution/requestApproval → first command token
+  //     (e.g. `git commit -m "x"` → `cmd:git`). Cheap and good enough — codex
+  //     tends to retry with the same head when escalating.
+  //   - item/fileChange/requestApproval → "fileChange" (file edits all share
+  //     one key — denying once silences the whole edit channel for the
+  //     session, matching how Claude's `denyForSession` deny-Edit works).
+  //   - item/permissions/requestApproval → "permissions" (broad escalation;
+  //     same coarse grain as fileChange).
+  // Keys for unhandled methods are not produced — the lookup simply misses.
+  private sessionDeniedTools = new Set<string>()
+
 
   // Whether the system prompt has been prepended to the first turn
   private systemPromptApplied = false
@@ -282,16 +367,16 @@ export class CodexAdapter extends BaseAdapter {
 
     const sandboxInfo: SandboxInfo = {
       statusHint: "sandbox: .git read-only",
+      // F-24: `acceptEdits` is intentionally absent — codex has no native
+      // equivalent (it would be byte-identical to `default` on the wire), so
+      // the cycler in the status bar skips it rather than offering a label
+      // that lies about what it does. `modeDetails` is `Partial<Record<…>>`
+      // so omission is well-typed.
       modeDetails: {
         default: {
           ...SANDBOXED_DEFAULT,
           caveats:
             "Approving a command does not override sandbox restrictions. git commit/push will fail.",
-        },
-        acceptEdits: {
-          ...SANDBOXED_DEFAULT,
-          caveats:
-            "Codex still prompts for file changes (no native acceptEdits). Sandbox blocks .git writes.",
         },
         plan: {
           ...READ_ONLY,
@@ -322,8 +407,10 @@ export class CodexAdapter extends BaseAdapter {
       // Derived from the CODEX_APPROVAL_POLICY record so this list cannot
       // drift from the actual mapping (Cluster 5 / L6 — `auto` and `plan`
       // were silently missing here even though the policy switch
-      // recognised them). Since every PermissionMode now has an entry in
-      // the policy record, every PermissionMode is supported.
+      // recognised them). `acceptEdits` is intentionally absent from the
+      // record (audit §F-24) and therefore from this list — the cycler in
+      // the status bar will skip it rather than expose a mode that's
+      // byte-identical to `default` on the wire.
       supportedPermissionModes: Object.keys(CODEX_APPROVAL_POLICY) as PermissionMode[],
       sandboxInfo,
     } satisfies BackendCapabilities
@@ -394,9 +481,22 @@ export class CodexAdapter extends BaseAdapter {
     })
   }
 
-  denyToolUse(id: string, _reason?: string, _options?: { denyForSession?: boolean }): void {
+  denyToolUse(id: string, _reason?: string, options?: { denyForSession?: boolean }): void {
     const approval = this.pendingApprovals.get(id)
     if (!approval) return
+
+    // F-11: when the user picks "deny for session", record a key derived
+    // from this approval so future requests for the "same" tool are
+    // auto-declined in handleServerRequest without re-opening a dialog.
+    if (options?.denyForSession) {
+      const key = sessionDenyKey(approval.method, approval.params)
+      if (key) {
+        this.sessionDeniedTools.add(key)
+        log.info("Codex tool denied for session", { key, method: approval.method })
+      } else {
+        log.debug("Codex denyForSession: no stable key for method", { method: approval.method })
+      }
+    }
 
     log.info("Codex approval: deny", { id, method: approval.method, rpcId: approval.rpcId })
     this.transport?.respond(approval.rpcId, { decision: "decline" })
@@ -972,6 +1072,20 @@ export class CodexAdapter extends BaseAdapter {
         method === "item/commandExecution/requestApproval"
       ) {
         log.info("Codex approval auto-declined in plan mode", { method, rpcId })
+        this.transport?.respond(rpcId, { decision: "decline" })
+        return
+      }
+    }
+
+    // F-11: if the user previously picked "deny for session" for this kind
+    // of approval, decline it here without surfacing a dialog. The key is
+    // derived the same way for both record + lookup so a denial of
+    // `git commit` will also deny `git push`, denial of any fileChange
+    // will deny all fileChanges, etc. — see sessionDenyKey() doc above.
+    {
+      const key = sessionDenyKey(method, params)
+      if (key && this.sessionDeniedTools.has(key)) {
+        log.info("Codex approval auto-declined by session deny list", { method, rpcId, key })
         this.transport?.respond(rpcId, { decision: "decline" })
         return
       }

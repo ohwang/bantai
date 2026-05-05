@@ -74,22 +74,31 @@ describe("effort level registry", () => {
 // matrix used to disagree about which permission modes were supported.
 // `auto` was missing from both, `plan` was in the switch but not in
 // supportedPermissionModes. The fix derives caps from a Record keyed
-// by every PermissionMode, so the two cannot drift.
+// by every supported PermissionMode, so the two cannot drift.
+//
+// F-24 update: `acceptEdits` is now intentionally absent from
+// supportedPermissionModes — it has no on-the-wire equivalent in codex
+// (would be byte-identical to `default`), so exposing it in the cycler
+// would be a lying label.
 describe("Codex capabilities reconciliation (L6)", () => {
   it("supportedPermissionModes includes every mode the approval policy maps", () => {
     const codex = new CodexAdapter()
     const supported = codex.capabilities().supportedPermissionModes
     expect(supported).toContain("default")
-    expect(supported).toContain("acceptEdits")
     expect(supported).toContain("plan")
     expect(supported).toContain("auto")
     expect(supported).toContain("bypassPermissions")
     expect(supported).toContain("dontAsk")
+    // F-24: acceptEdits is omitted on purpose — the cycler should skip it.
+    expect(supported).not.toContain("acceptEdits")
     codex.close()
   })
 
   it("toCodexApprovalPolicy returns a real policy for every PermissionMode", () => {
     expect(toCodexApprovalPolicy("default")).toBe("on-request")
+    // F-24: `acceptEdits` falls back to the `default` mapping rather than
+    // having its own entry — codex has no native acceptEdits semantic, so
+    // the helper returns the same wire value as `default`.
     expect(toCodexApprovalPolicy("acceptEdits")).toBe("on-request")
     // `plan` uses "untrusted" so writes escalate (and then auto-decline in
     // the adapter's handleServerRequest) — see audit §F-17.

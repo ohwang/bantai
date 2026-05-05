@@ -164,6 +164,22 @@ export interface BackendDescriptor {
    * entirely.
    */
   defaultPermissionMode?: PermissionMode
+  /**
+   * If true, `setPermissionMode()` is a no-op for the running turn — the
+   * adapter only consults `config.permissionMode` when the NEXT turn starts.
+   * The TUI cycler (Shift-Tab) gates on this flag during RUNNING so the user
+   * isn't tricked into thinking a mid-turn cycle changed the policy of the
+   * in-flight turn.
+   *
+   * Default false: the backend honours mode changes for the running turn.
+   *
+   * Codex sets this true because approval/sandbox policy is sent per-turn
+   * via `turn/start` params; mid-turn `setPermissionMode()` updates
+   * `this.config.permissionMode` but the in-flight turn keeps the policy it
+   * was started with. Without this flag the status bar swaps instantly while
+   * the actual enforcement lags by a turn — Audit §F-23.
+   */
+  permissionModeAppliesOnNextTurn?: boolean
 }
 
 function binaryOnPath(name: string): boolean {
@@ -200,6 +216,10 @@ export const BACKEND_REGISTRY: BackendDescriptor[] = [
     factory: () => new CodexAdapter(),
     exposeAsCliSubcommand: true,
     isAvailable: () => binaryOnPath("codex"),
+    // Codex sends approval + sandbox policy per-turn via `turn/start`. A
+    // mid-turn `setPermissionMode()` only updates the next turn's params —
+    // see CodexAdapter.setPermissionMode() and Audit §F-23.
+    permissionModeAppliesOnNextTurn: true,
     sessionFile: {
       listFromDisk: () => listCodexSessionsFromDisk(),
       parseSummary: (id) => {

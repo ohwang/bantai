@@ -28,6 +28,7 @@ import { useAgent } from "../context/agent"
 import { colors } from "../theme/tokens"
 import type { PermissionMode } from "../../../protocol/types"
 import { cyclerPermissionModeIds } from "../../../protocol/permission-modes"
+import { getBackendDescriptor } from "../../../protocol/registry"
 import { getStatusLineConfig, buildStatusLineInput, executeStatusLineCommand } from "../../../utils/statusline"
 import { ansiToStyledText } from "../../../utils/ansi-to-styled"
 import { useStatusBarData, rateLimitColor } from "../status-bar/data"
@@ -106,6 +107,17 @@ export function StatusBar(props: { hint?: string | null }) {
     return PERM_MODE_CYCLE.filter(m => supported.includes(m))
   })
 
+  // F-23: backends whose permission policy is sent per-turn (codex sends
+  // approval + sandbox in `turn/start` params) cannot honour a mid-turn
+  // setPermissionMode() — the in-flight turn keeps the policy it started
+  // with, even though `this.config.permissionMode` swaps. Gate the cycler
+  // during RUNNING for those backends so the status-bar label can't drift
+  // ahead of actual enforcement.
+  const permissionModeAppliesOnNextTurn = createMemo(() => {
+    const id = agent.backend.capabilities().name
+    return getBackendDescriptor(id)?.permissionModeAppliesOnNextTurn === true
+  })
+
   // -- Cycler controller: handles Shift-Tab, including the WAITING_FOR_PERM
   //    queue (F-15). During a permission dialog we accumulate the next mode
   //    in `pendingPermissionMode` and apply it once state leaves
@@ -120,6 +132,19 @@ export function StatusBar(props: { hint?: string | null }) {
 
   useKeyboard((event) => {
     if (event.shift && event.name === "tab") {
+      // F-23: gate Shift-Tab during RUNNING for backends whose permission
+      // policy only applies on the next turn (codex). Without this gate the
+      // status bar swaps instantly while the running turn keeps its old
+      // approval/sandbox policy — a misleading UX with safety implications.
+      // The WAITING_FOR_PERM / WAITING_FOR_ELIC cases are handled inside
+      // `cycler.handleShiftTab()` (F-15: WAITING_FOR_PERM queues the press
+      // for after the dialog resolves; WAITING_FOR_ELIC stays a no-op).
+      if (
+        state.sessionState === "RUNNING" &&
+        permissionModeAppliesOnNextTurn()
+      ) {
+        return
+      }
       cycler.handleShiftTab()
     }
   })
@@ -262,7 +287,16 @@ export function StatusBar(props: { hint?: string | null }) {
             </text>
           )}
         </Show>
-        <text fg={colors.text.muted}>{" (shift+tab to cycle)"}</text>
+        {/* F-23: when the backend only honours permission-mode changes on the
+            next turn (codex), tell the user during RUNNING why Shift-Tab is
+            ignored — otherwise the gate looks like a broken keystroke. */}
+        {state.sessionState === "RUNNING" && permissionModeAppliesOnNextTurn() ? (
+          <text fg={colors.text.muted} attributes={TextAttributes.DIM}>
+            {" (applies next turn — shift+tab disabled while running)"}
+          </text>
+        ) : (
+          <text fg={colors.text.muted}>{" (shift+tab to cycle)"}</text>
+        )}
 
         <box flexGrow={1} />
 

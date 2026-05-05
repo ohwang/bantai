@@ -14,7 +14,7 @@
  * - "Deny for session" tracks tool name in adapter for auto-deny on future calls
  */
 
-import { createSignal, createEffect, createMemo, Show, For, onCleanup, type Accessor } from "solid-js"
+import { createSignal, createEffect, createRenderEffect, createMemo, Show, For, onCleanup, type Accessor } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { usePermissions } from "../context/permissions"
@@ -267,6 +267,46 @@ export function option2Text(perm: PermissionRequestEvent): string {
 }
 
 // ---------------------------------------------------------------------------
+// Reactive helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Install a SolidJS effect that, on every fresh `permission_request.id`,
+ * resets the radio-selector signal to 0 (Allow) and invokes the optional
+ * `onReset` callback (used by the component to clear its `justActed`
+ * debounce flag).
+ *
+ * Uses `createRenderEffect` (not `createEffect`) on purpose: the reset has
+ * to land BEFORE the next paint of the dialog. `createEffect` defers to a
+ * microtask, leaving a (small but observable) window where the user could
+ * see the previous dialog's selection on the new dialog. Render-effects
+ * also have the practical benefit of running once at creation in both the
+ * browser and SSR builds of solid-js, which makes this helper unit-
+ * testable under the project's default `bun test` (no `--conditions=browser`).
+ *
+ * Pulled out of `PermissionDialog` so it can be unit-tested without the
+ * full component render — see F-9 in `bantai-team/permission-audit.md`.
+ *
+ * Must be called inside a SolidJS reactive scope (component body or
+ * `createRoot`).
+ */
+export function installPermissionDialogReset(
+  currentId: Accessor<string | null | undefined>,
+  setSelectedOption: (n: number) => void,
+  onReset?: () => void,
+): void {
+  let lastSeenPermId = ""
+  createRenderEffect(() => {
+    const id = currentId() ?? ""
+    if (id && id !== lastSeenPermId) {
+      lastSeenPermId = id
+      setSelectedOption(0)
+      onReset?.()
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -283,9 +323,6 @@ export function PermissionDialog() {
   // Radio selector state: 0 = Allow, 1 = Always allow, 2 = Deny, 3 = Deny for session
   const [selectedOption, setSelectedOption] = createSignal(0)
 
-  // Reset selection when a new permission request arrives
-  let lastPermId: string | null = null
-
   // Guard against buffered keystrokes leaking into the NEXT permission dialog.
   // After approving/denying, ignore all keystrokes for 200ms to prevent rapid
   // "a" + "d" typing from accidentally denying the next permission request.
@@ -301,16 +338,23 @@ export function PermissionDialog() {
     justActedTimer = setTimeout(() => { justActed = false }, 200)
   }
 
-  // Reset debounce when a new permission request arrives so the new dialog
-  // is immediately responsive, even if it appears within 200ms of the last one.
-  let lastDebouncePermId = ""
-  createEffect(() => {
-    const currentId = state.pendingPermission?.id ?? ""
-    if (currentId && currentId !== lastDebouncePermId) {
-      lastDebouncePermId = currentId
-      justActed = false
-    }
-  })
+  // Reset selection + debounce on every fresh permission_request id.
+  //
+  // Why a createEffect (not a flag inside useKeyboard): the reset has to land
+  // on the FIRST tick after a new dialog opens, BEFORE the user presses any
+  // key. The previous useKeyboard-based reset only fired on the next keypress,
+  // so a user who reflex-pressed Enter on the freshly-opened dialog would
+  // confirm the PREVIOUS dialog's selection (e.g. "Deny for session" carrying
+  // over from a just-denied prompt). See F-9 in
+  // bantai-team/permission-audit.md.
+  //
+  // Belt-and-braces: also clears `justActed` so rapid-fire dialogs land on
+  // Allow as soon as the 200ms debounce expires.
+  installPermissionDialogReset(
+    () => state.pendingPermission?.id,
+    setSelectedOption,
+    () => { justActed = false },
+  )
 
   // Dev assertion: a permission dialog must never open in read-only follow
   // mode. The FollowBackend translator never emits permission_request, so
@@ -340,11 +384,9 @@ export function PermissionDialog() {
     const id = state.pendingPermission.id
     const perm = state.pendingPermission
 
-    // Reset selection on new permission request
-    if (perm.id !== lastPermId) {
-      lastPermId = perm.id
-      setSelectedOption(0)
-    }
+    // Selection reset on a new permission id is handled by the createEffect
+    // above so that a fresh dialog renders with `Allow` selected BEFORE the
+    // user presses a key. Don't replicate it here. (F-9)
 
     // Arrow key navigation (wraps around, matching claude-go)
     if (event.name === "up") {

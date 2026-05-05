@@ -65,6 +65,7 @@ function createSessionStore() {
     rateLimits: null,
     agentCommands: [],
     configOptions: [],
+    supportedPermissionModes: [],
     resuming: false,
     currentCwd: null,
     worktree: null,

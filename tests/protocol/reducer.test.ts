@@ -2104,6 +2104,76 @@ describe("ConversationState reducer", () => {
   })
 
   // -----------------------------------------------------------------------
+  // capabilities_updated (F-13)
+  //
+  // The ACP adapter publishes the live `supportedPermissionModes` after
+  // `session/new` resolves. The reducer mirrors them into state so the
+  // TUI's Shift+Tab cycler is reactive (not gated on the
+  // `backend.capabilities()` snapshot taken at mount time).
+  // -----------------------------------------------------------------------
+
+  describe("capabilities_updated", () => {
+    it("seeds supportedPermissionModes onto state", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        {
+          type: "capabilities_updated",
+          supportedPermissionModes: [
+            "default",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+          ],
+        },
+      ])
+      expect(state.supportedPermissionModes).toEqual([
+        "default",
+        "acceptEdits",
+        "bypassPermissions",
+        "plan",
+      ])
+    })
+
+    it("overwrites previous mode list (newer event wins)", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        {
+          type: "capabilities_updated",
+          supportedPermissionModes: ["default", "bypassPermissions"],
+        },
+        {
+          type: "capabilities_updated",
+          supportedPermissionModes: ["default", "acceptEdits", "plan"],
+        },
+      ])
+      expect(state.supportedPermissionModes).toEqual([
+        "default",
+        "acceptEdits",
+        "plan",
+      ])
+    })
+
+    it("does not change sessionState", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+        { type: "turn_start" },
+        {
+          type: "capabilities_updated",
+          supportedPermissionModes: ["default"],
+        },
+      ])
+      expect(state.sessionState).toBe("RUNNING")
+    })
+
+    it("starts as the empty array on a fresh session", () => {
+      const state = applyEvents([
+        { type: "session_init", tools: [], models: [] },
+      ])
+      expect(state.supportedPermissionModes).toEqual([])
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // Compact (additional coverage)
   // -----------------------------------------------------------------------
 

@@ -51,6 +51,7 @@ const DEFAULT_SESSION: SessionContextState = {
   rateLimits: null,
   agentCommands: [],
   configOptions: [],
+  supportedPermissionModes: [],
   resuming: false,
   currentCwd: null,
   worktree: null,

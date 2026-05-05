@@ -79,6 +79,7 @@ function makePermissionParams(overrides?: {
   kind?: string | null    // null = omit entirely, undefined = use default "read"
   title?: string | null   // null = omit entirely, undefined = use default "Read file"
   locations?: { path: string }[]
+  rawInput?: unknown
   options?: AcpPermissionOption[]
 }): AcpPermissionRequestParams {
   return {
@@ -88,7 +89,8 @@ function makePermissionParams(overrides?: {
       ...(overrides?.kind === null ? {} : { kind: overrides?.kind ?? "read" }),
       ...(overrides?.title === null ? {} : { title: overrides?.title ?? "Read file" }),
       ...(overrides?.locations ? { locations: overrides.locations } : {}),
-    },
+      ...(overrides?.rawInput !== undefined ? { rawInput: overrides.rawInput } : {}),
+    } as AcpPermissionRequestParams["toolCall"],
     options: overrides?.options ?? [
       { optionId: "opt-allow-once", name: "Allow once", kind: "allow_once" },
       { optionId: "opt-allow-always", name: "Allow always", kind: "allow_always" },
@@ -101,6 +103,67 @@ function makePermissionParams(overrides?: {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// F-13 — capabilities_updated emission
+//
+// Live repro: Gemini's `session/new` returns four `availableModes` (default,
+// autoEdit, yolo, plan), but the TUI's Shift+Tab cycler only ever offered
+// two of them. Root cause: `availableModes` was a `createMemo` that called
+// `agent.backend.capabilities()` — a plain method call SolidJS can't track,
+// so the memo captured the empty pre-handshake fallback at mount time and
+// never recomputed.
+//
+// Fix: the adapter emits a `capabilities_updated` AgentEvent with the freshly
+// derived `supportedPermissionModes`; the reducer mirrors them onto
+// `ConversationState.supportedPermissionModes`; the cycler memoises against
+// state. These tests pin the adapter half of that contract.
+// ---------------------------------------------------------------------------
+
+describe("ACP Adapter — capabilities_updated emission (F-13)", () => {
+  it("emitCapabilitiesUpdated publishes the four Gemini modes", () => {
+    const { adapter, events } = createTestAdapter()
+
+    // Simulate Gemini's session/new shape: 4 modes that the central ACP
+    // permission-mode table maps to default/acceptEdits/bypassPermissions/plan.
+    ;(adapter as any).discoveredModes = [
+      { id: "default", name: "Default" },
+      { id: "autoEdit", name: "Auto edit" },
+      { id: "yolo", name: "YOLO" },
+      { id: "plan", name: "Plan" },
+    ]
+
+    ;(adapter as any).emitCapabilitiesUpdated()
+
+    expect(events).toHaveLength(1)
+    const evt = events[0]!
+    expect(evt.type).toBe("capabilities_updated")
+    if (evt.type !== "capabilities_updated") throw new Error("unreachable")
+    expect(new Set(evt.supportedPermissionModes)).toEqual(
+      new Set(["default", "acceptEdits", "bypassPermissions", "plan"]),
+    )
+
+    adapter.close()
+  })
+
+  it("falls back to the [default, bypassPermissions] pair when no modes are discovered", () => {
+    const { adapter, events } = createTestAdapter()
+    ;(adapter as any).discoveredModes = []
+
+    ;(adapter as any).emitCapabilitiesUpdated()
+
+    expect(events).toHaveLength(1)
+    const evt = events[0]!
+    if (evt.type !== "capabilities_updated") throw new Error("unreachable")
+    // deriveSupportedPermissionModes() returns the bantai fallback in this
+    // case — see acp/adapter.ts.
+    expect(new Set(evt.supportedPermissionModes)).toEqual(
+      new Set(["default", "bypassPermissions"]),
+    )
+
+    adapter.close()
+  })
+})
 
 describe("ACP Permission Flow", () => {
   // -------------------------------------------------------------------------
@@ -158,7 +221,11 @@ describe("ACP Permission Flow", () => {
       adapter.close()
     })
 
-    it("title includes agent name and tool title", () => {
+    it("title is the toolCall title without an agent-name prefix (F-13b)", () => {
+      // F-13b: title used to be "${agentName}: ${title}" → "Gemini CLI: Read
+      // foo.txt", which double-stamped the agent name (the conversation
+      // header already shows it). The new shape passes the toolCall title
+      // through verbatim so the dialog header stays clean.
       const { adapter, events } = createTestAdapter()
 
       callHandleServerRequest(adapter, 4, "session/request_permission", makePermissionParams({
@@ -168,22 +235,88 @@ describe("ACP Permission Flow", () => {
       expect(events).toHaveLength(1)
       const evt = events[0]!
       if (evt.type !== "permission_request") throw new Error("unreachable")
-      expect(evt.title).toBe("Test ACP Agent: Read foo.txt")
+      expect(evt.title).toBe("Read foo.txt")
+      expect(evt.title).not.toMatch(/Test ACP Agent:/)
 
       adapter.close()
     })
 
-    it("blockedPath extracted from toolCall.locations[0].path", () => {
+    it("displayName mirrors toolCall.title so the dialog action label is set (F-13b)", () => {
+      // F-13b: displayName was never populated even though
+      // PermissionRequestEvent ships the field. The dialog renders this
+      // as its bold action-label header (permission-dialog.tsx:533).
+      const { adapter, events } = createTestAdapter()
+
+      callHandleServerRequest(adapter, 4, "session/request_permission", makePermissionParams({
+        title: "Read foo.txt",
+      }))
+
+      const evt = events[0]!
+      if (evt.type !== "permission_request") throw new Error("unreachable")
+      expect(evt.displayName).toBe("Read foo.txt")
+
+      adapter.close()
+    })
+
+    it("blockedPath is NOT set from toolCall.locations[0].path (F-13b)", () => {
+      // F-13b: blockedPath used to be set to locations[0].path — the file
+      // the agent WANTS to access. The dialog renders blockedPath with a
+      // ⚠ + warning colour, implying "the sandbox refused you", which is
+      // the wrong semantics for a normal "ask first" prompt. The location
+      // path now flows through `input.rawInput` and surfaces neutrally
+      // via the dialog's `pathStr`.
       const { adapter, events } = createTestAdapter()
 
       callHandleServerRequest(adapter, 5, "session/request_permission", makePermissionParams({
         locations: [{ path: "/home/user/secrets.txt" }],
+        rawInput: { file_path: "/home/user/secrets.txt" },
       }))
 
       expect(events).toHaveLength(1)
       const evt = events[0]!
       if (evt.type !== "permission_request") throw new Error("unreachable")
-      expect(evt.blockedPath).toBe("/home/user/secrets.txt")
+      expect(evt.blockedPath).toBeUndefined()
+      // The path lives on `input` instead so extractPath() in the dialog
+      // can render it neutrally.
+      expect(evt.input).toEqual({ file_path: "/home/user/secrets.txt" })
+
+      adapter.close()
+    })
+
+    it("input is toolCall.rawInput when present so extractPath() finds file_path (F-13b)", () => {
+      const { adapter, events } = createTestAdapter()
+
+      callHandleServerRequest(adapter, 51, "session/request_permission", makePermissionParams({
+        kind: "edit",
+        title: "Edit foo.txt",
+        rawInput: { file_path: "/repo/foo.txt", content: "new" },
+      }))
+
+      const evt = events[0]!
+      if (evt.type !== "permission_request") throw new Error("unreachable")
+      expect(evt.input).toEqual({ file_path: "/repo/foo.txt", content: "new" })
+
+      adapter.close()
+    })
+
+    it("input falls back to toolCall when rawInput is missing (F-13b)", () => {
+      const { adapter, events } = createTestAdapter()
+
+      callHandleServerRequest(adapter, 52, "session/request_permission", makePermissionParams({
+        toolCallId: "tc-no-raw",
+        kind: "execute",
+        title: "Run a command",
+      }))
+
+      const evt = events[0]!
+      if (evt.type !== "permission_request") throw new Error("unreachable")
+      // No rawInput → input is the whole toolCall object so dialog still
+      // has SOMETHING to introspect (better than `undefined`).
+      expect(evt.input).toEqual(expect.objectContaining({
+        toolCallId: "tc-no-raw",
+        kind: "execute",
+        title: "Run a command",
+      }) as unknown as object)
 
       adapter.close()
     })
@@ -236,7 +369,11 @@ describe("ACP Permission Flow", () => {
       adapter.close()
     })
 
-    it("description lists option names joined by ' / '", () => {
+    it("description does NOT duplicate the option-label list (F-13b)", () => {
+      // F-13b: description used to be the option-label list joined by
+      // ' / ' ("Allow / Always allow / Reject"), which duplicates the
+      // radio-button row directly underneath. Now intentionally undefined
+      // — the action label and path already convey what the tool will do.
       const { adapter, events } = createTestAdapter()
 
       callHandleServerRequest(adapter, 9, "session/request_permission", makePermissionParams({
@@ -249,7 +386,7 @@ describe("ACP Permission Flow", () => {
       expect(events).toHaveLength(1)
       const evt = events[0]!
       if (evt.type !== "permission_request") throw new Error("unreachable")
-      expect(evt.description).toBe("Allow / Deny")
+      expect(evt.description).toBeUndefined()
 
       adapter.close()
     })
@@ -597,6 +734,38 @@ describe("ACP Permission Flow", () => {
 
       expect(events).toHaveLength(0)
       expect(responses).toHaveLength(0)
+
+      adapter.close()
+    })
+
+    it("setPermissionMode throws on a mode the ACP table doesn't map (F-26)", async () => {
+      // F-26: setPermissionMode used to silently `return` for modes the
+      // ACP permission-mode table didn't carry an `acpId` for (today
+      // `auto` and `dontAsk`). The TUI's status-bar cycler then updated
+      // its label as if the request had succeeded, even though the agent
+      // never actually changed mode. Throwing makes
+      // AgentContext.setPermissionMode catch the error, leave the label
+      // on the previous mode, and surface the failure to the user.
+      const { adapter } = createTestAdapter()
+
+      let threw = false
+      try {
+        await adapter.setPermissionMode("dontAsk")
+      } catch (err) {
+        threw = true
+        expect(String(err)).toContain("does not support this permission mode")
+        expect(String(err)).toContain("dontAsk")
+      }
+      expect(threw).toBe(true)
+
+      // `auto` is the same shape — also unsupported by every ACP agent today.
+      threw = false
+      try {
+        await adapter.setPermissionMode("auto")
+      } catch {
+        threw = true
+      }
+      expect(threw).toBe(true)
 
       adapter.close()
     })

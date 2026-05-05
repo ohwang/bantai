@@ -89,8 +89,19 @@ export function StatusBar(props: { hint?: string | null }) {
   let statusLineRef: TextRenderable | undefined
 
   // -- Available permission modes (filtered against backend capabilities) --
+  //    Read from `state.supportedPermissionModes` first — that's the live
+  //    value populated by the adapter's `capabilities_updated` event.
+  //    `backend.capabilities()` is a plain method call SolidJS can't watch,
+  //    so memoising directly off it captured the empty / fallback list at
+  //    mount time and never recomputed (F-13: Gemini reports four modes via
+  //    `session/new`, but the cycler stayed on the two-mode startup
+  //    fallback). Fall back to the static method only when the adapter
+  //    hasn't emitted yet (e.g. backends that never publish modes).
   const availableModes = createMemo(() => {
-    const supported = agent.backend.capabilities().supportedPermissionModes
+    const fromState = state.supportedPermissionModes
+    const supported = fromState.length > 0
+      ? fromState
+      : agent.backend.capabilities().supportedPermissionModes
     return PERM_MODE_CYCLE.filter(m => supported.includes(m))
   })
 

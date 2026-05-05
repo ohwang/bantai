@@ -1057,6 +1057,19 @@ export function reduce(
         configOptions: event.options,
       }
 
+    // ----- Backend capabilities (per-session, runtime-discovered) -----
+    //
+    // Today only the ACP adapter emits this (post-`session/new`, when
+    // Gemini reports its four available modes). The reducer mirrors the
+    // payload onto `state.supportedPermissionModes` so the TUI cycler is
+    // a function of state — not of `backend.capabilities()`, which is a
+    // plain method call SolidJS can't track. See F-13.
+    case "capabilities_updated":
+      return {
+        ...next,
+        supportedPermissionModes: event.supportedPermissionModes,
+      }
+
     // ----- Worktree / cwd lifecycle -----
     //
     // Synthesized by the Claude event-mapper when the agent's built-in

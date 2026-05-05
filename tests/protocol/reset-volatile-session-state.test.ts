@@ -58,6 +58,7 @@ function dirtyState(): ConversationState {
     ],
     agentCommands: [{ name: "/run", description: "run" } as any],
     configOptions: [{ id: "foo", name: "foo", type: "boolean", value: true } as any],
+    supportedPermissionModes: ["default", "acceptEdits", "plan"],
     currentCwd: "/repo",
     worktree: { path: "/repo/.worktrees/x", name: "x" },
   }
@@ -87,6 +88,9 @@ describe("resetVolatileSessionState", () => {
     expect(after.sessionState).toBe(fresh.sessionState)
     expect(after.agentCommands).toEqual(fresh.agentCommands)
     expect(after.configOptions).toEqual(fresh.configOptions)
+    // F-13: per-backend permission-mode advertisement clears on switch so
+    // the new adapter's capabilities_updated event fully owns the cycler.
+    expect(after.supportedPermissionModes).toEqual(fresh.supportedPermissionModes)
   })
 
   test("preserves blocks (conversation history) across the reset", () => {

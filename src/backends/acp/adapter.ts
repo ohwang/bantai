@@ -176,6 +176,17 @@ export class AcpAdapter extends BaseAdapter {
     if (preset?.displayName) this.agentName = preset.displayName
   }
 
+  /** Push the freshly discovered permission modes into the reducer so the
+   *  TUI cycler (status-bar.tsx) memoises off `state.supportedPermissionModes`
+   *  and picks up modes the backend only learns about post-handshake. Called
+   *  after every `session/new` and after `resetSession`. */
+  private emitCapabilitiesUpdated(): void {
+    this.eventChannel?.push({
+      type: "capabilities_updated",
+      supportedPermissionModes: this.deriveSupportedPermissionModes(),
+    })
+  }
+
   /** Map ACP config options to protocol ConfigOption[] and emit a config_options event */
   private emitConfigOptions(): void {
     if (this.discoveredConfigOptions.length === 0) return
@@ -526,9 +537,17 @@ export class AcpAdapter extends BaseAdapter {
     // Strategy 2: session/set_mode with the Gemini-style direct ID. The
     // mapping comes from the same ACP permission-mode table — modes the
     // table doesn't have a Gemini-side id for (auto / dontAsk today) return
-    // null and we bail out without sending a doomed RPC.
+    // null. F-26: previously we silently `return`-ed in that case, so the
+    // TUI's setPermissionMode helper saw no error and updated the status
+    // bar to a mode the agent had not actually applied. Throw instead so
+    // AgentContext.setPermissionMode catches it, leaves the cycler on the
+    // prior mode, and the user sees the failure.
     const modeId = bantaiToAcpId(mode)
-    if (!modeId) return
+    if (!modeId) {
+      throw new Error(
+        `ACP agent does not support this permission mode: ${mode}`,
+      )
+    }
 
     try {
       await this.transport.request("session/set_mode", {
@@ -773,6 +792,7 @@ export class AcpAdapter extends BaseAdapter {
       })
 
       this.emitConfigOptions()
+      this.emitCapabilitiesUpdated()
 
       log.info("ACP session reset", { sessionId: this.sessionId })
     } catch (err) {
@@ -1111,16 +1131,43 @@ export class AcpAdapter extends BaseAdapter {
       // 5b. Emit config options if the agent exposed any
       this.emitConfigOptions()
 
+      // 5b-bis. Mirror the discovered permission modes into reducer state so
+      //         the TUI Shift+Tab cycler tracks them. capabilities() returns
+      //         them too, but it's a plain method — Solid can't watch it, so
+      //         the cycler memoised on the empty-fallback list at mount time
+      //         and never recomputed (F-13). Emitting an event lets the
+      //         reducer drive `state.supportedPermissionModes` reactively.
+      this.emitCapabilitiesUpdated()
+
       // 5c. Apply system prompt via config option if the agent exposes one
       await this.applySystemPromptViaConfigOption()
 
       // 5d. Apply the caller-requested permission mode. Without this the
       //     agent sits in its default "ask before every tool" state even
       //     when the operator explicitly configured bypassPermissions in
-      //     slack.json. `setPermissionMode` is best-effort: agents that
-      //     don't advertise a matching mode just log.warn and move on.
+      //     slack.json.
+      //
+      //     F-26 made `setPermissionMode` throw on unsupported modes so the
+      //     TUI Shift+Tab cycler reverts cleanly. The startup path needs
+      //     the OPPOSITE behaviour: a config-file mismatch shouldn't kill
+      //     the session — just log + surface a system_message and keep
+      //     going on the agent's default.
       if (config.permissionMode && config.permissionMode !== "default") {
-        await this.setPermissionMode(config.permissionMode)
+        try {
+          await this.setPermissionMode(config.permissionMode)
+        } catch (err) {
+          log.warn("ACP: configured permissionMode not applied", {
+            mode: config.permissionMode,
+            error: String(err),
+          })
+          this.eventChannel?.push({
+            type: "system_message",
+            text:
+              `${this.agentName} does not support permission mode "${config.permissionMode}" — ` +
+              `staying on the agent's default. (See bantai-team/permission-audit.md F-26.)`,
+            ephemeral: true,
+          })
+        }
       }
 
       // 6a. Replay context from /switch is stashed, not sent as a turn —
@@ -1504,14 +1551,36 @@ export class AcpAdapter extends BaseAdapter {
 
     switch (method) {
       case "session/request_permission": {
+        // F-13b: protocol field mapping rewrite. Before this fix:
+        //   - `blockedPath` was set to `locations[0].path` (the file the
+        //     agent WANTS to access). The dialog renders blockedPath with
+        //     a ⚠ + warning colour, implying "the sandbox refused you" —
+        //     wrong semantics for a normal "ask first" prompt.
+        //   - `displayName` was never populated even though
+        //     PermissionRequestEvent has the field.
+        //   - `title` was double-prefixed with the agent name
+        //     ("Gemini CLI: Read foo.txt"); the conversation header already
+        //     shows the agent.
+        //   - `description` was the option-label list ("Allow / Always
+        //     allow / Reject"), duplicating the radio-button row.
+        // The new shape:
+        //   - `input` is `toolCall.rawInput` when present so the dialog's
+        //     `extractPath` finds `file_path` / `command` / `pattern` and
+        //     renders the path neutrally via `pathStr`.
+        //   - `displayName` carries the short tool-action phrase (toolCall
+        //     title) — this is what the dialog uses as its action label.
+        //   - `title` is the tool title without an agent-name prefix.
+        //   - `description` is intentionally undefined — both the action
+        //     label and the path already convey what the tool will do.
+        //   - `blockedPath` is unset; ACP has no concept of "agent allowed
+        //     but sandbox refused" today.
         const permParams = params as AcpPermissionRequestParams
         const toolCallId = permParams.toolCall?.toolCallId ?? String(rpcId)
         const toolCall = permParams.toolCall as Record<string, unknown> | undefined
         const kind = typeof toolCall?.kind === "string" ? toolCall.kind : undefined
         const title = typeof toolCall?.title === "string" ? toolCall.title : undefined
         const toolName = deriveToolName(kind, title)
-        const locations = Array.isArray(toolCall?.locations) ? toolCall.locations : []
-        const blockedPath = typeof locations[0]?.path === "string" ? locations[0].path : undefined
+        const rawInput = toolCall?.rawInput
 
         this.pendingApprovals.set(toolCallId, { rpcId, params: permParams })
 
@@ -1519,10 +1588,9 @@ export class AcpAdapter extends BaseAdapter {
           type: "permission_request",
           id: toolCallId,
           tool: toolName,
-          input: permParams.toolCall,
-          title: `${this.agentName}: ${title ?? toolName}`,
-          description: permParams.options?.map(o => o.name).join(" / "),
-          blockedPath,
+          input: rawInput ?? permParams.toolCall,
+          displayName: title,
+          title: title ?? toolName,
         })
         break
       }

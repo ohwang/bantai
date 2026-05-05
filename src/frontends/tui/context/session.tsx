@@ -18,6 +18,7 @@ import type {
   RateLimits,
   AgentSlashCommand,
   ConfigOption,
+  PermissionMode,
 } from "../../../protocol/types"
 
 export interface SessionContextState {
@@ -37,6 +38,12 @@ export interface SessionContextState {
   rateLimits: RateLimits | null
   agentCommands: AgentSlashCommand[]
   configOptions: ConfigOption[]
+  /** Permission modes the active backend currently supports. Mirrored
+   *  from `ConversationState.supportedPermissionModes`. The Shift+Tab
+   *  cycler in the status bar reads this; backends emit it via the
+   *  `capabilities_updated` event so the cycler refreshes when modes are
+   *  discovered post-handshake (F-13). */
+  supportedPermissionModes: PermissionMode[]
   /** True while session history is being parsed (or the Gemini replay window
    *  is draining). Populated from ConversationState.resuming. Consumed by the
    *  input area to render a spinner and block typing. */
@@ -80,6 +87,7 @@ export function SessionProvider(props: ParentProps) {
     rateLimits: null,
     agentCommands: [],
     configOptions: [],
+    supportedPermissionModes: [],
     resuming: false,
     currentCwd: null,
     worktree: null,

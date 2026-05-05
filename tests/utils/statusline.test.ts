@@ -22,6 +22,7 @@ function baseSessionState(): SessionContextState {
     rateLimits: null,
     agentCommands: [],
     configOptions: [],
+    supportedPermissionModes: [],
     resuming: false,
     currentCwd: null,
     worktree: null,

@@ -97,7 +97,13 @@ export type PermissionRequestEvent = {
   description?: string
   /** Why this permission request was triggered */
   decisionReason?: string
-  /** File path that triggered the permission request */
+  /** Path the SDK reports as the cause of an OUTSIDE-SANDBOX denial — i.e.
+   *  the user clicked Allow but the sandbox rejected the access anyway.
+   *  Rendered with a warning glyph (`⚠ Blocked path: …`) by the dialog, so
+   *  setting it implies denial semantics. Do NOT use this for the file the
+   *  agent simply WANTS to access in a normal "ask first" flow — that path
+   *  belongs in the tool input (and surfaces via `extractPath`) so the
+   *  dialog can show it neutrally. Today only the Claude SDK reports this. */
   blockedPath?: string
 }
 
@@ -440,6 +446,18 @@ export type ConfigOptionsEvent = {
   options: ConfigOption[]
 }
 
+/** Backend capabilities refreshed at runtime — currently used by the ACP
+ *  adapter to publish the live `availableModes` from `session/new`. The
+ *  reducer mirrors `supportedPermissionModes` into `ConversationState` so
+ *  the TUI's mode cycler tracks the freshly discovered modes reactively
+ *  (`backend.capabilities()` is a plain method call, which SolidJS can't
+ *  watch — that's how F-13 shipped: Gemini reports four modes but the
+ *  cycler kept showing the two-mode startup fallback forever). */
+export type CapabilitiesUpdatedEvent = {
+  type: "capabilities_updated"
+  supportedPermissionModes: PermissionMode[]
+}
+
 /** Skill sub-agent tool activity — extracted from sub-agent messages with parent_tool_use_id */
 export type SkillToolActivityEvent = {
   type: "skill_tool_activity"
@@ -624,6 +642,7 @@ export type AgentEvent =
   | ShellEndEvent
   | PlanUpdateEvent
   | ConfigOptionsEvent
+  | CapabilitiesUpdatedEvent
   | SkillToolActivityEvent
   | RateLimitUpdateEvent
   | AccountUpdateEvent
@@ -969,6 +988,15 @@ export interface ConversationState {
 
   /** Config options exposed by the backend agent */
   configOptions: ConfigOption[]
+
+  /** Permission modes the active backend currently supports. Populated by
+   *  `capabilities_updated` events; backends that emit none keep this at
+   *  the empty array and consumers must fall back to
+   *  `backend.capabilities().supportedPermissionModes`. The TUI's Shift+Tab
+   *  cycler reads this so it picks up modes the backend only learns about
+   *  after async handshake (e.g. Gemini's four modes, returned by ACP's
+   *  `session/new`). See F-13 in `bantai-team/permission-audit.md`. */
+  supportedPermissionModes: PermissionMode[]
 
   /** True while a resume is in progress: session file is being parsed, or
    *  (for Gemini) the initial replay stream is being drained. The TUI uses
@@ -1604,6 +1632,7 @@ export function createInitialState(): ConversationState {
     rateLimits: null,
     agentCommands: [],
     configOptions: [],
+    supportedPermissionModes: [],
     resuming: false,
     currentCwd: null,
     worktree: null,
@@ -1644,6 +1673,10 @@ export function resetVolatileSessionState(
     currentEffort: fresh.currentEffort,
     agentCommands: fresh.agentCommands,
     configOptions: fresh.configOptions,
+    // Permission modes are per-backend — clear so the new adapter's
+    // capabilities_updated event fully owns the cycler rather than
+    // inheriting whatever the previous backend advertised.
+    supportedPermissionModes: fresh.supportedPermissionModes,
     // Cost + usage accounting — stale values here are actively misleading
     // (users have reported believing Codex charged them for Claude usage).
     cost: fresh.cost,

@@ -233,6 +233,55 @@ export function isSubmitKey(event: Pick<import("@opentui/core").KeyEvent, "name"
   return event.name === "return" && !event.shift && !event.meta && !event.super
 }
 
+/**
+ * Whether a cursor is on the first visual (display) row of the document.
+ *
+ * `visualRow` from OpenTUI's `VisualCursor` is viewport-relative; we add
+ * the viewport's `offsetY` (lines scrolled out above) to get the absolute
+ * visual row. Wrapped long lines and explicit `\n` newlines both produce
+ * additional visual rows, so this is the correct boundary to gate
+ * "up arrow recalls history" on.
+ */
+export function isOnFirstVisualLine(visualRow: number, viewportOffsetY: number): boolean {
+  return visualRow + viewportOffsetY <= 0
+}
+
+/**
+ * Whether a cursor is on the last visual (display) row of the document.
+ *
+ * Mirror of `isOnFirstVisualLine`; gates "down arrow steps forward in
+ * history". `totalVisualLines` is `editorView.getTotalVirtualLineCount()`.
+ */
+export function isOnLastVisualLine(
+  visualRow: number,
+  viewportOffsetY: number,
+  totalVisualLines: number,
+): boolean {
+  return visualRow + viewportOffsetY >= Math.max(totalVisualLines, 1) - 1
+}
+
+/**
+ * Read the textarea's cursor + viewport state and decide whether the cursor
+ * is on the first visual line. Returns `true` when the ref is missing — the
+ * caller's up-arrow path then falls through to history recall, matching the
+ * pre-fix behavior on a freshly mounted (or torn down) textarea.
+ */
+export function textareaCursorOnFirstVisualLine(textareaRef: import("@opentui/core").TextareaRenderable | undefined): boolean {
+  if (!textareaRef) return true
+  const vc = textareaRef.visualCursor
+  const vp = textareaRef.editorView.getViewport()
+  return isOnFirstVisualLine(vc.visualRow, vp.offsetY)
+}
+
+/** Mirror of {@link textareaCursorOnFirstVisualLine} for the bottom edge. */
+export function textareaCursorOnLastVisualLine(textareaRef: import("@opentui/core").TextareaRenderable | undefined): boolean {
+  if (!textareaRef) return true
+  const vc = textareaRef.visualCursor
+  const vp = textareaRef.editorView.getViewport()
+  const total = textareaRef.editorView.getTotalVirtualLineCount()
+  return isOnLastVisualLine(vc.visualRow, vp.offsetY, total)
+}
+
 /** Truncate a file path to fit the terminal, showing the tail end */
 export function truncatePath(path: string, maxLen: number = 70): string {
   if (path.length <= maxLen) return path

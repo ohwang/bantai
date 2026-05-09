@@ -43,6 +43,8 @@ import {
   openExternalEditor,
   getLastAssistantText,
   attachImage,
+  textareaCursorOnFirstVisualLine,
+  textareaCursorOnLastVisualLine,
 } from "./input-utils"
 
 // ---------------------------------------------------------------------------
@@ -533,34 +535,51 @@ export function createKeyHandler(
       return
     }
 
-    // Up arrow = recall previous history entry
+    // Up arrow = recall previous history entry, but ONLY when the cursor is
+    // already on the first visual row of the textarea. Otherwise fall through
+    // (no preventDefault) so the textarea's built-in `move-up` action moves
+    // the cursor up by one visual line — matching Claude Code and every
+    // other multi-line editor. Wrapped long lines and explicit `\n` newlines
+    // both produce additional visual rows, so the boundary check uses the
+    // editor's authoritative visualCursor + viewport state.
     if (e.name === "up" && !e.ctrl && inputHistory.length > 0) {
-      e.preventDefault()
-      const hi = getHistoryIndex()
-      if (hi === -1) {
-        setSavedInput(getTextareaRef()?.plainText ?? "")
-        setHistoryIndex(inputHistory.length - 1)
-      } else if (hi > 0) {
-        setHistoryIndex(hi - 1)
+      if (!textareaCursorOnFirstVisualLine(getTextareaRef())) {
+        // Let the textarea handle move-up. Don't return — fall through to
+        // schedulePostKeyUpdate so line-count and autocomplete refresh after
+        // the cursor moves.
+      } else {
+        e.preventDefault()
+        const hi = getHistoryIndex()
+        if (hi === -1) {
+          setSavedInput(getTextareaRef()?.plainText ?? "")
+          setHistoryIndex(inputHistory.length - 1)
+        } else if (hi > 0) {
+          setHistoryIndex(hi - 1)
+        }
+        setTextareaContent(inputHistory[getHistoryIndex()] ?? "")
+        updateLineCount()
+        return
       }
-      setTextareaContent(inputHistory[getHistoryIndex()] ?? "")
-      updateLineCount()
-      return
     }
 
-    // Down arrow = move forward in history
+    // Down arrow = move forward in history, but only when the cursor is on
+    // the last visual row. Otherwise let the textarea move the cursor down.
     if (e.name === "down" && !e.ctrl && getHistoryIndex() !== -1) {
-      e.preventDefault()
-      const hi = getHistoryIndex()
-      if (hi < inputHistory.length - 1) {
-        setHistoryIndex(hi + 1)
-        setTextareaContent(inputHistory[getHistoryIndex()] ?? "")
+      if (!textareaCursorOnLastVisualLine(getTextareaRef())) {
+        // Fall through to the built-in move-down + schedulePostKeyUpdate.
       } else {
-        setHistoryIndex(-1)
-        setTextareaContent(getSavedInput())
+        e.preventDefault()
+        const hi = getHistoryIndex()
+        if (hi < inputHistory.length - 1) {
+          setHistoryIndex(hi + 1)
+          setTextareaContent(inputHistory[getHistoryIndex()] ?? "")
+        } else {
+          setHistoryIndex(-1)
+          setTextareaContent(getSavedInput())
+        }
+        updateLineCount()
+        return
       }
-      updateLineCount()
-      return
     }
 
     // After the key is processed, schedule autocomplete + line count update

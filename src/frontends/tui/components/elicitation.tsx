@@ -13,7 +13,7 @@
  * NOT a modal overlay. Renders inline in the conversation flow.
  */
 
-import { createSignal, Index, Show, type Accessor } from "solid-js"
+import { createRenderEffect, createSignal, Index, Show, type Accessor } from "solid-js"
 import { TextAttributes, type TextareaRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import { usePermissions } from "../context/permissions"
@@ -28,6 +28,44 @@ function truncateLabel(label: string, maxLen: number = 60): string {
   return label.slice(0, maxLen - 1) + "\u2026"
 }
 
+/**
+ * Install a render-effect that fires `reset()` synchronously whenever the
+ * current `ElicitationQuestion` reference changes. Used by `QuestionView`
+ * to clear per-question UI state (selection cursor, free-text toggle,
+ * `submitting` latch) when the parent advances to the next question in a
+ * multi-question elicitation.
+ *
+ * Regression target: with no reset, the same `QuestionView` instance is
+ * reused across questions in a multi-question elicitation. Answering Q1
+ * sets `submitting = true` to debounce double-submit; that latch then
+ * carries over to Q2, where every `selectOption(...)` early-returns on
+ * `if (submitting()) return` — so Enter does nothing and the user is
+ * stuck (Esc still works because it bypasses the latch). Mirrors F-9
+ * (permission dialog selection carry-over) — same shape, different
+ * dialog.
+ *
+ * `createRenderEffect` lands the reset BEFORE paint and runs once at
+ * subscription time in both the browser and SSR builds of solid-js, so
+ * the helper is unit-testable under default `bun test` without
+ * `--conditions=browser`.
+ *
+ * Must be called inside a SolidJS reactive scope (component body or
+ * `createRoot`).
+ */
+export function installQuestionReset(
+  currentQuestion: Accessor<ElicitationQuestion>,
+  reset: () => void,
+): void {
+  let lastSeen: ElicitationQuestion | null = null
+  createRenderEffect(() => {
+    const q = currentQuestion()
+    if (q !== lastSeen) {
+      lastSeen = q
+      reset()
+    }
+  })
+}
+
 function QuestionView(props: {
   question: ElicitationQuestion
   onAnswer: (value: string) => void
@@ -38,6 +76,21 @@ function QuestionView(props: {
   const [submitting, setSubmitting] = createSignal(false)
   let freeTextRef: TextareaRenderable | undefined
   let freeTextOnlyInitialized = false
+
+  // Reset per-question state when the parent advances to a new question in a
+  // multi-question elicitation. Without this, `submitting` stays `true` after
+  // answering Q1 and `selectOption` for Q2 early-returns on
+  // `if (submitting()) return` — Enter appears dead, only Esc escapes. See
+  // `installQuestionReset` doc for the full F-9-style rationale.
+  installQuestionReset(
+    () => props.question,
+    () => {
+      setSelected(0)
+      setShowFreeText(false)
+      setSubmitting(false)
+      freeTextOnlyInitialized = false
+    },
+  )
 
   // When there are no predefined options but free text is allowed,
   // skip the option list entirely and go straight to free text input

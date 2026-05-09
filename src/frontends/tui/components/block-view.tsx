@@ -9,7 +9,7 @@ import { Show, createSignal, createEffect, onCleanup, type Accessor } from "soli
 import { useAgent } from "../context/agent"
 import { PlanBlock } from "./plan-block"
 import { ThinkingBlock } from "./thinking-block"
-import { ToolBlockView, isUserDecline } from "./tool-view"
+import { ToolBlockView, collapsedResultHint, isUserDecline } from "./tool-view"
 import { AgentToolView, CollapsedAgentLine } from "./agent-tool-view"
 import { SkillToolView, CollapsedSkillLine } from "./skill-tool-view"
 import { McpToolView, CollapsedMcpLine, isMcpTool } from "./mcp-tool-view"
@@ -213,16 +213,12 @@ function CollapsedToolLine(props: { block: Extract<Block, { type: "tool" }> }) {
       const secs = elapsed()
       return secs > 0 ? `... ${secs}s` : "..."
     }
-    if (b().error) {
-      return isUserDecline(b().error!) ? " — declined" : " — failed"
-    }
-    const out = b().output ?? ""
-    if (!out) return ""
-    if (b().tool === "Read" || b().tool === "Glob" || b().tool === "Grep") {
-      const lines = out.trim().split("\n").filter((l: string) => l.trim()).length
-      return ` — ${lines} result${lines === 1 ? "" : "s"}`
-    }
-    return ""
+    // Reuse the shared formatter from tool-view.tsx — it knows that Read
+    // produces lines and Glob/Grep produce results, plus error vs. decline
+    // wording. Mirroring this switch by hand here is exactly how the
+    // "Read … 396 results" bug shipped originally.
+    const r = collapsedResultHint(b())
+    return r ? ` — ${r}` : ""
   }
 
   /** BlinkingDot status for the prefix gutter */

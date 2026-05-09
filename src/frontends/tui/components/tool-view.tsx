@@ -449,8 +449,22 @@ function toolVerb(tool: string, isRunning: boolean): string {
   }
 }
 
-/** Brief inline result for collapsed summary lines */
-function collapsedResultHint(tool: ToolBlock): string {
+/** Brief inline result for collapsed summary lines.
+ *
+ *  Tool-aware unit:
+ *  - Read returns `${N} line(s)` — Read's output is the file content, so a
+ *    count of newlines IS a line count.
+ *  - Glob / Grep return `${N} result(s)` — each non-blank output line is a
+ *    match (Glob: one file path per line; Grep: one match per line).
+ *
+ *  Labelling Read as "results" is wrong (and was the live bug this comment
+ *  exists to prevent re-introducing) — the file isn't N hits against a
+ *  query, it's N lines of text. Other consumers of this hint (e.g.
+ *  `CollapsedToolLine` in `block-view.tsx`) MUST go through this helper
+ *  rather than rolling their own switch — that's how the Read-as-results
+ *  bug shipped originally.
+ */
+export function collapsedResultHint(tool: ToolBlock): string {
   if (tool.status === "running") return ""
   if (tool.error) {
     if (isUserDecline(tool.error)) return "declined"

@@ -9,7 +9,7 @@ import { render, useKeyboard, useRenderer } from "@opentui/solid"
 import { TextAttributes, type KeyEvent } from "@opentui/core"
 import { createSignal, createEffect, on, onCleanup, ErrorBoundary, Show } from "solid-js"
 import { log } from "../../utils/logger"
-import { copyToClipboard } from "../../utils/clipboard"
+import { copyToClipboard, copyTextDualPath } from "../../utils/clipboard"
 import { sendTerminalNotification, setTerminalProgress } from "../../utils/terminal-notify"
 import { disableFocusReporting } from "../../utils/terminal-focus"
 import { useAwaySummary } from "./hooks/useAwaySummary"
@@ -160,21 +160,18 @@ function Layout(props: { onExit?: () => void }) {
   })
 
   /**
-   * Copy text to clipboard, preferring OSC 52 (instant, no subprocess, works
-   * over SSH) and falling back to native tools (pbcopy/xclip).
-   * Both OpenCode and Claude Code use this dual strategy.
+   * Copy text to clipboard via OSC 52 AND the native clipboard tool in
+   * parallel. OSC 52 is required to propagate copy over SSH/tmux, but
+   * terminals silently truncate large OSC 52 payloads (most cap at
+   * ~74 KB, some at ~8 KB) — so locally we always also pbcopy/xclip
+   * which has no such limit. See `copyTextDualPath` in
+   * `src/utils/clipboard.ts` for the full reasoning.
    */
   const copyText = (text: string) => {
-    if (renderer.isOsc52Supported()) {
-      renderer.copyToClipboardOSC52(text)
-      log.info("Copied selection via OSC 52", { chars: text.length })
-    } else {
-      copyToClipboard(text).then(() => {
-        log.info("Copied selection via clipboard cmd", { chars: text.length })
-      }).catch((err: unknown) => {
-        log.warn("Failed to copy selection", { error: err instanceof Error ? err.message : String(err) })
-      })
-    }
+    void copyTextDualPath(text, {
+      isOsc52Supported: () => renderer.isOsc52Supported(),
+      copyToClipboardOSC52: (t) => renderer.copyToClipboardOSC52(t) ?? false,
+    })
   }
 
   /**

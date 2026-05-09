@@ -182,6 +182,112 @@ export async function copyToClipboard(text: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Dual-path text copy (OSC 52 + native)
+// ---------------------------------------------------------------------------
+//
+// History: shipped as the fix for the "Cmd+C silently fails for large
+// selections" bug.
+//
+// OSC 52 is the only path that propagates a copy to the user's local
+// clipboard when bantai is running on a remote host (SSH / tmux), so we
+// can't drop it. But terminals impose hard upper bounds on the OSC 52
+// escape-sequence length — many cap at ~74 KB, some (older xterm,
+// default tmux `set-clipboard`) as low as ~8 KB — and drop the sequence
+// SILENTLY when the payload is over the limit. The Zig FFI returns
+// `true` because the bytes left this process; the terminal never
+// delivers them to the system clipboard, so the user pastes stale or
+// empty content.
+//
+// The fix is to always also write via the native clipboard tool
+// (pbcopy / xclip / clip.exe) in parallel. Locally that's the
+// source-of-truth and immune to OSC 52 limits; over SSH it fails
+// silently (no clipboard tool on the remote box) but OSC 52 still
+// propagates. The two paths don't fight: locally OSC 52 + pbcopy
+// both write the same text and last-writer-wins is fine; over SSH only
+// OSC 52 reaches anywhere meaningful.
+//
+// The cost is one extra subprocess per Cmd+C — negligible because copy
+// keystrokes are rare.
+
+/** Renderer-side OSC 52 surface — minimal slice of the OpenTUI renderer. */
+export interface Osc52Surface {
+  isOsc52Supported(): boolean
+  /**
+   * Emits the OSC 52 escape sequence to stdout. Returns true iff the
+   * bytes were written. NOTE: a `true` return does NOT guarantee the
+   * terminal accepted the payload — terminals truncate large payloads
+   * silently. That's why this function is paired with a native write.
+   */
+  copyToClipboardOSC52(text: string): boolean
+}
+
+export interface CopyTextResult {
+  /** OSC 52 escape was emitted (does NOT guarantee terminal acceptance). */
+  osc52Sent: boolean
+  /** Native clipboard tool succeeded (definitive — bytes are in the OS clipboard). */
+  nativeOk: boolean
+}
+
+/**
+ * Copy text to the clipboard via OSC 52 AND the native clipboard tool
+ * in parallel. Either path succeeding is a copy success; both failing
+ * is a copy failure (logged at warn level).
+ *
+ * Optional `copyNative` lets tests inject a fake to avoid spawning
+ * `pbcopy` / `xclip`. Production code should omit it and let the helper
+ * fall back to the module-level `copyToClipboard`.
+ */
+export async function copyTextDualPath(
+  text: string,
+  osc52: Osc52Surface,
+  copyNative: (t: string) => Promise<void> = copyToClipboard,
+): Promise<CopyTextResult> {
+  // Run OSC 52 first (it's synchronous — just an stdout write) so the
+  // ordering is deterministic: the native clipboard write awaits below
+  // and any later user paste sees the native value (which is the source
+  // of truth on local machines, and immune to terminal-side OSC 52
+  // truncation).
+  let osc52Sent = false
+  if (osc52.isOsc52Supported()) {
+    try {
+      osc52Sent = osc52.copyToClipboardOSC52(text)
+    } catch (err) {
+      log.warn("OSC 52 copy threw", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+      osc52Sent = false
+    }
+  }
+
+  let nativeOk = false
+  try {
+    await copyNative(text)
+    nativeOk = true
+  } catch (err) {
+    // Native clipboard fails over SSH (no clipboard tool on the remote)
+    // or on unsupported platforms — that's expected, not a bug, as long
+    // as OSC 52 succeeded. Log at debug so we don't spam warnings.
+    log.debug("Native clipboard copy failed", {
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+
+  if (osc52Sent && nativeOk) {
+    log.info("Copied selection (OSC 52 + native)", { chars: text.length })
+  } else if (osc52Sent) {
+    log.info("Copied selection via OSC 52", { chars: text.length })
+  } else if (nativeOk) {
+    log.info("Copied selection via clipboard cmd", { chars: text.length })
+  } else {
+    log.warn("Failed to copy selection: both OSC 52 and native paths failed", {
+      chars: text.length,
+    })
+  }
+
+  return { osc52Sent, nativeOk }
+}
+
 /** Read text from the system clipboard. */
 export async function readClipboard(): Promise<string> {
   const clip = getClipboardReadCmd()

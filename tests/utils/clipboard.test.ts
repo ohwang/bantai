@@ -3,7 +3,9 @@ import {
   getClipboardCmd,
   getClipboardReadCmd,
   copyToClipboard,
+  copyTextDualPath,
   readClipboard,
+  type Osc52Surface,
 } from "../../src/utils/clipboard"
 
 // ── Helpers for overriding process.platform ──────────────────────────────
@@ -209,5 +211,138 @@ describe("copyToClipboard + readClipboard roundtrip", () => {
     await copyToClipboard(testText)
     const result = await readClipboard()
     expect(result.trim()).toBe(testText)
+  })
+})
+
+// ── 6. copyTextDualPath ─────────────────────────────────────────────────
+//
+// Regression coverage for "Cmd+C silently fails for large selections".
+// The bug was: when OSC 52 is supported, large payloads can be silently
+// truncated by the terminal layer; we used to use ONLY OSC 52 in that
+// case, so the user's clipboard was left empty/stale. The fix runs
+// OSC 52 AND the native clipboard tool in parallel, so when OSC 52 is
+// silently dropped the native write still gets the user the full text.
+describe("copyTextDualPath", () => {
+  /** Minimal Osc52Surface stub. */
+  function makeOsc52(opts: { supported: boolean; sendReturns?: boolean; throws?: boolean }): {
+    surface: Osc52Surface
+    calls: { isOsc52SupportedCalls: number; copyCalls: string[] }
+  } {
+    const calls = { isOsc52SupportedCalls: 0, copyCalls: [] as string[] }
+    const surface: Osc52Surface = {
+      isOsc52Supported() {
+        calls.isOsc52SupportedCalls++
+        return opts.supported
+      },
+      copyToClipboardOSC52(text) {
+        calls.copyCalls.push(text)
+        if (opts.throws) throw new Error("kaboom")
+        return opts.sendReturns ?? true
+      },
+    }
+    return { surface, calls }
+  }
+
+  it("runs both OSC 52 and native when OSC 52 is supported", async () => {
+    const { surface, calls } = makeOsc52({ supported: true, sendReturns: true })
+    let nativeCalls: string[] = []
+    const result = await copyTextDualPath(
+      "hello",
+      surface,
+      async (t) => { nativeCalls.push(t) },
+    )
+
+    expect(calls.copyCalls).toEqual(["hello"])
+    expect(nativeCalls).toEqual(["hello"])
+    expect(result).toEqual({ osc52Sent: true, nativeOk: true })
+  })
+
+  it("succeeds via native when OSC 52 is unsupported", async () => {
+    const { surface, calls } = makeOsc52({ supported: false })
+    let nativeCalls: string[] = []
+    const result = await copyTextDualPath(
+      "hello",
+      surface,
+      async (t) => { nativeCalls.push(t) },
+    )
+
+    expect(calls.copyCalls).toEqual([]) // OSC 52 not invoked when unsupported
+    expect(nativeCalls).toEqual(["hello"])
+    expect(result).toEqual({ osc52Sent: false, nativeOk: true })
+  })
+
+  it("succeeds via OSC 52 alone when native fails (SSH-with-no-xclip case)", async () => {
+    // This is the SSH-on-remote-host scenario: pbcopy/xclip aren't
+    // installed on the remote, so the native call rejects, but OSC 52
+    // still propagates to the user's local terminal.
+    const { surface } = makeOsc52({ supported: true, sendReturns: true })
+    const result = await copyTextDualPath(
+      "hello",
+      surface,
+      async () => { throw new Error("Unsupported platform for clipboard access") },
+    )
+
+    expect(result).toEqual({ osc52Sent: true, nativeOk: false })
+  })
+
+  it("succeeds via native alone when OSC 52 emit returns false", async () => {
+    // The Zig FFI returning false means the bytes never left this
+    // process. Native must still cover the user.
+    const { surface } = makeOsc52({ supported: true, sendReturns: false })
+    let nativeCalls: string[] = []
+    const result = await copyTextDualPath(
+      "hello",
+      surface,
+      async (t) => { nativeCalls.push(t) },
+    )
+
+    expect(nativeCalls).toEqual(["hello"])
+    expect(result).toEqual({ osc52Sent: false, nativeOk: true })
+  })
+
+  it("succeeds via native alone when OSC 52 throws", async () => {
+    // The OSC 52 surface should never throw, but if it does the helper
+    // must not let the exception propagate — copy-via-native still
+    // delivers the user's text.
+    const { surface } = makeOsc52({ supported: true, throws: true })
+    let nativeCalls: string[] = []
+    const result = await copyTextDualPath(
+      "hello",
+      surface,
+      async (t) => { nativeCalls.push(t) },
+    )
+
+    expect(nativeCalls).toEqual(["hello"])
+    expect(result).toEqual({ osc52Sent: false, nativeOk: true })
+  })
+
+  it("reports both-failed when neither path succeeds", async () => {
+    const { surface } = makeOsc52({ supported: true, sendReturns: false })
+    const result = await copyTextDualPath(
+      "hello",
+      surface,
+      async () => { throw new Error("boom") },
+    )
+
+    expect(result).toEqual({ osc52Sent: false, nativeOk: false })
+  })
+
+  it("forwards the same text to both paths verbatim, including large payloads", async () => {
+    // The bug is specifically about LARGE selections. Verify the helper
+    // doesn't truncate or transform on its own — it must hand the full
+    // string to both paths so the native write (which has no length
+    // limit) recovers from any OSC 52 terminal-side truncation.
+    const big = "x".repeat(100_000) // 100 KB — over the typical OSC 52 cap
+    const { surface, calls } = makeOsc52({ supported: true, sendReturns: true })
+    const nativeCalls: string[] = []
+    const result = await copyTextDualPath(
+      big,
+      surface,
+      async (t) => { nativeCalls.push(t) },
+    )
+
+    expect(calls.copyCalls).toEqual([big])
+    expect(nativeCalls).toEqual([big])
+    expect(result).toEqual({ osc52Sent: true, nativeOk: true })
   })
 })

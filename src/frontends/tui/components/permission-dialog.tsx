@@ -14,7 +14,7 @@
  * - "Deny for session" tracks tool name in adapter for auto-deny on future calls
  */
 
-import { createSignal, createEffect, createRenderEffect, createMemo, Show, For, onCleanup, type Accessor } from "solid-js"
+import { createSignal, createEffect, createMemo, Show, For, onCleanup, type Accessor } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { usePermissions } from "../context/permissions"
@@ -286,54 +286,36 @@ export function option2Text(perm: PermissionRequestEvent, _sessionCwd?: string):
 }
 
 // ---------------------------------------------------------------------------
-// Reactive helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Install a SolidJS effect that, on every fresh `permission_request.id`,
- * resets the radio-selector signal to 0 (Allow) and invokes the optional
- * `onReset` callback (used by the component to clear its `justActed`
- * debounce flag).
- *
- * Uses `createRenderEffect` (not `createEffect`) on purpose: the reset has
- * to land BEFORE the next paint of the dialog. `createEffect` defers to a
- * microtask, leaving a (small but observable) window where the user could
- * see the previous dialog's selection on the new dialog. Render-effects
- * also have the practical benefit of running once at creation in both the
- * browser and SSR builds of solid-js, which makes this helper unit-
- * testable under the project's default `bun test` (no `--conditions=browser`).
- *
- * Pulled out of `PermissionDialog` so it can be unit-tested without the
- * full component render — see F-9 in `bantai-team/permission-audit.md`.
- *
- * Must be called inside a SolidJS reactive scope (component body or
- * `createRoot`).
- */
-export function installPermissionDialogReset(
-  currentId: Accessor<string | null | undefined>,
-  setSelectedOption: (n: number) => void,
-  onReset?: () => void,
-): void {
-  let lastSeenPermId = ""
-  createRenderEffect(() => {
-    const id = currentId() ?? ""
-    if (id && id !== lastSeenPermId) {
-      lastSeenPermId = id
-      setSelectedOption(0)
-      onReset?.()
-    }
-  })
-}
-
-// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 // Number of options in the permission dialog
 const NUM_OPTIONS = 4
 
+/**
+ * Keyed-remount shell — see `bantai/CLAUDE.md` §"Per-entity dialog state".
+ *
+ * Every per-permission piece of UI state (radio selection, `justActed`
+ * debounce, the 200ms timer, the `useKeyboard` handler) lives in
+ * `PermissionDialogInner`. Wrapping it in `<Show when={...} keyed>` makes
+ * Solid tear down the inner component when the pending permission's
+ * identity changes (or it goes away) and mount a fresh instance with
+ * fresh signals. That structurally prevents the F-9 class of bug —
+ * stale `selectedOption` / `justActed` carrying over from the previous
+ * permission. Don't replace this with a non-keyed `<Show>` plus a
+ * `createRenderEffect` reset; the structural form removes the foot-gun
+ * (no helper to forget) and the regression risk (no helper to drift).
+ */
 export function PermissionDialog() {
   const { state } = usePermissions()
+  return (
+    <Show when={state.pendingPermission} keyed>
+      {(perm: PermissionRequestEvent) => <PermissionDialogInner permission={perm} />}
+    </Show>
+  )
+}
+
+function PermissionDialogInner(props: { permission: PermissionRequestEvent }) {
   const { state: session } = useSession()
   const agent = useAgent()
   const sync = useSync()
@@ -342,13 +324,18 @@ export function PermissionDialog() {
   // Radio selector state: 0 = Allow, 1 = Always allow, 2 = Deny, 3 = Deny for session
   const [selectedOption, setSelectedOption] = createSignal(0)
 
-  // Guard against buffered keystrokes leaking into the NEXT permission dialog.
-  // After approving/denying, ignore all keystrokes for 200ms to prevent rapid
-  // "a" + "d" typing from accidentally denying the next permission request.
+  // Guard against buffered keystrokes leaking into THIS dialog from typing
+  // that landed during the 200ms window after the user actioned the previous
+  // dialog. Each new dialog gets a fresh Inner via the keyed `<Show>` above,
+  // so this flag starts `false` per-permission — matching the F-9 invariant
+  // that a fresh permission accepts input immediately rather than inheriting
+  // the previous dialog's debounce window.
   let justActed = false
   let justActedTimer: ReturnType<typeof setTimeout> | undefined
 
-  // Clear debounce timer on unmount to prevent leak
+  // Clear debounce timer on unmount to prevent leak. With keyed remount
+  // this fires on every permission transition, not just the final close —
+  // ensuring no stray timer survives into the next Inner instance.
   onCleanup(() => clearTimeout(justActedTimer))
 
   function markActed() {
@@ -357,40 +344,21 @@ export function PermissionDialog() {
     justActedTimer = setTimeout(() => { justActed = false }, 200)
   }
 
-  // Reset selection + debounce on every fresh permission_request id.
-  //
-  // Why a createEffect (not a flag inside useKeyboard): the reset has to land
-  // on the FIRST tick after a new dialog opens, BEFORE the user presses any
-  // key. The previous useKeyboard-based reset only fired on the next keypress,
-  // so a user who reflex-pressed Enter on the freshly-opened dialog would
-  // confirm the PREVIOUS dialog's selection (e.g. "Deny for session" carrying
-  // over from a just-denied prompt). See F-9 in
-  // bantai-team/permission-audit.md.
-  //
-  // Belt-and-braces: also clears `justActed` so rapid-fire dialogs land on
-  // Allow as soon as the 200ms debounce expires.
-  installPermissionDialogReset(
-    () => state.pendingPermission?.id,
-    setSelectedOption,
-    () => { justActed = false },
-  )
-
   // Dev assertion: a permission dialog must never open in read-only follow
   // mode. The FollowBackend translator never emits permission_request, so
   // reaching this branch means something is broken upstream (spurious
   // event, stale state). Log loudly — cheaper to catch than to debug.
   createEffect(() => {
-    if (agent.config.readOnly && state.pendingPermission) {
+    if (agent.config.readOnly) {
       log.error(
         "Permission dialog opened in read-only follow mode — this should not happen",
-        { permissionId: state.pendingPermission.id },
+        { permissionId: props.permission.id },
       )
     }
   })
 
   useKeyboard((event) => {
     if (session.sessionState !== "WAITING_FOR_PERM") return
-    if (!state.pendingPermission) return
 
     // Ignore buffered keystrokes that arrive shortly after an action.
     // This prevents a rapid "a" then "d" from denying the NEXT permission.
@@ -400,12 +368,12 @@ export function PermissionDialog() {
     // scrollbox from handling arrow keys as scroll commands.
     event.preventDefault()
 
-    const id = state.pendingPermission.id
-    const perm = state.pendingPermission
+    const id = props.permission.id
+    const perm = props.permission
 
-    // Selection reset on a new permission id is handled by the createEffect
-    // above so that a fresh dialog renders with `Allow` selected BEFORE the
-    // user presses a key. Don't replicate it here. (F-9)
+    // No selection reset to worry about: a fresh permission id arrives via a
+    // fresh `PermissionDialogInner` instance (keyed `<Show>` in the outer
+    // `PermissionDialog`), so `selectedOption` already starts at 0. (F-9)
 
     // Arrow key navigation (wraps around, matching claude-go)
     if (event.name === "up") {
@@ -483,7 +451,7 @@ export function PermissionDialog() {
     agent.backend.approveToolUse(id)
   }
 
-  function approveAlways(id: string, perm: typeof state.pendingPermission & {}) {
+  function approveAlways(id: string, perm: PermissionRequestEvent) {
     markActed()
     // Build updatedPermissions for "always allow":
     // 1. Include SDK suggestions if available (echoed back per SDK docs).
@@ -543,206 +511,205 @@ export function PermissionDialog() {
     })
   }
 
+  // `props.permission` is stable for the lifetime of this Inner instance —
+  // a fresh permission id arrives via a fresh keyed-Show mount in the outer
+  // `PermissionDialog`. So we can read it directly instead of through an
+  // accessor.
+  const perm = props.permission
+  const label = () => actionLabel(perm.tool, perm.displayName)
+  const allPreviewLines = createMemo(() => extractPreviewLines(perm.tool, perm.input))
+
+  // Fixed chrome lines outside the scrollable preview area:
+  // border top/bottom (2) + action label (1) + question (1) + 4 options (4)
+  // + footer with margin (2) + padding (2) + dashed borders (2) = 14 lines.
+  // Additional optional metadata lines (path, description, etc.) add up to ~4.
+  // Use a generous estimate so the preview scrollbox never overflows.
+  const FIXED_CHROME_LINES = 18
+
+  // Max height for the scrollable content preview area.
+  // Ensures the question + options + footer are always visible.
+  const maxPreviewHeight = () => {
+    const termHeight = dims()?.height ?? 80
+    const available = termHeight - FIXED_CHROME_LINES
+    // Always allow at least 3 lines, cap at MAX_PREVIEW_LINES
+    return Math.max(3, Math.min(available, MAX_PREVIEW_LINES))
+  }
+
+  const previewLines = () => {
+    const all = allPreviewLines()
+    if (!all) return null
+    return all
+  }
+
+  // Resolve session cwd from the active agent (NOT process.cwd() — see
+  // F-2: bantai never process.chdir()s, so process.cwd() can differ from
+  // the cwd the SDK is actually rooted in).
+  const sessionCwd = () => agent.config.cwd ?? process.cwd()
+
+  // Don't show path separately for Bash (command is shown in preview)
+  const pathStr = () => {
+    if (perm.tool === "Bash" && previewLines()) return ""
+    return extractPath(perm.tool, perm.input, sessionCwd())
+  }
+  const question = () => questionText(perm)
+  const opt2 = () => option2Text(perm, sessionCwd())
+  const description = perm.description
+
   return (
-    <Show when={state.pendingPermission}>
-      {(perm: Accessor<PermissionRequestEvent>) => {
-        const label = () => actionLabel(perm().tool, perm().displayName)
-        const allPreviewLines = createMemo(() => extractPreviewLines(perm().tool, perm().input))
+    <box
+      flexDirection="column"
+      borderStyle="single"
+      borderColor={colors.border.permission}
+      paddingLeft={1}
+      paddingRight={1}
+    >
+      {/* Action label */}
+      <box height={1} paddingLeft={1}>
+        <text fg={colors.border.permission} attributes={TextAttributes.BOLD}>
+          {label()}
+        </text>
+      </box>
 
-        // Fixed chrome lines outside the scrollable preview area:
-        // border top/bottom (2) + action label (1) + question (1) + 4 options (4)
-        // + footer with margin (2) + padding (2) + dashed borders (2) = 14 lines.
-        // Additional optional metadata lines (path, description, etc.) add up to ~4.
-        // Use a generous estimate so the preview scrollbox never overflows.
-        const FIXED_CHROME_LINES = 18
+      {/* Path / primary content info */}
+      <Show when={pathStr()}>
+        <box paddingLeft={1}>
+          <text fg={colors.text.muted}>{pathStr()}</text>
+        </box>
+      </Show>
 
-        // Max height for the scrollable content preview area.
-        // Ensures the question + options + footer are always visible.
-        const maxPreviewHeight = () => {
-          const termHeight = dims()?.height ?? 80
-          const available = termHeight - FIXED_CHROME_LINES
-          // Always allow at least 3 lines, cap at MAX_PREVIEW_LINES
-          return Math.max(3, Math.min(available, MAX_PREVIEW_LINES))
-        }
+      {/* Blocked path warning */}
+      <Show when={perm.blockedPath}>
+        <box paddingLeft={1}>
+          <text fg={colors.status.warning} attributes={TextAttributes.DIM}>
+            {"\u26A0 Blocked path: " + perm.blockedPath}
+          </text>
+        </box>
+      </Show>
 
-        const previewLines = () => {
-          const all = allPreviewLines()
-          if (!all) return null
-          return all
-        }
+      {/* Description from SDK */}
+      <Show when={description}>
+        <box paddingLeft={1}>
+          <text fg={colors.text.muted}>{description}</text>
+        </box>
+      </Show>
 
-        // Resolve session cwd from the active agent (NOT process.cwd() — see
-        // F-2: bantai never process.chdir()s, so process.cwd() can differ from
-        // the cwd the SDK is actually rooted in).
-        const sessionCwd = () => agent.config.cwd ?? process.cwd()
+      {/* Decision reason hint */}
+      <Show when={perm.decisionReason}>
+        <box paddingLeft={1}>
+          <text fg={colors.text.muted}>
+            {"Reason: " + perm.decisionReason}
+          </text>
+        </box>
+      </Show>
 
-        // Don't show path separately for Bash (command is shown in preview)
-        const pathStr = () => {
-          if (perm().tool === "Bash" && previewLines()) return ""
-          return extractPath(perm().tool, perm().input, sessionCwd())
-        }
-        const question = () => questionText(perm())
-        const opt2 = () => option2Text(perm(), sessionCwd())
-        const description = () => perm().description
-
-        return (
-          <box
-            flexDirection="column"
-            borderStyle="single"
-            borderColor={colors.border.permission}
-            paddingLeft={1}
-            paddingRight={1}
-          >
-            {/* Action label */}
-            <box height={1} paddingLeft={1}>
-              <text fg={colors.border.permission} attributes={TextAttributes.BOLD}>
-                {label()}
-              </text>
-            </box>
-
-            {/* Path / primary content info */}
-            <Show when={pathStr()}>
-              <box paddingLeft={1}>
-                <text fg={colors.text.muted}>{pathStr()}</text>
+      {/* Content preview between dashed borders — scrollable to fit small terminals */}
+      <Show when={previewLines()}>
+        {(lines: Accessor<PreviewLine[]>) => {
+          const lineCount = createMemo(() => lines().length)
+          const isTruncated = createMemo(() => lineCount() > maxPreviewHeight())
+          const extraLineCount = createMemo(() => lineCount() - maxPreviewHeight())
+          const scrollHeight = createMemo(() => Math.min(lineCount(), maxPreviewHeight()))
+          return (
+          <box flexDirection="column">
+            <Divider char={"\u254C"} fg={colors.border.permission} paddingLeft={0} />
+            <scrollbox
+              height={scrollHeight()}
+              maxHeight={maxPreviewHeight()}
+              stickyScroll={false}
+            >
+              <box flexDirection="column">
+                <For each={lines()}>
+                  {(line, _idx) => {
+                    const lineColor = () => {
+                      if (line.prefix === "+") return colors.diff.added
+                      if (line.prefix === "-") return colors.diff.removed
+                      return colors.text.primary
+                    }
+                    return (
+                      <box height={1} paddingLeft={1}>
+                        <text fg={lineColor()}>{line.prefix ? `${line.prefix} ${line.text || " "}` : (line.text || " ")}</text>
+                      </box>
+                    )
+                  }}
+                </For>
+              </box>
+            </scrollbox>
+            <Show when={isTruncated()}>
+              <box height={1} paddingLeft={2}>
+                <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{`... ${extraLineCount()} more line${extraLineCount() === 1 ? "" : "s"}`}</text>
               </box>
             </Show>
-
-            {/* Blocked path warning */}
-            <Show when={perm().blockedPath}>
-              <box paddingLeft={1}>
-                <text fg={colors.status.warning} attributes={TextAttributes.DIM}>
-                  {"\u26A0 Blocked path: " + perm().blockedPath}
-                </text>
-              </box>
-            </Show>
-
-            {/* Description from SDK */}
-            <Show when={description()}>
-              <box paddingLeft={1}>
-                <text fg={colors.text.muted}>{description()}</text>
-              </box>
-            </Show>
-
-            {/* Decision reason hint */}
-            <Show when={perm().decisionReason}>
-              <box paddingLeft={1}>
-                <text fg={colors.text.muted}>
-                  {"Reason: " + perm().decisionReason}
-                </text>
-              </box>
-            </Show>
-
-            {/* Content preview between dashed borders — scrollable to fit small terminals */}
-            <Show when={previewLines()}>
-              {(lines: Accessor<PreviewLine[]>) => {
-                const lineCount = createMemo(() => lines().length)
-                const isTruncated = createMemo(() => lineCount() > maxPreviewHeight())
-                const extraLineCount = createMemo(() => lineCount() - maxPreviewHeight())
-                const scrollHeight = createMemo(() => Math.min(lineCount(), maxPreviewHeight()))
-                return (
-                <box flexDirection="column">
-                  <Divider char={"\u254C"} fg={colors.border.permission} paddingLeft={0} />
-                  <scrollbox
-                    height={scrollHeight()}
-                    maxHeight={maxPreviewHeight()}
-                    stickyScroll={false}
-                  >
-                    <box flexDirection="column">
-                      <For each={lines()}>
-                        {(line, _idx) => {
-                          const lineColor = () => {
-                            if (line.prefix === "+") return colors.diff.added
-                            if (line.prefix === "-") return colors.diff.removed
-                            return colors.text.primary
-                          }
-                          return (
-                            <box height={1} paddingLeft={1}>
-                              <text fg={lineColor()}>{line.prefix ? `${line.prefix} ${line.text || " "}` : (line.text || " ")}</text>
-                            </box>
-                          )
-                        }}
-                      </For>
-                    </box>
-                  </scrollbox>
-                  <Show when={isTruncated()}>
-                    <box height={1} paddingLeft={2}>
-                      <text fg={colors.text.muted} attributes={TextAttributes.DIM}>{`... ${extraLineCount()} more line${extraLineCount() === 1 ? "" : "s"}`}</text>
-                    </box>
-                  </Show>
-                  <Divider char={"\u254C"} fg={colors.border.permission} paddingLeft={0} />
-                </box>
-                )
-              }}
-            </Show>
-
-            {/* Question prompt — always visible */}
-            <box height={1} paddingLeft={1} marginTop={previewLines() ? 0 : 1}>
-              <text fg={colors.text.primary}>
-                {question()}
-              </text>
-            </box>
-
-            {/* Option 1: Allow (y) */}
-            <box height={1} paddingLeft={1}>
-              <Show when={selectedOption() === 0}
-                fallback={
-                  <text fg={colors.text.primary}>{"  y. Allow"}</text>
-                }
-              >
-                <text fg={colors.border.permission}>
-                  {"\u276F y. Allow"}
-                </text>
-              </Show>
-            </box>
-
-            {/* Option 2: Always allow (a) — with lock icon */}
-            <box height={1} paddingLeft={1}>
-              <Show when={selectedOption() === 1}
-                fallback={
-                  <text fg={colors.text.primary} attributes={TextAttributes.BOLD}>
-                    {"  a. \uD83D\uDD12 " + opt2()}
-                  </text>
-                }
-              >
-                <text fg={colors.border.permission} attributes={TextAttributes.BOLD}>
-                  {"\u276F a. \uD83D\uDD12 " + opt2()}
-                </text>
-              </Show>
-            </box>
-
-            {/* Option 3: Deny (n) */}
-            <box height={1} paddingLeft={1}>
-              <Show when={selectedOption() === 2}
-                fallback={
-                  <text fg={colors.text.muted}>{"  n. Deny"}</text>
-                }
-              >
-                <text fg={colors.border.permission}>{"\u276F n. Deny"}</text>
-              </Show>
-            </box>
-
-            {/* Option 4: Deny for session (d) */}
-            <box height={1} paddingLeft={1}>
-              <Show when={selectedOption() === 3}
-                fallback={
-                  <text fg={colors.text.muted}>{"  d. Deny for session"}</text>
-                }
-              >
-                <text fg={colors.border.permission}>{"\u276F d. Deny for session"}</text>
-              </Show>
-            </box>
-
-            {/* Footer hints */}
-            <box paddingLeft={1} marginTop={1}>
-              <ShortcutBar>
-                <ShortcutHint shortcut={"\u2191\u2193"} action="navigate" />
-                <ShortcutHint shortcut="y/a/n/d" action="shortcut" />
-                <ShortcutHint shortcut="Enter" action="confirm" />
-              </ShortcutBar>
-            </box>
+            <Divider char={"\u254C"} fg={colors.border.permission} paddingLeft={0} />
           </box>
-        )
-      }}
-    </Show>
+          )
+        }}
+      </Show>
+
+      {/* Question prompt — always visible */}
+      <box height={1} paddingLeft={1} marginTop={previewLines() ? 0 : 1}>
+        <text fg={colors.text.primary}>
+          {question()}
+        </text>
+      </box>
+
+      {/* Option 1: Allow (y) */}
+      <box height={1} paddingLeft={1}>
+        <Show when={selectedOption() === 0}
+          fallback={
+            <text fg={colors.text.primary}>{"  y. Allow"}</text>
+          }
+        >
+          <text fg={colors.border.permission}>
+            {"\u276F y. Allow"}
+          </text>
+        </Show>
+      </box>
+
+      {/* Option 2: Always allow (a) — with lock icon */}
+      <box height={1} paddingLeft={1}>
+        <Show when={selectedOption() === 1}
+          fallback={
+            <text fg={colors.text.primary} attributes={TextAttributes.BOLD}>
+              {"  a. \uD83D\uDD12 " + opt2()}
+            </text>
+          }
+        >
+          <text fg={colors.border.permission} attributes={TextAttributes.BOLD}>
+            {"\u276F a. \uD83D\uDD12 " + opt2()}
+          </text>
+        </Show>
+      </box>
+
+      {/* Option 3: Deny (n) */}
+      <box height={1} paddingLeft={1}>
+        <Show when={selectedOption() === 2}
+          fallback={
+            <text fg={colors.text.muted}>{"  n. Deny"}</text>
+          }
+        >
+          <text fg={colors.border.permission}>{"\u276F n. Deny"}</text>
+        </Show>
+      </box>
+
+      {/* Option 4: Deny for session (d) */}
+      <box height={1} paddingLeft={1}>
+        <Show when={selectedOption() === 3}
+          fallback={
+            <text fg={colors.text.muted}>{"  d. Deny for session"}</text>
+          }
+        >
+          <text fg={colors.border.permission}>{"\u276F d. Deny for session"}</text>
+        </Show>
+      </box>
+
+      {/* Footer hints */}
+      <box paddingLeft={1} marginTop={1}>
+        <ShortcutBar>
+          <ShortcutHint shortcut={"\u2191\u2193"} action="navigate" />
+          <ShortcutHint shortcut="y/a/n/d" action="shortcut" />
+          <ShortcutHint shortcut="Enter" action="confirm" />
+        </ShortcutBar>
+      </box>
+    </box>
   )
 }

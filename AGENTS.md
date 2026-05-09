@@ -121,6 +121,28 @@ A closed enumeration of values — backends, permission modes, effort levels, se
 - **16ms event batching.** Wrap signal updates from high-frequency sources in Solid's `batch()`.
 - **Runtime-mutable values must be SolidJS signals or stores.** Plain objects / module-level constants are for truly immutable data only (string enums, static config). Theme colors (`colors` in `tokens.ts`) are a store — never snapshot them into a `const`; read inline in JSX or via `() =>` accessor.
 - **Cross-cutting keyboard shortcuts run FIRST in the root handler, not in overlays.** Any `useKeyboard` intercept that does blanket `event.preventDefault()` on non-whitelist keys (the usual "overlay is open — eat everything" pattern) silently swallows global shortcuts like Cmd+C copy. Centralise them as small helpers at the top of the root `useKeyboard` in `src/frontends/tui/app.tsx` (e.g. `tryHandleCopyShortcut`) and invoke them before any overlay branch.
+- **Per-entity dialog state — split outer + Inner, keyed `<Show>` between them.** A SolidJS component holding *per-entity* internal state (selection cursor, submit/debounce latch, free-text toggle, expanded flag — anything that should reset when the "current entity" changes) and rendered by a parent at a stable JSX position with an identity-driving prop (current permission, current question, current item) MUST be remounted on identity change. See the recipe below — don't reach for a `createRenderEffect` reset helper.
+
+### Per-entity dialog state recipe (the F-9 / Enter-stuck recipe)
+
+SolidJS keeps the same component instance when only props change — signals declared inside live for the *component instance's* lifetime, not for one logical entity. So when a parent reuses the same dialog at a stable JSX slot to walk through N permissions / N questions / N items, the inner signals carry over from entity to entity unless we structurally remount. Two live bugs of this exact shape have shipped (F-9, Enter-stuck on Q2). Every future one is preventable by following this recipe.
+
+**The recipe:**
+
+1. **Outer = thin shell with a keyed `<Show>`.** `<Show when={currentEntity()} keyed>{(e) => <Inner entity={e} />}</Show>`. Solid tears down `Inner` when the entity reference changes (or goes away) and mounts a fresh instance with fresh signals.
+2. **Inner takes the entity directly as a prop** (`props.permission`, `props.question`). The Inner instance is keyed to that specific entity, so the prop is stable for Inner's lifetime — no accessor wrapping, no `createMemo` for "which entity am I looking at", no defensive context-state guards.
+3. **Per-entity state lives in Inner.** Selection cursors, submit/debounce latches, one-shot init flags, `useKeyboard` handlers, `onCleanup` for timers/refs. All of it auto-resets via remount.
+4. **Cross-entity state lives in Outer.** A multi-step `currentIdx`, an answer accumulator across questions — the things that MUST survive entity transitions stay in the parent.
+5. **Don't write a `createRenderEffect` reset helper.** Strictly worse than keyed remount: there's a helper to forget when adding a new signal, a helper to drift when refactoring, and the structural pattern is what catches the next instance — not a manual reset list.
+
+**Existing instances** (use them as templates):
+
+| Dialog | File | Bug it caught |
+|---|---|---|
+| Permission dialog | `src/frontends/tui/components/permission-dialog.tsx` (`PermissionDialog` outer + `PermissionDialogInner`) | F-9: a "Deny for session" selection carried over to the next permission, so a reflex Enter on dialog #2 denied-for-session the new request. |
+| Elicitation question | `src/frontends/tui/components/elicitation.tsx` (`ElicitationDialog` outer with keyed `<Show>` around `QuestionView`) | Enter dead on Q2 of a 2-question `AskUserQuestion` — Q1's `submitting = true` latch carried over and `selectOption` early-returned on every keypress. Esc was the only way out. |
+
+**When you reach for a `createSignal` inside a TUI dialog component, ask first:** is this signal per-entity (must reset when the parent's "current X" advances) or component-instance (lives with the dialog as a whole)? If per-entity, the parent must wrap the component in a keyed `<Show>` keyed on the entity reference. If you find yourself writing a `createRenderEffect` to reset signals when a prop changes — STOP. The shape you actually want is keyed remount.
 
 ### Slack frontend
 
